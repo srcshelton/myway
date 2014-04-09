@@ -2562,7 +2562,7 @@ warn "mkdir() failed (2)";
 		if( not( defined( $objects ) and length( $objects ) ) ) {
 			$opttab = '';
 
-		} elsif( 'SCALAR' eq ref( $objects ) ) {
+		} elsif( ( '' eq ref( $objects ) ) or ( 'SCALAR' eq ref( $objects ) ) ) {
 			$opttab = $objects;
 
 		} elsif( 'ARRAY' eq ref( $objects ) ) {
@@ -2587,7 +2587,7 @@ warn "mkdir() failed (2)";
 		if( not( defined( $objects ) and length( $objects ) ) ) {
 			$optdb = "--all-databases";
 
-		} elsif( 'SCALAR' eq ref( $objects ) ) {
+		} elsif( ( '' eq ref( $objects ) ) or ( 'SCALAR' eq ref( $objects ) ) ) {
 			$optdb = "--databases $objects"
 
 		} elsif( 'ARRAY' eq ref( $objects ) ) {
