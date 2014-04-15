@@ -2477,25 +2477,24 @@ sub dbdump( $;$$$ ) { # {{{
 
 	my $memorybackend;
 	if( defined( $filename ) and length( $filename ) ) {
-		return undef unless( defined( $destination ) and length( $destination ) );
-
-		if( not( -d $destination ) ) {
-			make_path( $destination, {
-				  mode		=> 0775
-				, verbose	=> FALSE
-				, error		=> \my $errors
-			} );
-			if( @{ $errors } ) {
-				foreach my $entry ( @{ $errors } ) {
-					my( $dir, $message ) = %{ $entry };
-					if( length( $message ) ) {
-						print STDERR "Error creating directory '$dir': $message";
-					} else {
-						print STDERR "make_path general error: $message";
+		if( defined( $destination ) and length( $destination ) ) {
+			if( not( -d $destination ) ) {
+				make_path( $destination, {
+					  mode		=> 0775
+					, verbose	=> FALSE
+					, error		=> \my $errors
+				} );
+				if( @{ $errors } ) {
+					foreach my $entry ( @{ $errors } ) {
+						my( $dir, $message ) = %{ $entry };
+						if( length( $message ) ) {
+							print STDERR "Error creating directory '$dir': $message";
+						} else {
+							print STDERR "make_path general error: $message";
+						}
 					}
+					return undef;
 				}
-warn "mkdir() failed (1)";
-				return undef;
 			}
 		}
 	} elsif( defined( $destination) and ( '' eq ref( $destination ) ) and length( $destination ) ) {
@@ -2630,8 +2629,9 @@ warn "mkdir() failed (2)";
 	# N.B.: We're nto capturing STDERR in either instance...
 	#
 	if( not( defined( $memorybackend ) ) ) {
-		pdebug( "Shell-command is: 'mysqldump $optauth $optdb $opttab $optdump --result-file=\"$destination/$filename\"'" );
-		my $result = qx( mysqldump $optauth $optdb $opttab $optdump --result-file='$destination/$filename' );
+		my $output = ( defined( $destination ) and length( $destination ) ? $destination . '/' : '' ) . $filename;
+		pdebug( "Shell-command is: 'mysqldump $optauth $optdb $opttab $optdump --result-file=\"$output\"'" );
+		my $result = qx( mysqldump $optauth $optdb $opttab $optdump --result-file='$output' );
 		if( not( defined( $result ) ) ) {
 			warn( "Unable to launch external process: $!\n" );
 			return( undef );
@@ -3056,7 +3056,11 @@ sub main( @ ) { # {{{
 			, 'database'	=> $db
 		};
 		if( defined( $location ) ) {
-			dbdump( $auth, '.' , $location );
+			if( defined( $db ) and length( $db ) ) {
+				dbdump( $auth, undef , $location );
+			} else {
+				dbdump( $auth, undef, undef , $location );
+			}
 		} else {
 			dbdump( $auth );
 		}
