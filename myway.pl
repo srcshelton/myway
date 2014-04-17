@@ -2789,7 +2789,8 @@ sub getsqlvalue( $$ ) { # {{{
 
 	my $sth = executesql( $dbh, undef, $st );
 	if( not( defined( $sth ) and $sth ) ) {
-		warn( "Unable to create statement handle to execute '$st': " . $dbh -> errstr() . "\n" );
+		my $errstr = $dbh -> errstr();
+		warn( "Unable to create statement handle to execute '$st'" . ( defined( $errstr ) and length( $errstr ) ? ": " . $errstr : '' ) . "\n" );
 	} else {
 		while( my $ref = $sth -> fetchrow_arrayref() ) {
 			$response = @{ $ref }[ 0 ];
