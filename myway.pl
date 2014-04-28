@@ -1891,7 +1891,7 @@ sub pushentry( $$$$$;$ );
 sub pushfragment( $$$;$$ );
 sub processline( $$;$ );
 sub processfile( $$ );
-sub dbdump( $;$$$ );
+sub dbdump( $;$$$$ );
 sub dosql( $$ );
 sub preparesql( $$ );
 sub executesql( $$$;@ );
@@ -2564,8 +2564,8 @@ sub processfile( $$ ) { # {{{
 	return( $validated );
 } # processfile # }}}
 
-sub dbdump( $;$$$ ) { # {{{
-	my( $auth, $objects, $destination, $filename ) = @_;
+sub dbdump( $;$$$$ ) { # {{{
+	my( $auth, $objects, $destination, $filename, $compress ) = @_;
 
 	# N.B.: If per-table or per-database output is required, then call
 	#       dbdump() multiple times with different $objects and
@@ -2624,7 +2624,6 @@ sub dbdump( $;$$$ ) { # {{{
 						print STDERR "make_path general error: $message";
 					}
 				}
-warn "mkdir() failed (2)";
 				return undef;
 			}
 		}
@@ -2731,12 +2730,28 @@ warn "mkdir() failed (2)";
 		      '--routines --set-charset --single-transaction ' .
 		      '--triggers --tz-utc --verbose';
 
-	# N.B.: We're nto capturing STDERR in either instance...
+	# N.B.: We're not capturing STDERR in either instance...
 	#
 	if( not( defined( $memorybackend ) ) ) {
 		my $output = ( defined( $destination ) and length( $destination ) ? $destination . '/' : '' ) . $filename;
-		pdebug( "Shell-command is: 'mysqldump $optauth $optdb $opttab $optdump --result-file=\"$output\"'" );
-		my $result = qx( mysqldump $optauth $optdb $opttab $optdump --result-file='$output' );
+		my $command = "mysqldump $optauth $optdb $opttab $optdump ";
+
+		if( defined( $compress ) ) {
+			if( 'gzip' eq $compress ) {
+				$command .= " | gzip -9cf - > '$output.gz'";
+			} elsif( ( 'lzma' eq $compress ) or ( 'xz' eq $compress ) ) {
+				$command .= " | $compress -z6cf - > '$output.$compress'";
+			} elsif( ( 'bzip2' eq $compress ) or ( '' eq $compress ) ) {
+				$command .= " | bzip2 -z9cf - > '$output.bz2'";
+			} else {
+				die "Unknown compression scheme '$compress'";
+			}
+		} else {
+			$command .= "--result-file='$output'";
+		}
+
+		pdebug( "Shell-command is: '$command'" );
+		my $result = qx( $command );
 		if( not( defined( $result ) ) ) {
 			warn( "Unable to launch external process: $!\n" );
 			return( undef );
@@ -3838,13 +3853,14 @@ sub main( @ ) { # {{{
 
 	my( $action_backup, $action_init, $action_migrate, $action_check );
 	my( $help, $desc, $path, $file, $compat, $unsafe, $keepbackups );
-	my( $force, $clear );
+	my( $force, $clear, $compress );
 	my( $user, $pass, $host, $db );
 	my( $pretend, $debug, $notice, $verbose, $warn );
 
 	Getopt::Long::Configure( 'gnu_getopt' );
 	GetOptionsFromArray ( \@argv,
 		  'b|backup:s'				=> \$action_backup
+		, 'compress:s'				=> \$compress
 		, 'i|init:s'				=> \$action_init
 		, 'm|migrate!'				=> \$action_migrate
 		, 'c|check!'				=> \$action_check
@@ -3875,7 +3891,7 @@ sub main( @ ) { # {{{
 
 	$host = 'localhost' unless( defined( $host ) and $host );
 
-	if( not( defined( $action_backup ) and $action_backup ) ) {
+	if( not( defined( $action_backup ) ) ) {
 		$ok = FALSE unless( defined( $db ) and $db );
 		if( not( defined( $action_init ) ) ) {
 			$ok = FALSE unless( ( defined( $file ) and $file ) or ( defined( $path ) and $path ) );
@@ -3922,8 +3938,10 @@ sub main( @ ) { # {{{
 
 	if( ( defined( $help ) and $help ) or ( 0 == scalar( @ARGV ) ) ) {
 		print( "Usage: $0 -u <username> -p <password> -h <host> -d <database> ...\n" );
-		print( ( " " x ( length( $0 ) + length( "Usage:  " ) ) ) . "<--backup [location]|--init <version>>|[--migrate|--check] <--scripts <directory>|--file <schema>> ...\n" );
-		print( ( " " x ( length( $0 ) + length( "Usage:  " ) ) ) . "[--mysql-compat] [--no-backup] [--force] [--clear-metadata] [--dry-run] [--debug] [--verbose]\n" );
+		print( ( " " x ( length( $0 ) + length( "Usage:  " ) ) ) . "<--backup [directory] [--compress [scheme]]|--init <version>>|...\n" );
+		print( ( " " x ( length( $0 ) + length( "Usage:  " ) ) ) . "[--migrate|--check] <--scripts <directory>|--file <schema>> ...\n" );
+		print( ( " " x ( length( $0 ) + length( "Usage:  " ) ) ) . "[--mysql-compat] [--no-backup|--keep-backup] [--clear-metadata] ...\n" );
+		print( ( " " x ( length( $0 ) + length( "Usage:  " ) ) ) . "[--dry-run] [--force] [--debug] [--verbose]\n" );
 		exit( 0 );
 	} elsif( not( $ok ) ) {
 		warn "Required argument '--user' not specified\n" unless( defined( $user ) );
@@ -3934,6 +3952,7 @@ sub main( @ ) { # {{{
 		warn "Mutually-exclusive arguments '--schema' and '--schemata' cannot both be specified\n" if( defined( $file ) and defined( $path ) );
 		warn "Mutually-exclusive arguments '--dry-run' and '--clear-metadata' cannot both be specified\n" if( $pretend and $clear );
 		warn "Mutually-exclusive arguments '--no-backup' and '--keep-backup' cannot both be specified\n" if( $unsafe and $keepbackups );
+		warn "Cannot specify argument '--compress' without option '--backup'\n" if( defined( $compress ) and not( defined( $action_backup ) ) );
 		exit( 1 );
 	}
 
@@ -3960,7 +3979,7 @@ sub main( @ ) { # {{{
 		, 'database'	=> $db
 	};
 
-	if( defined( $action_backup ) and $action_backup ) {
+	if( defined( $action_backup ) ) {
 		# --backup may be used alone to trigger a backup, or as
 		# --backup=/<dir> or --backup <dir> to specify a destination
 		# directory - in which case the assigned value will be the
@@ -3985,12 +4004,12 @@ sub main( @ ) { # {{{
 		#
 		if( defined( $location ) ) {
 			if( defined( $db ) and length( $db ) ) {
-				dbdump( $auth, undef, $location );
+				dbdump( $auth, undef, $location, undef, $compress );
 			} else {
-				dbdump( $auth, undef, undef, $location );
+				dbdump( $auth, undef, undef, $location, $compress );
 			}
 		} else {
-			dbdump( $auth );
+			dbdump( $auth, undef, undef, undef, $compress );
 		}
 
 		exit( 0 );
