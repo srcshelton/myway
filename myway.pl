@@ -1876,19 +1876,21 @@ package myway;
 
 use strict;
 use warnings;
+use diagnostics;
 
 use constant VERSION =>  1.0;
 
 use constant TRUE    =>  1;
 use constant FALSE   =>  0;
 
-use constant DEBUG   => ( $ENV{ DEBUG } or FALSE );
+use constant DEBUG   => ( $ENV{ 'DEBUG' } or FALSE );
 
 use constant PORT    =>  3306;
 
 # Necessary non-default modules:
 #
 # * DBI::Format ( DBI::Shell, Text::Reform, IO::Tee )
+# * File::Touch ()
 # * match::smart ()
 # * Regexp::Common ()
 # * Sort::Versions ()
@@ -1907,6 +1909,8 @@ use File::Glob qw( :glob );
 use File::Path qw( make_path );
 use File::Basename;
 use File::Temp;
+use File::Touch;
+use File::Which;
 use FileHandle;
 #use Filter::Indent::HereDoc;
 use Getopt::Long qw( GetOptionsFromArray );
@@ -1936,7 +1940,8 @@ sub pushentry( $$$$$;$ );
 sub pushfragment( $$$;$$ );
 sub processline( $$;$ );
 sub processfile( $$ );
-sub dbdump( $;$$$$ );
+sub dbdump( $;$$$$$ );
+sub dbrestore( $$ );
 sub dosql( $$ );
 sub preparesql( $$ );
 sub executesql( $$$;@ );
@@ -2616,8 +2621,8 @@ sub processfile( $$ ) { # {{{
 	return( $validated );
 } # processfile # }}}
 
-sub dbdump( $;$$$$ ) { # {{{
-	my( $auth, $objects, $destination, $filename, $compress ) = @_;
+sub dbdump( $;$$$$$ ) { # {{{
+	my( $auth, $objects, $destination, $filename, $compress, $transactional ) = @_;
 
 	# N.B.: If per-table or per-database output is required, then call
 	#       dbdump() multiple times with different $objects and
@@ -2628,9 +2633,9 @@ sub dbdump( $;$$$$ ) { # {{{
 	return undef unless( defined( $auth -> { 'password' } ) and length( $auth -> { 'password' } ) );
 	return undef unless( defined( $auth -> { 'host' } ) and length( $auth -> { 'host' } ) );
 
-	my $user = $auth -> { 'user' };
+	my $user =     $auth -> { 'user' };
 	my $password = $auth -> { 'password' };
-	my $host = $auth -> { 'host' };
+	my $host =     $auth -> { 'host' };
 
 	my $memorybackend;
 	if( defined( $filename ) and length( $filename ) ) {
@@ -2711,8 +2716,8 @@ sub dbdump( $;$$$$ ) { # {{{
 		# us the tables to backup...
 		#
 
-		$optdb = $auth -> { 'database' };
-		$filename = $optdb . ".sql" unless( defined( $filename ) and length( $filename ) );
+		$optdb = '--databases ' . $auth -> { 'database' };
+		$filename = $auth -> { 'database' } . ".sql" unless( defined( $filename ) and length( $filename ) );
 
 		if( not( defined( $objects ) and length( $objects ) ) ) {
 			$opttab = '';
@@ -2773,14 +2778,28 @@ sub dbdump( $;$$$$ ) { # {{{
 	}
 
 	my $optauth = "--user=$user --password=$password --host=$host";
-	my $optdump = '--skip-opt --add-drop-database --add-drop-table ' .
-		      '--add-locks --allow-keywords --comments ' .
-		      '--complete-insert --create-options --disable-keys ' .
-		      '--dump-date --events --flush-logs --flush-privileges ' .
-		      '--hex-blob --include-master-host-port ' .
-		      '--no-autocommit --order-by-primary --quote-names ' .
-		      '--routines --set-charset --single-transaction ' .
-		      '--triggers --tz-utc --verbose';
+	my $optdump;
+	if( defined( $transactional ) and $transactional ) {
+		$optdump =  '--skip-opt --add-drop-database --add-drop-table'
+			 . ' --add-locks --allow-keywords --comments'
+			 . ' --complete-insert --create-options'
+			 . ' --disable-keys --dump-date --events --flush-logs'
+			 . ' --flush-privileges --hex-blob'
+			 . ' --include-master-host-port --no-autocommit'
+			 . ' --order-by-primary --quote-names'
+			 . ' --routines --set-charset --single-transaction'
+			 . ' --triggers --tz-utc --verbose';
+	} else {
+		$optdump =  '--skip-opt --add-drop-database --add-drop-table'
+			 . ' --add-locks --allow-keywords --comments'
+			 . ' --complete-insert --create-options'
+			 . ' --disable-keys --dump-date --events --flush-logs'
+			 . ' --flush-privileges --hex-blob'
+			 . ' --include-master-host-port --lock-all-tables'
+			 . ' --order-by-primary --quick --quote-names'
+			 . ' --routines --set-charset --triggers --tz-utc'
+			 . ' --verbose';
+	}
 
 	# N.B.: We're not capturing STDERR in either instance...
 	#
@@ -2788,18 +2807,27 @@ sub dbdump( $;$$$$ ) { # {{{
 		my $output = ( defined( $destination ) and length( $destination ) ? $destination . '/' : '' ) . $filename;
 		my $command = "mysqldump $optauth $optdb $opttab $optdump ";
 
-		if( defined( $compress ) ) {
+		if( defined( $compress ) and length( $compress ) ) {
 			if( 'gzip' eq $compress ) {
-				$command .= " | gzip -9cf - > '$output.gz'";
+				$output .= '.gz';
+				$command .= " | gzip -9cf - > '$output'";
 			} elsif( ( 'lzma' eq $compress ) or ( 'xz' eq $compress ) ) {
-				$command .= " | $compress -z6cf - > '$output.$compress'";
+				$output .= '.' . $compress;
+				$command .= " | $compress -z6cf - > '$output'";
 			} elsif( ( 'bzip2' eq $compress ) or ( '' eq $compress ) ) {
-				$command .= " | bzip2 -z9cf - > '$output.bz2'";
+				$output .= '.bz2';
+				$command .= " | bzip2 -z9cf - > '$output'";
 			} else {
 				die "Unknown compression scheme '$compress'";
 			}
 		} else {
 			$command .= "--result-file='$output'";
+		}
+		eval {
+			touch( $output );
+		};
+		if( $@ ) {
+			die "$fatal $@";
 		}
 
 		pdebug( "Shell-command is: '$command'" );
@@ -2828,6 +2856,46 @@ sub dbdump( $;$$$$ ) { # {{{
 	# Unreachable
 	return undef;
 } # dbdump # }}}
+
+sub dbrestore( $$ ) { # {{{
+	my( $auth, $file ) = @_;
+
+	return undef unless( defined( $auth -> { 'user' } ) and length( $auth -> { 'user' } ) );
+	return undef unless( defined( $auth -> { 'password' } ) and length( $auth -> { 'password' } ) );
+	return undef unless( defined( $auth -> { 'host' } ) and length( $auth -> { 'host' } ) );
+	return undef unless( defined( $file ) );
+
+	my $user = $auth -> { 'user' };
+	my $password = $auth -> { 'password' };
+	my $host = $auth -> { 'host' };
+
+	my $mysql = which( 'mysql' );
+
+	die( "Cannot locate 'mysql' binary\n" ) unless( defined( $mysql ) and -x $mysql );
+	die( "Cannot read file '$file'\n" ) unless( -r $file );
+
+	my $command;
+	if( which( 'pv' ) ) {
+		my ( $columns, $rows );
+		$columns = $rows = '';
+		if( defined( $ENV{ 'COLUMNS' } ) and $ENV{ 'COLUMNS' } ) {
+			$columns = ' -w ' . $ENV{ 'COLUMNS' };
+		}
+		if( defined( $ENV{ 'LINES' } ) and $ENV{ 'LINES' } ) {
+			$rows = ' -H ' . $ENV{ 'LINES' };
+		}
+		$command = 'pv -e -p -t -r -a -b -c ' . $columns . $rows . ' -N "' . basename( $file ) . '" "' . $file . '" | { ' . $mysql . " -u $user -p$password -h $host mysql 2>&1 ; }"
+	} else {
+		warn( "$warning Cannot locate 'pv' executable: only errors will be reported\n\n" );
+
+		$command = 'cat "' . basename( $file ) . '" "' . $file . '" | { ' . $mysql . " -u $user -p$password -h $host mysql 2>&1 ; }"
+	}
+	pdebug( "Restore command is '$command'" );
+	exec( $command ) or die( "Failed to execute 'pv' in order to monitor data restoration: $!\n" );
+
+	# Unreachable
+	return( undef );
+} # dbrestore # }}}
 
 sub dosql( $$ ) { # {{{
 	my( $dbh, $st ) = @_;
@@ -3093,15 +3161,15 @@ sub applyschema( $$$$ ) { # {{{
 	$action_check   = $actions -> { 'check' }   if( exists( $actions -> { 'check' } ) );
 
 	my( $tmpdir, $backupdir, $safetyoff, $unsafe, $desc, $pretend, $clear, $compat, $force );
-	$tmpdir    = $variables -> { 'tmpdir' }    if( exists( $variables -> { 'tmpdir' } ) );
 	$backupdir = $variables -> { 'backupdir' } if( exists( $variables -> { 'backupdir' } ) );
-	$safetyoff = $variables -> { 'safetyoff' } if( exists( $variables -> { 'safetyoff' } ) );
-	$unsafe    = $variables -> { 'unsafe' }    if( exists( $variables -> { 'unsafe' } ) );
-	$desc      = $variables -> { 'desc' }      if( exists( $variables -> { 'desc' } ) );
-	$pretend   = $variables -> { 'pretend' }   if( exists( $variables -> { 'pretend' } ) );
 	$clear     = $variables -> { 'clear' }     if( exists( $variables -> { 'clear' } ) );
 	$compat    = $variables -> { 'compat' }    if( exists( $variables -> { 'compat' } ) );
+	$desc      = $variables -> { 'desc' }      if( exists( $variables -> { 'desc' } ) );
 	$force     = $variables -> { 'force' }     if( exists( $variables -> { 'force' } ) );
+	$pretend   = $variables -> { 'pretend' }   if( exists( $variables -> { 'pretend' } ) );
+	$safetyoff = $variables -> { 'safetyoff' } if( exists( $variables -> { 'safetyoff' } ) );
+	$tmpdir    = $variables -> { 'tmpdir' }    if( exists( $variables -> { 'tmpdir' } ) );
+	$unsafe    = $variables -> { 'unsafe' }    if( exists( $variables -> { 'unsafe' } ) );
 
 	my( $user, $pass, $host, $port, $db );
 	$user = $auth -> { 'user' }       if( exists( $auth -> { 'user' } ) );
@@ -3468,6 +3536,8 @@ SQL
 					, 'database'	=> 'mysql'
 				};
 				dbdump( $auth, @usertables, $tmpdir, "mysql.userpriv.$uuid.sql" ) or die( "Database backup failed - aborting" );
+
+				print( "\n=> MySQL table backups completed\n" );
 			}
 		}
 		if( scalar( @dumptables ) ) {
@@ -3492,6 +3562,8 @@ SQL
 							, 'database'	=> $db
 						};
 						dbdump( $auth, $table, $tmpdir, "$db.$table.$uuid.sql" ) or die( "Database backup failed - aborting" );
+
+						print( "\n=> Database '$db' table '$table' backup completed with UUID '$uuid'\n" );
 					}
 				}
 			}
@@ -3822,9 +3894,11 @@ sub main( @ ) { # {{{
 	# Populate command-line arguments
 	#
 
-	my( $action_backup, $action_init, $action_migrate, $action_check );
+	my( $action_backup, $action_restore, $action_init );
+	my( $action_migrate, $action_check );
 	my( $help, $desc, @paths, $file, $compat, $unsafe, $keepbackups );
-	my( $force, $clear, $compress );
+	my( $lock, $keeplock );
+	my( $force, $clear, $compress, $small );
 	my( $user, $pass, $host, $db );
 	my( $pretend, $debug, $notice, $verbose, $warn );
 
@@ -3832,7 +3906,9 @@ sub main( @ ) { # {{{
 	Getopt::Long::Configure( 'no_bundling' );
 	GetOptionsFromArray ( \@argv,
 		  'b|backup:s'				=> \$action_backup
+		, 'r|restore=s'				=> \$action_restore
 		, 'compress:s'				=> \$compress
+		, 'small|small-database|small-dataset!'	=> \$small
 		, 'i|init:s'				=> \$action_init
 		, 'm|migrate!'				=> \$action_migrate
 		, 'c|check!'				=> \$action_check
@@ -3843,6 +3919,8 @@ sub main( @ ) { # {{{
 		, 'mysql-compat!'			=> \$compat
 		, 'no-backup|no-backups!'		=> \$unsafe
 		, 'keep-backup|keep-backups!'		=> \$keepbackups
+		, 'lock|lock-database|lock-databases!'	=> \$lock
+		, 'keep-lock!'				=> \$keeplock
 		, 'force!'				=> \$force
 		, 'clear-metadata!'			=> \$clear
 		, 'u|user|username=s'			=> \$user
@@ -3863,8 +3941,19 @@ sub main( @ ) { # {{{
 
 	$host = 'localhost' unless( defined( $host ) and $host );
 
-	if( not( defined( $action_backup ) ) ) {
+	if( defined( $action_backup ) ) {
+		$ok = FALSE if( defined( $db ) and defined( $lock ) );
+	} elsif( defined( $action_restore ) ) {
+		$ok = FALSE if( defined( $lock ) or defined( $keeplock ) );
+		$ok = FALSE if( defined( $compress ) );
+		$ok = FALSE if( defined( $small ) );
+		$ok = FALSE if( defined( $pretend ) );
+		$ok = FALSE if( defined( $clear ) );
+		$ok = FALSE if( defined( $keepbackups ) );
+	} else {
 		$ok = FALSE unless( defined( $db ) and $db );
+		$ok = FALSE if( defined( $compress ) );
+		$ok = FALSE if( defined( $small ) );
 		if( not( defined( $action_init ) ) ) {
 			$ok = FALSE unless( ( defined( $file ) and $file ) or ( @paths and scalar( @paths ) ) );
 		}
@@ -3872,30 +3961,25 @@ sub main( @ ) { # {{{
 
 	# Set any binary parameters, so there's no further need to check
 	# they have been defined() ...
+	if( defined( $clear ) and $clear ) {
+		$clear = TRUE;
+	} else {
+		$clear = FALSE;
+	}
 	if( defined( $compat ) and $compat ) {
 		$compat = TRUE;
 	} else {
 		$compat = FALSE;
-	}
-	if( defined( $unsafe ) and $unsafe ) {
-		$unsafe = TRUE;
-	} else {
-		$unsafe = FALSE;
-	}
-	if( defined( $keepbackups ) and $keepbackups ) {
-		$keepbackups = TRUE;
-	} else {
-		$keepbackups = FALSE;
 	}
 	if( defined( $force ) and $force ) {
 		$force = TRUE;
 	} else {
 		$force = FALSE;
 	}
-	if( defined( $clear ) and $clear ) {
-		$clear = TRUE;
+	if( defined( $keepbackups ) and $keepbackups ) {
+		$keepbackups = TRUE;
 	} else {
-		$clear = FALSE;
+		$keepbackups = FALSE;
 	}
 	if( defined( $pretend ) and $pretend ) {
 		$pretend = TRUE;
@@ -3904,34 +3988,83 @@ sub main( @ ) { # {{{
 		$pretend = FALSE;
 		$safetyoff = TRUE;
 	}
+	if( defined( $small ) and $small ) {
+		$small = TRUE;
+	} else {
+		$small = FALSE;
+	}
+	if( defined( $unsafe ) and $unsafe ) {
+		$unsafe = TRUE;
+	} else {
+		$unsafe = FALSE;
+	}
+
+	if( defined( $lock ) and $lock ) {
+		$lock = TRUE;
+	} else {
+		$lock = FALSE;
+	}
+	if( defined( $keeplock ) and $keeplock ) {
+		$keeplock = TRUE;
+		$ok = FALSE unless( $lock );
+	} else {
+		$keeplock = FALSE;
+	}
+
 	if( $pretend and $clear ) {
 		$ok = FALSE;
 	}
+	if( $clear and not( $force ) ) {
+		$ok = FALSE;
+	}
 
-	undef( $user ) unless( defined( $user ) and length( $user ) );
-	undef( $pass ) unless( defined( $pass ) and length( $pass ) );
-	undef( $host ) unless( defined( $host ) and length( $host ) );
-	undef( $db ) unless( defined( $db ) and length( $db ) );
-	undef( $file ) unless( defined( $file ) and length( $file ) );
+	undef( $user )  unless( defined( $user ) and length( $user ) );
+	undef( $pass )  unless( defined( $pass ) and length( $pass ) );
+	undef( $host )  unless( defined( $host ) and length( $host ) );
+	undef( $db )    unless( defined( $db ) and length( $db ) );
+	undef( $file )  unless( defined( $file ) and length( $file ) );
 	undef( @paths ) unless( @paths and scalar( @paths ) );
 
 	if( ( defined( $help ) and $help ) or ( 0 == scalar( @ARGV ) ) ) {
-		print( "Usage: $0 -u <username> -p <password> -h <host> -d <database> ...\n" );
-		print( ( " " x ( length( $0 ) + length( "Usage:  " ) ) ) . "<--backup [directory] [--compress [scheme]]|--init <version>>|...\n" );
-		print( ( " " x ( length( $0 ) + length( "Usage:  " ) ) ) . "[--migrate|--check] <--scripts <directory>|--file <schema>> ...\n" );
-		print( ( " " x ( length( $0 ) + length( "Usage:  " ) ) ) . "[--mysql-compat] [--no-backup|--keep-backup] [--clear-metadata] ...\n" );
-		print( ( " " x ( length( $0 ) + length( "Usage:  " ) ) ) . "[--dry-run] [--force] [--debug] [--verbose]\n" );
+		my $myway = basename( $0 );
+		my $length = length( $myway ) + length( "Usage:  " );
+		#                              2         3         4         5         6         7         8
+		#                           7890123456789012345678901234567890123456789012345678901234567890
+		print(       "Usage: $myway -u <username> -p <password> -h <host> -d <database> ...\n" );
+		print( ( " " x $length ) . "<--backup [directory] [:backup options:]|--init <version>>|...\n" );
+		print( ( " " x $length ) . "[--migrate|--check] <--scripts <directory>|--file <schema>> ...\n" );
+		print( ( " " x $length ) . "[--mysql-compat] [--no-backup|--keep-backup] ...\n" );
+		print( ( " " x $length ) . "[--clear-metadata] [--dry-run] [--force] [--debug] [--verbose]\n" );
+		print( "\n" );
+		print( ( " " x $length ) . "backup options:   [--compress [:scheme:]] [--small-dataset]\n" );
+		print( ( " " x $length ) . "scheme:           <gzip|bzip2|xz|lzma\n" );
+		print( "\n" );
+		print( ( " " x $length ) . "--compress       - Compress backups [using <scheme> compression]\n" );
+		print( ( " " x $length ) . "--small-dataset  - Optimise for tables of less than 1GB in size\n" );
+		print( ( " " x $length ) . "--mysql-compat   - Required for mysql prior to v5.6.4\n" );
+		print( ( " " x $length ) . "--no-backup      - Do not take backups before making changes\n" );
+		print( ( " " x $length ) . "--keep-backup    - Copy backups to a local directory on exit\n" );
+		print( ( " " x $length ) . "--clear-metadata - Remove all {my,fly}way metadata tables\n" );
+		print( ( " " x $length ) . "--dry-run        - Validate but do not execute schema SQL\n" );
+		print( ( " " x $length ) . "--force          - Allow a database to be re-initialised\n" );
+		print( ( " " x $length ) . "--debug          - Output copious debugging statements\n" );
+		print( ( " " x $length ) . "--verbose        - Provide more detailed status information\n" );
 		exit( 0 );
 	} elsif( not( $ok ) ) {
-		warn "Required argument '--user' not specified\n" unless( defined( $user ) );
-		warn "Required argument '--password' not specified\n" unless( defined( $pass ) );
-		warn "Required argument '--host' not specified\n" unless( defined( $host ) );
-		warn "Required argument '--database' not specified\n" unless( defined( $db ) );
-		warn "Required argument '--schema' or '--schemata' not specified\n" unless( defined( $file ) or ( @paths ) );
 		warn "Mutually-exclusive arguments '--schema' and '--schemata' cannot both be specified\n" if( defined( $file ) and @paths );
 		warn "Mutually-exclusive arguments '--dry-run' and '--clear-metadata' cannot both be specified\n" if( $pretend and $clear );
 		warn "Mutually-exclusive arguments '--no-backup' and '--keep-backup' cannot both be specified\n" if( $unsafe and $keepbackups );
 		warn "Cannot specify argument '--compress' without option '--backup'\n" if( defined( $compress ) and not( defined( $action_backup ) ) );
+		warn "Cannot specify argument '--lock' or '--keep-lock' without option '--backup'\n" if( ( $lock or $keeplock ) and not( defined( $action_backup ) ) );
+		warn "Cannot specify argument '--keep-lock' without option '--lock'\n" if( $keeplock and not( $lock ) );
+		warn "Cannot specify argument '--clear-metadata' without option '--force'\n" if( $clear and not( $force ) );
+		warn "Cannot specify argument '--lock' with option '--database' (locks are global)\n" if( $lock and defined( $db ) );
+		warn "Required argument '--user' not specified\n" unless( defined( $user ) );
+		warn "Required argument '--password' not specified\n" unless( defined( $pass ) );
+		warn "Required argument '--host' not specified\n" unless( defined( $host ) );
+		warn "Required argument '--database' not specified\n" unless( defined( $db ) );
+		warn "Required argument '--schema' or '--schemata' not specified\n" unless( defined( $file ) or ( @paths ) or defined( $action_backup ) or defined( $action_restore ) );
+		warn "Command '--restore' takes only a filename as the single argument\n" if( defined( $action_restore ) );
 		exit( 1 );
 	}
 
@@ -3959,6 +4092,11 @@ sub main( @ ) { # {{{
 		, 'database'	=> $db
 	};
 
+	if( defined( $action_restore ) and length( $action_restore ) ) {
+		dbrestore( $auth, $action_restore );
+		die( "Datbase restoration failed for file '$action_restore'\n" );
+	}
+
 	if( defined( $action_backup ) ) {
 		# --backup may be used alone to trigger a backup, or as
 		# --backup=/<dir> or --backup <dir> to specify a destination
@@ -3969,6 +4107,137 @@ sub main( @ ) { # {{{
 		if( 1 ne $action_backup ) {
 			$location = $action_backup;
 			$action_backup = TRUE;
+		}
+
+		my $dbh;
+		if( $lock ) {
+			my $dsn = "DBI:mysql:database=mysql;host=$host;port=$port";
+
+			if( $keeplock ) {
+
+				# The child must exit before the parent, so
+				# we'll fork, lock tables and wait (for a long
+				# time) in the parent, and then perform the
+				# backup in the child...
+				#
+				# ... unfortunately, this prevents us from
+				# (easily) obtaining an exit status from the
+				# child process.
+				#
+				# ... so what we actually need to do is fork
+				# twice, and have the parent call waitpid() on
+				# the (more likely to exit) child process
+				# running the backup.
+				#
+				my $firstchildpidorzero = fork;
+				die( "fork() failed: $!\n" ) unless( defined( $firstchildpidorzero ) );
+
+				if( 0 == $firstchildpidorzero ) {
+					# Child process
+
+					setpgrp( 0, 0 );
+
+					# ... this now goes on to perform the
+					# backup.
+				} else {
+					# Parent process
+
+					my $secondchildpidorzero = fork;
+					die( "fork() failed: $!\n" ) unless( defined( $secondchildpidorzero ) );
+
+					if( 0 == $secondchildpidorzero ) {
+						# Second child process
+
+						setpgrp( 0, 0 );
+
+						local $| = 1;
+
+						print( "\n=> Connecting to database '$db' ...\n" );
+						$dbh = DBI -> connect( $dsn, $user, $pass, { RaiseError => 1, PrintError => 0 } )
+							or die( "Cannot create connection to DSN '$dsn': $DBI::errstr\n" );
+
+						if( not ( dosql( $dbh, "FLUSH TABLES WITH READ LOCK" ) ) ) {
+							warn "$warning Failed to lock tables\n";
+							$lock = FALSE;
+							$keeplock = FALSE;
+						} else {
+							print( "\n=> All databases on host '$host' are now globally locked for 24 hours, or until" );
+							print( "\n=> this process is interupted." );
+							print( "\n=> The backup process will continue concurrently.\n" );
+						}
+						dosql( $dbh, "SELECT(SLEEP(86400))" );
+
+						print( "=> 86400 seconds elapsed, dropping locks and disconnecting.\n" );
+
+						if( $dbh -> ping ) {
+							dosql( $dbh, "UNLOCK TABLES" );
+							$dbh -> disconnect;
+						}
+
+						exit( 0 );
+
+						# End second child process
+					} else {
+						# Parent process
+
+						local $| = 1;
+
+						my $rc;
+
+						if( waitpid( $firstchildpidorzero, 0 ) > 0 ) {
+							my( $sig, $core );
+							( $rc, $sig, $core ) = ( $? >> 8, $? & 127, $? & 128 );
+							if( $core ) {
+								warn( "$fatal backup process $firstchildpidorzero core-dumped\n" );
+								kill( -15, $secondchildpidorzero ) if( $secondchildpidorzero );
+							} elsif( 9 == $sig ) {
+								warn( "$warn backup process $firstchildpidorzero was KILLed\n" );
+								kill( -15, $secondchildpidorzero ) if( $secondchildpidorzero );
+							} else {
+								pwarn( "backup process $firstchildpidorzero returned $rc" . ( $sig ? " after signal $sig" : '' ) ) unless( 0 == $rc );
+
+								print( "\n=> All databases on host '$host' remain globally locked for 24 hours, or until" );
+								print( "\n=> this process is terminated." );
+							}
+						} else {
+							pwarn( "backup process $firstchildpidorzero disappeared" );
+							kill( -15, $secondchildpidorzero ) if( $secondchildpidorzero );
+						}
+
+						if( waitpid( $secondchildpidorzero, 0 ) > 0 ) {
+							my( $sig, $core );
+							( $rc, $sig, $core ) = ( $? >> 8, $? & 127, $? & 128 );
+							if( $core ) {
+								warn( "$fatal lock process $secondchildpidorzero core-dumped\n" );
+							} elsif( 9 == $sig ) {
+								warn( "$warn lock process $secondchildpidorzero was KILLed\n" );
+							} else {
+								pwarn( "lock process $secondchildpidorzero returned $rc" . ( $sig ? " after signal $sig" : '' ) );
+							}
+						} else {
+							pwarn( "lock process $secondchildpidorzero disappeared" );
+						}
+
+						exit( $rc );
+
+						# End parent process
+					}
+				}
+			} else {
+
+				local $| = 1;
+
+				print( "\n=> Connecting to database '$db' ...\n" );
+				$dbh = DBI -> connect( $dsn, $user, $pass, { RaiseError => 1, PrintError => 0 } )
+					or die( "Cannot create connection to DSN '$dsn': $DBI::errstr\n" );
+
+				if( not ( dosql( $dbh, "FLUSH TABLES WITH READ LOCK" ) ) ) {
+					warn "$warning Failed to lock tables transaction\n";
+					$lock = FALSE;
+					$keeplock = FALSE;
+					$dbh -> disconnect;
+				}
+			}
 		}
 
 		# If $auth contains a 'database' entry, then parameter 2 to
@@ -3984,13 +4253,22 @@ sub main( @ ) { # {{{
 		#
 		if( defined( $location ) ) {
 			if( defined( $db ) and length( $db ) ) {
-				dbdump( $auth, undef, $location, undef, $compress );
+				dbdump( $auth, undef, $location, undef, $compress, $small );
 			} else {
-				dbdump( $auth, undef, undef, $location, $compress );
+				dbdump( $auth, undef, undef, $location, $compress, $small );
 			}
 		} else {
-			dbdump( $auth, undef, undef, undef, $compress );
+			dbdump( $auth, undef, undef, undef, $compress, $small );
 		}
+
+		if( $lock and not( $keeplock ) ) {
+			if( $dbh -> ping ) {
+				dosql( $dbh, "UNLOCK TABLES" );
+				$dbh -> disconnect;
+			}
+		}
+
+		print( "Backup process completed successfully\n" );
 
 		exit( 0 );
 	}
