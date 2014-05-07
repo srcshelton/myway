@@ -1891,6 +1891,7 @@ use constant PORT    =>  3306;
 #
 # * DBI::Format ( DBI::Shell, Text::Reform, IO::Tee )
 # * File::Touch ()
+# * File::Which ()
 # * match::smart ()
 # * Regexp::Common ()
 # * Sort::Versions ()
@@ -3446,7 +3447,11 @@ SQL
 			if( $pretend ) {
 				warn( "Schema version '$schmversion' has already been applied to this database - would abort.\n" );
 			} else {
-				die( "Schema version '$schmversion' has already been applied to this database - aborting.\n" );
+				if( $force ) {
+					warn( "Schema version '$schmversion' has already been applied to this database - forcibly re-applying ...\n" );
+				} else {
+					die( "Schema version '$schmversion' has already been applied to this database - aborting.\n" );
+				}
 			}
 		}
 
@@ -3636,7 +3641,11 @@ SQL
 								if( $pretend ) {
 									warn( "Prior schema version '$schmprevious' has not been applied to this database - would abort.\n" );
 								} else {
-									die( "Prior schema version '$schmprevious' has not been applied to this database - aborting.\n" );
+									if( $force ) {
+										warn( "Prior schema version '$schmprevious' has not been applied to this database - forcibly applying ...\n" );
+									} else {
+										die( "Prior schema version '$schmprevious' has not been applied to this database - aborting.\n" );
+									}
 								}
 							}
 						}
@@ -3653,7 +3662,11 @@ SQL
 								if( $pretend ) {
 									warn( "Schema version '$schmtarget' has already been applied to this database - would abort.\n" );
 								} else {
-									die( "Schema version '$schmtarget' has already been applied to this database - aborting.\n" );
+									if( $force ) {
+										warn( "Schema version '$schmtarget' has already been applied to this database - forcibly applying ...\n" );
+									} else {
+										die( "Schema version '$schmtarget' has already been applied to this database - aborting.\n" );
+									}
 								}
 							} else {
 								$schmversion = $schmtarget;
