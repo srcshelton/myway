@@ -18,31 +18,33 @@ if 0;
 
 # FIXME: # {{{
 #
-# [No issues!]
+# * Need to pre-filter restoration data, to fix the MySQL bug if logging is
+#   enabled - see bugs.mysql.com/69970
 #
 # }}}
 
 # TODO: # {{{
 #
+# * fork()/exec() pv when performing restorations, and check for failure.  If
+#   so, show the last error from 'SHOW ENGINE INNODB STATUS';
+#
 # * Enhance Percona SQLParser code to handle more statement types;
+#
 # * Allow 'parse' option to dbdump to tokenise backup?
+#
 # * Incorporate HPCS modules to allow backup directly to Object Store;
+#
 # * Make HPCS modules optional, so when not present myway.pl will still run,
 #   but without Object Store functionality;
 #
 # * Check entry -> tokens -> tables -> db, and confirm it exists (caching seen
 #   databases)
+#
 # * Add parser for GRANT, etc.
+#
 # * Roll-back on failure - try to continue rather than dying?
 #
 # * Restore backups on failure
-#
-# * We perform backups even if we later exit due to the schema already having
-#   been applied or lacking prereqs... this could be lengthy for large tables
-#   so the backups should pobably be delayed until we're sure we're going to
-#   proceed.
-#   At the same time, it'd be good to backup before creating metadata tables
-#   (in case of bad init, for example).
 #
 # }}}
 
@@ -4059,7 +4061,8 @@ sub main( @ ) { # {{{
 		print( ( " " x $length ) . "--keep-backup    - Copy backups to a local directory on exit\n" );
 		print( ( " " x $length ) . "--clear-metadata - Remove all {my,fly}way metadata tables\n" );
 		print( ( " " x $length ) . "--dry-run        - Validate but do not execute schema SQL\n" );
-		print( ( " " x $length ) . "--force          - Allow a database to be re-initialised\n" );
+		print( ( " " x $length ) . "--force          - Allow a database to be re-initialised and\n" );
+		print( ( " " x $length ) . "                   ignore previous and target versions\n" );
 		print( ( " " x $length ) . "--debug          - Output copious debugging statements\n" );
 		print( ( " " x $length ) . "--verbose        - Provide more detailed status information\n" );
 		exit( 0 );
