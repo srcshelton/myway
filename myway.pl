@@ -2877,6 +2877,21 @@ sub dbrestore( $$ ) { # {{{
 	die( "Cannot locate 'mysql' binary\n" ) unless( defined( $mysql ) and -x $mysql );
 	die( "Cannot read file '$file'\n" ) unless( -r $file );
 
+	# To resolve bugs.mysql.com/69970, any instance of:
+	#
+	#   /*!40000 DROP DATABASE IF EXISTS `mysql`*/;
+	#
+	# needs to be replaced with:
+	#
+	#   /*!50106 SET @OLD_GENERAL_LOG=@@GENERAL_LOG*/;
+	#   /*!50106 SET GLOBAL GENERAL_LOG=0*/;
+	#   /*!50106 SET @OLD_SLOW_QUERY_LOG=@@SLOW_QUERY_LOG*/;
+	#   /*!50106 SET GLOBAL SLOW_QUERY_LOG=0*/;
+	#   /*!40000 DROP DATABASE IF EXISTS `mysql`*/;
+	#   /*!50106 SET GLOBAL GENERAL_LOG=@OLD_GENERAL_LOG*/;
+	#   /*!50106 SET GLOBAL SLOW_QUERY_LOG=@OLD_SLOW_QUERY_LOG*/;
+	#
+
 	my $command;
 	if( which( 'pv' ) ) {
 		my ( $columns, $rows );
