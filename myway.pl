@@ -2892,6 +2892,17 @@ sub dbrestore( $$ ) { # {{{
 	#   /*!50106 SET GLOBAL SLOW_QUERY_LOG=@OLD_SLOW_QUERY_LOG*/;
 	#
 
+	my $decompress;
+	if( $file =~ /\.bz2$/ ) {
+		$decompress = 'bunzip2 -cdq';
+	} elsif( $file =~ /\.gz$/ ) {
+		$decompress = 'gunzip -cq';
+	} elsif( $file =~ /\.xz$/ ) {
+		$decompress = 'unxz -cdq';
+	} elsif( $file =~ /\.xz$/ ) {
+		$decompress = 'unlzma -cdq';
+	}
+
 	my $command;
 	if( which( 'pv' ) ) {
 		my ( $columns, $rows );
@@ -2902,7 +2913,7 @@ sub dbrestore( $$ ) { # {{{
 		if( defined( $ENV{ 'LINES' } ) and $ENV{ 'LINES' } ) {
 			$rows = ' -H ' . $ENV{ 'LINES' };
 		}
-		$command = 'pv -e -p -t -r -a -b -c ' . $columns . $rows . ' -N "' . basename( $file ) . '" "' . $file . '" | { ' . $mysql . " -u $user -p$password -h $host mysql 2>&1 ; }"
+		$command = 'pv -e -p -t -r -a -b -c ' . $columns . $rows . ' -N "' . basename( $file ) . '" "' . $file . ( defined( $decompress ) ? '" | ' . $decompress : '"' ) . ' | { ' . $mysql . " -u $user -p$password -h $host mysql 2>&1 ; }"
 	} else {
 		warn( "$warning Cannot locate 'pv' executable: only errors will be reported\n\n" );
 
