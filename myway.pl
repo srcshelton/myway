@@ -1827,7 +1827,7 @@ sub _parse_query( $$$$$ ) {
 
 	# Go clausing.
 	my @clause = grep { defined $_ }
-		($query =~ m/\G(.+?)(?:$clauses\s+|\Z)/gci);
+		($query =~ m/\G(.+?)(?:(?:^|\s+)$clauses(?:\s+|$)|\Z)/gci);
 
 	my $clause = $first_clause,
 	my $value  = shift @clause;
