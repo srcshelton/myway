@@ -3614,7 +3614,7 @@ SQL
 					print( "=> Skipping base initialiser file '$schmfile' ...\n" );
 					dbclose( $dbh );
 					return( 0 );
-				elsif( $match eq $latest ) {
+				} elsif( $match eq $previous ) {
 					print( "=> Skipping pre-initialiser file '$schmfile' ...\n" );
 					dbclose( $dbh );
 					return( 0 );
