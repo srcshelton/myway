@@ -3593,12 +3593,29 @@ SQL
 
 			# }}}
 
+			# We need to perform a version-sort here, because we
+			# need to skip all files /less than or/ equal to the
+			# initialiser...
+			#
+			# FIXME: We only consider file-version here, rather
+			#        rather than meta-data versions.  We later
+			#        issue a warning if these two versions differ.
+			#
+			# Cases: {0, 0.3}; {0.1, 0.3}; {0.3, 0.3}; {0.3, 0.5}.
+			#            ^^^         ^^^         ^^^    ^^^
+			#
 			my $version = getsqlvalue( $dbh, "SELECT `version` FROM `$flywaytablename`  WHERE `success` = '1' AND `type` = 'INIT' ORDER BY `version` DESC LIMIT 1" );
 			if( $schmfile =~ m/^V(.*?)__/ ) {
 				my $match = $1;
-				$match = '0(?:\.0+)?' if( 0 == $match );
-				if( $version =~ m/^$match$/ ) {
-					print( "=> Skipping base initialiser '$schmfile' ...\n" );
+				my @sortedversions = sort { versioncmp( $a, $b ) } ( $version, $match );
+				my $latest = pop( @sortedversions );
+				my $previous = pop( @sortedversions );
+				if( ( $match eq $latest ) and ( $latest eq $previous ) ) {
+					print( "=> Skipping base initialiser file '$schmfile' ...\n" );
+					dbclose( $dbh );
+					return( 0 );
+				elsif( $match eq $latest ) {
+					print( "=> Skipping pre-initialiser file '$schmfile' ...\n" );
 					dbclose( $dbh );
 					return( 0 );
 				}
@@ -3933,21 +3950,6 @@ SQL
 								#}
 								my @sortedversions = sort { versioncmp( $a, $b ) } ( @{ $installedversions }, $schmtarget );
 								my $latest = pop( @sortedversions );
-
-								# ... so this is weird: after init (and so with only one installedversion present, and that at '0.0'),
-								# the return-value of pop() is a single-element array containing '0.0'... eh?
-								#
-								if( ( 'ARRAY' eq ref( $latest )  ) and 1 == scalar( @{ $latest } ) ) {
-									$latest = @{ $latest }[ 0 ];
-								} elsif( not( ( 'SCALAR' eq ref( $latest ) ) or ( '' eq ref( $latest ) ) ) ) {
-									if( 'ARRAY' eq ref( $latest ) ) {
-										warn( "Unexpected data-type for variable \$latest(" . scalar( $latest ) . "):\n" );
-									} else {
-										warn( "Unexpected data-type for variable \$latest:\n" );
-									}
-									print Dumper $latest;
-								}
-
 								if( not( $latest eq $schmtarget ) ) {
 									if( $pretend ) {
 										warn( "!> Existing " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " version '$latest' is greater than target '$schmtarget', and has already been applied to this database - would skip ...\n" );
