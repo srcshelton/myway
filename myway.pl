@@ -3898,7 +3898,7 @@ SQL
 								# N.B. Logic change - previously, we were simply checking that the target version
 								#      hasn't been applied to the database.  Now, we're checking that nothing
 								#      newer than the target has been applied either.
-								
+
 								# We could sort in the database here, but I'm not sure "ORDER BY" would cope with the
 								# various versions we might be trying to throw at it...
 								#
@@ -3960,9 +3960,9 @@ SQL
 										}
 									}
 									$okay = FALSE;
-								} elsif( $fresh ) {
+								} elsif( $fresh ) { # and ( $first )
 									print( "*> " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " version '$schmtarget' is a fresh install\n" );
-								} else {
+								} elsif( $first ) {
 									print( "*> " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " version '$schmtarget' is a re-install\n" );
 								}
 								if( $okay ) {
@@ -4245,7 +4245,7 @@ SQL
 
 	#if( not( /^$flywaytablename$/ ~~ @{ $availabletables } ) )
 	if( defined( $tablename ) and not( qr/^$tablename$/ |M| \@{ $availabletables } ) ) {
-		print( "*> Would update " . ( 'procedure' eq $mode ? '' : 'flyway ' ) . "metadata with version '$schmversion', it it existed ...\n" );
+		print( "*> Would update " . ( 'procedure' eq $mode ? '' : 'flyway ' ) . "metadata with version '$schmversion', if it existed ...\n" );
 	} else {
 		if( $pretend ) {
 			print( "S> Would update " . ( 'procedure' eq $mode ? '' : 'flyway ' ) . "metadata with version '$schmversion' ...\n" );
@@ -4501,13 +4501,13 @@ sub main( @ ) { # {{{
 		print(       "Usage: $myway -u <username> -p <password> -h <host> -d <database> ...\n" );
 		print( ( " " x $length ) . "<--backup [directory] [:backup options:]|--init <version>>|...\n" );
 		print( ( " " x $length ) . "[--migrate|--check] <--scripts <directory>|--file <schema>> ...\n" );
-		print( ( " " x $length ) . "[:mode:] [--mysql-compat] [--no-backup|--keep-backup] ...\n" );
+		print( ( " " x $length ) . "[[:mode:]] [--mysql-compat] [--no-backup|--keep-backup] ...\n" );
 		print( ( " " x $length ) . "[--clear-metadata] [--dry-run] [--force] [--debug] [--verbose]\n" );
 		print( "\n" );
 		print( ( " " x $length ) . "backup options:   [--compress [:scheme:]] [--small-dataset]\n" );
 		print( ( " " x $length ) . "                  [--lock [--keep-lock]]\n" );
 		print( ( " " x $length ) . "scheme:           <gzip|bzip2|xz|lzma>\n" );
-		print( ( " " x $length ) . "mode:             <schema|procedure>\n" );
+		print( ( " " x $length ) . "mode:             --mode <schema|procedure>\n" );
 		print( "\n" );
 		print( ( " " x $length ) . "--mysql-compat   - Required for MySQL prior to v5.6.4\n" );
 		print( "\n" );
