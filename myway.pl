@@ -30,21 +30,23 @@ if 0;
 #
 # * Enhance Percona SQLParser code to handle more statement types;
 #
-# * Allow 'parse' option to dbdump to tokenise backup?
+# * Allow 'parse' dbdump option to tokenise backup?
 #
-# * Incorporate HPCS modules to allow backup directly to Object Store;
+# * Incorporate HPCS modules to allow backup directly to Object Store - this
+#   requires splitting data into small (10MB) chunks and passing an overall
+#   manifest on completion;
 #
 # * Make HPCS modules optional, so when not present myway.pl will still run,
 #   but without Object Store functionality;
 #
 # * Check entry -> tokens -> tables -> db, and confirm it exists (caching seen
-#   databases)
+#   databases);
 #
-# * Add parser for GRANT, etc.
+# * Add parser for GRANT, etc.;
 #
 # * Roll-back on failure - try to continue rather than dying?
 #
-# * Restore backups on failure
+# * Restore backups on failure;
 #
 # }}}
 
@@ -1925,7 +1927,9 @@ use warnings;
 
 # We have to enable and disable this module at run-time due to generating
 # "Uncaught exception from user code" errors during certain DBI failures.
-use diagnostics;
+#use diagnostics;
+# ... in actual fact, diagnostics causes more problems than it solves.  It does
+# appear to be, in reality, quite silly.
 
 use constant VERSION =>  1.0;
 
@@ -1935,6 +1939,7 @@ use constant FALSE   =>  0;
 use constant DEBUG   => ( $ENV{ 'DEBUG' } or FALSE );
 
 use constant PORT    =>  3306;
+use constant MARKER  => '`<<VERSION>>';
 
 # Necessary non-default modules:
 #
@@ -2015,78 +2020,82 @@ our $verbosity = 0;
 our $flywaytablename = 'schema_version';
 our $flywayddl  = <<DDL;
 CREATE TABLE IF NOT EXISTS `$flywaytablename` (
-  `version_rank`	int		NOT NULL,
-  `installed_rank`	int		NOT NULL,
-  `version`		varchar(50)	NOT NULL,
-  `description`		varchar(200)	NOT NULL,
-  `type`		varchar(20)	NOT NULL,
-  `script`		varchar(1000)	NOT NULL,
-  `checksum`		int		DEFAULT NULL,
-  `installed_by`	varchar(100)	NOT NULL,
-  `installed_on`	timestamp	NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `execution_time`	int		NOT NULL,
-  `success`		boolean		NOT NULL,
-  PRIMARY KEY (`version`),
-  KEY `schema_version_vr_idx` (`version_rank`),
-  KEY `schema_version_ir_idx` (`installed_rank`),
-  KEY `schema_version_s_idx` (`success`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+    `version_rank`	INT		NOT NULL
+  , `installed_rank`	INT		NOT NULL
+  , `version`		VARCHAR(50)	NOT NULL
+  , `description`	VARCHAR(200)	NOT NULL
+  , `type`		VARCHAR(20)	NOT NULL
+  , `script`		VARCHAR(1000)	NOT NULL
+  , `checksum`		INT		         DEFAULT NULL
+  , `installed_by`	VARCHAR(100)	NOT NULL
+  , `installed_on`	TIMESTAMP	NOT NULL DEFAULT CURRENT_TIMESTAMP
+  , `execution_time`	INT		NOT NULL
+  , `success`		BOOLEAN		NOT NULL
+  , PRIMARY KEY                         (`version`)
+  ,         KEY `schema_version_vr_idx` (`version_rank`)
+  ,         KEY `schema_version_ir_idx` (`installed_rank`)
+  ,         KEY `schema_version_s_idx`  (`success`)
+) ENGINE='InnoDB' DEFAULT CHARSET='UTF8';
 DDL
 
+# Note that field-lengths in myway* tables are not arbitrary, but instead are
+# sized to hold the maximum permissible value for the field-type, according to
+# the appropraite standards - mostly POSIX.
+#
 our $mywaytablename = 'myway_schema_version';
 our $mywayddl  = <<DDL;
 CREATE TABLE IF NOT EXISTS `$mywaytablename` (
-  `id`			char(36)	NOT NULL,
-  `dbuser`		char(16)	NOT NULL,
-  `dbhost`		char(64)	NOT NULL,
-  `osuser`		char(32)	NOT NULL,
-  `host`		char(64)	NOT NULL,
-  `sha1sum`		char(40)	NOT NULL,
-  `path`		varchar(4096)	NOT NULL,
-  `filename`		varchar(255)	NOT NULL,
-  `started`		timestamp,
-  `sqlstarted`		timestamp	NULL,
-  `finished`		timestamp,
-  `status`		tinyint		UNSIGNED,
-  PRIMARY KEY (`id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+    `id`		CHAR(36)	NOT NULL
+  , `dbuser`		CHAR(16)	NOT NULL
+  , `dbhost`		CHAR(64)	NOT NULL
+  , `osuser`		CHAR(32)	NOT NULL
+  , `host`		CHAR(64)	NOT NULL
+  , `sha1sum`		CHAR(40)	NOT NULL
+  , `path`		VARCHAR(4096)	NOT NULL CHARACTER SET 'UTF8'
+  , `filename`		VARCHAR(255)	NOT NULL CHARACTER SET 'UTF8'
+  , `started`		TIMESTAMP,
+  , `sqlstarted`	TIMESTAMP	    NULL
+  , `finished`		TIMESTAMP,
+  , `status`		TINYINT		UNSIGNED
+  , PRIMARY KEY (`id`)
+) ENGINE='InnoDB' DEFAULT CHARSET='ASCII';
 DDL
 
 our $mywayactionsname = 'myway_schema_actions';
 our $mywayactionsddl  = <<DDL;
 CREATE TABLE IF NOT EXISTS `$mywayactionsname` (
-  `schema_id`		char(36)	NOT NULL,
-  `started`		timestamp(6)	NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `event`		varchar(256)	NOT NULL,
-  `statement`		varchar(16384)	NOT NULL,
-  `line`		bigint		UNSIGNED,
-  `time`		decimal(13,3),
-  `state`		char(5),
-  INDEX `${mywayactionsname}_sid_idx` (`schema_id`),
-  FOREIGN KEY (`schema_id`) REFERENCES $mywaytablename(`id`) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+    `schema_id`		CHAR(36)	NOT NULL
+  , `started`		TIMESTAMP(6)	NOT NULL DEFAULT CURRENT_TIMESTAMP
+  , `event`		VARCHAR(256)	NOT NULL
+  , `statement`		VARCHAR(16384)	NOT NULL CHARACTER SET 'UTF8'
+  , `line`		BIGINT		UNSIGNED
+  , `time`		DECIMAL(13,3)
+  , `state`		CHAR(5)
+  , INDEX `${mywayactionsname}_schema_id_idx` (`schema_id`)
+  , FOREIGN KEY (`${mywayactionsname}_schema_id_${mywaytablename}_id`) REFERENCES $mywaytablename (`id`) ON DELETE CASCADE
+) ENGINE='InnoDB' DEFAULT CHARSET='ASCII';
 DDL
 
 our $mywayprocsname = 'myway_stored_procedures';
 our $mywayprocsddl  = <<DDL;
 CREATE TABLE IF NOT EXISTS `$mywayprocsname` (
-  `id`			char(36)	NOT NULL,
-  `dbuser`		char(16)	NOT NULL,
-  `dbhost`		char(64)	NOT NULL,
-  `osuser`		char(32)	NOT NULL,
-  `host`		char(64)	NOT NULL,
-  `sha1sum`		char(40)	NOT NULL,
-  `path`		varchar(4096)	NOT NULL,
-  `filename`		varchar(255)	NOT NULL,
-  `version`		varchar(50),
-  `description`		varchar(200),
-  `type`		varchar(20),
-  `started`		timestamp,
-  `sqlstarted`		timestamp	NULL,
-  `finished`		timestamp,
-  `status`		tinyint		UNSIGNED,
-  PRIMARY KEY (`id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+    `id`		CHAR(36)	NOT NULL
+  , `dbuser`		CHAR(16)	NOT NULL
+  , `dbhost`		CHAR(64)	NOT NULL
+  , `osuser`		CHAR(32)	NOT NULL
+  , `host`		CHAR(64)	NOT NULL
+  , `sha1sum`		CHAR(40)	NOT NULL
+  , `path`		VARCHAR(4096)	NOT NULL CHARACTER SET 'UTF8'
+  , `filename`		VARCHAR(255)	NOT NULL CHARACTER SET 'UTF8'
+  , `version`		VARCHAR(50)	         CHARACTER SET 'UTF8'
+  , `description`	VARCHAR(200)	         CHARACTER SET 'UTF8'
+  , `type`		VARCHAR(20)	         CHARACTER SET 'UTF8'
+  , `started`		TIMESTAMP
+  , `sqlstarted`	TIMESTAMP	NULL
+  , `finished`		TIMESTAMP
+  , `status`		TINYINT		UNSIGNED
+  , PRIMARY KEY (`id`)
+) ENGINE='InnoDB' DEFAULT CHARSET='ASCII';
 DDL
 
 sub pdebug( $;$ ) { # {{{
@@ -2571,7 +2580,22 @@ sub processline( $$;$ ) { # {{{
 	my $delim = ';';
 	$delim = $state -> { 'statements' } -> { 'symbol' } if( defined( $state -> { 'statements' } -> { 'symbol' } ) );
 
+	#pdebug( "  S About to split line '$line' into individual items..." );
+
+	# We have an issue where a lone delimiter will cause the entire
+	# 'foreach' block below to be skipped, meaning that the statement
+	# termianted by the delimiter on a line by itself is never processed.
+	# Rather than duplicate a chunk of code for this case, we cheat and add
+	# a second delimiter - an entirely save operation - which causes
+	# 'foreach' to process the intervening space character!
+	if( $line =~ m/^\s*$delim\s*$/ ) {
+		pdebug( "  S Expanding trailing delimiter '$delim'..." );
+		$line = $delim . ' ' . $delim;
+	}
+
 	foreach my $item ( split( /\Q$delim\E/, $line ) ) {
+
+		#pdebug( "  S Split item '$item' from line '$line'..." );
 
 		# perl didn't like '\s' here...
 		my $term = "\Q$item\E[[:space:]]*\Q$delim\E";
@@ -3467,10 +3491,10 @@ sub applyschema( $$$$ ) { # {{{
 
 	print( "\n=> Connecting to database '$db' ...\n" );
 	my $dsn = "DBI:mysql:database=$db;host=$host;port=$port";
-	disable diagnostics;
+	#disable diagnostics;
 	my $dbh = DBI -> connect( $dsn, $user, $pass, { RaiseError => 1, PrintError => 0 } )
 		or die( "Cannot create connection to DSN '$dsn': $DBI::errstr\n" );
-	enable diagnostics;
+	#enable diagnostics;
 
 	$uuid = getsqlvalue( $dbh, "SELECT UUID()" );
 
@@ -3550,34 +3574,77 @@ sub applyschema( $$$$ ) { # {{{
 				}
 
 				{
-				my $sth = preparesql( $dbh, <<SQL );
+				my $replacement = getsqlvalue( $dbh, "SELECT COUNT(*) FROM `$flywaytablename` WHERE `version` = '$schmversion'" );
+				my $sth;
+
+				if( defined( $replacement ) and $replacement =~ m/^\d+$/ and $replacement > 0 ) {
+					$sth = preparesql( $dbh, <<SQL );
 INSERT INTO `$flywaytablename` (
-  `version_rank`,
-  `installed_rank`,
-  `version`,
-  `description`,
-  `type`,
-  `script`,
-  `checksum`,
-  `installed_by`,
-  `execution_time`,
-  `success`
-) VALUES ( ?, ?, ?, ?, ?, ?, ?, ?, ?, ? )
+    `version_rank`
+  , `installed_rank`
+  , `version`
+  , `description`
+  , `type`
+  , `script`
+  , `checksum`
+  , `installed_by`
+  , `installed_on`
+  , `execution_time`
+  , `success`
+) VALUES ( ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ? )
 SQL
-				die( "Unable to create INIT statement handle: " . $dbh -> errstr() . "\n" ) unless( defined( $sth ) and $sth );
-				if( $safetyoff ) {
-					executesql( $dbh, $sth, undef,
-						  $versionrank
-						, $installedrank
-						, $schmversion
-						, '<< Flyway Init >>'
-						, 'INIT'
-						, '<< Flyway Init >>'
-						,  undef
-						, $user
-						,  0
-						,  1
-					) or die( "Updating '$flywaytablename' with INIT failed" . ( defined( $sth -> errstr() ) ? ": " . $sth -> errstr() : ( defined( $dbh -> errstr() ) ? ": " . $dbh -> errstr() : '' ) ) . "\n" );
+					die( "Unable to create INIT statement handle: " . $dbh -> errstr() . "\n" ) unless( defined( $sth ) and $sth );
+					if( $safetyoff ) {
+						executesql( $dbh, $sth, undef,
+							  $versionrank
+							, $installedrank
+							, $schmversion
+							, '<< Flyway Init >>'
+							, 'INIT'
+							, '<< Flyway Init >>'
+							,  undef
+							, $user
+							,  0
+							,  1
+						) or die( "Updating '$flywaytablename' with INIT failed" . ( defined( $sth -> errstr() ) ? ": " . $sth -> errstr() : ( defined( $dbh -> errstr() ) ? ": " . $dbh -> errstr() : '' ) ) . "\n" );
+					}
+				} else {
+					# Since flyway uses `version` alone as the primary key, we have no choice but to
+					# over-write and previous data of the same version if the metadata is
+					# re-initialised.  The myway metadata will still store a record of previous
+					# actions, however.  The explicit version is not stored, but this can be found
+					# by examining the file which was loaded.
+					# FIXME: There is no explicit link between a flyway entry and myway data.
+					#
+					$sth = preparesql( $dbh, <<SQL );
+UPDATE `$flywaytablename` SET
+    `version_rank` = ?
+  , `installed_rank` = ?
+  , `description` = ?
+  , `type` = ?
+  , `script` = ?
+  , `checksum` = ?
+  , `installed_by` = ?
+  , `installed_on` = CURRENT_TIMESTAMP
+  , `execution_time` = ?
+  , `success` = ?
+WHERE `version` = ?
+SQL
+					die( "Unable to create updated INIT statement handle: " . $dbh -> errstr() . "\n" ) unless( defined( $sth ) and $sth );
+					if( $safetyoff ) {
+						executesql( $dbh, $sth, undef,
+							  $versionrank
+							, $installedrank
+							, '<< Flyway Init >>'
+							, 'INIT'
+							, '<< Flyway Init >>'
+							,  undef
+							, $user
+							,  0
+							,  1
+							, $schmversion
+						) or die( "Updating '$flywaytablename' with updated INIT failed" . ( defined( $sth -> errstr() ) ? ": " . $sth -> errstr() : ( defined( $dbh -> errstr() ) ? ": " . $dbh -> errstr() : '' ) ) . "\n" );
+					}
 				}
 				$sth -> finish();
 				}
@@ -3655,15 +3722,15 @@ SQL
 			{
 			my $sth = preparesql( $dbh, <<SQL );
 INSERT INTO `$mywaytablename` (
-  `id`,
-  `dbuser`,
-  `dbhost`,
-  `osuser`,
-  `host`,
-  `sha1sum`,
-  `path`,
-  `filename`,
-  `started`
+    `id`
+  , `dbuser`
+  , `dbhost`
+  , `osuser`
+  , `host`
+  , `sha1sum`
+  , `path`
+  , `filename`
+  , `started`
 ) VALUES ( ?, ?, ?, ?, ?, ?, ?, ?, SYSDATE() )
 SQL
 # Unchanged: `sqlstarted`, `finished`, `status`.
@@ -3807,6 +3874,8 @@ SQL
 		}
 		$data -> { 'entries' } = \@entries;
 	}
+
+	my $schemastart = [ gettimeofday() ];
 
 	foreach my $entry ( $data -> { 'entries' } ) {
 		foreach my $statement ( @{ $entry } ) {
@@ -3986,13 +4055,26 @@ SQL
 									# We've already said this by this point...
 									#warn( "!> metadata table `$mywayprocsname` does not exist - not validating target installation chain\n" );
 								} else {
-									my $metadataversions = getsqlvalues( $dbh, "SELECT DISTINCT(`version`) FROM `$mywayprocsname` WHERE `status` = '$status'" );
-									#if( /^$schmversion$/ ~~ $metadataversions )
-									if( not( $first ) and ( qr/^$schmversion$/ |M| $metadataversions ) ) {
-										pdebug( "Metadata for version '$schmversion' already exists ..." );
+									# This is wrong - as we're processing separate files, we do need to store
+									# metadata entries for every file...
+									#
+
+									#my $metadataversions = getsqlvalues( $dbh, "SELECT DISTINCT(`version`) FROM `$mywayprocsname` WHERE `status` = '$status'" );
+									##if( /^$schmversion$/ ~~ $metadataversions )
+									#if( not( $first ) and ( qr/^$schmversion$/ |M| $metadataversions ) ) {
+									#	pdebug( "Metadata for version '$schmversion' already exists ..." );
+									#} else {
+									#	# Only write metadata once per invocation, for first file only...
+									#	#
+
+									# For this to work, we /have/ to assume that filenames are consistent and
+									# that they are always named '<function_name>.sql'...
+									#
+									my $metadataversions = getsqlvalues( $dbh, "SELECT DISTINCT(`version`) FROM `$mywayprocsname` WHERE `filename` = '$schmfile' AND `status` = '$status'" );
+									if( qr/^$schmversion$/ |M| $metadataversions ) {
+										pdebug( "Metadata for file '$schmfile' version '$schmversion' already exists ..." );
 									} else {
-										# Only write metadata once per invocation, for first file only...
-										#
+
 										my $uid = ( $ENV{ LOGNAME } or $ENV{ USER } or getpwuid( $< ) );
 										my $oshost = qx( hostname -f );
 										my $sum = qx( sha1sum \"$file\" );
@@ -4002,20 +4084,21 @@ SQL
 
 										my $sth = preparesql( $dbh, <<SQL );
 INSERT INTO `$mywayprocsname` (
-  `id`,
-  `dbuser`,
-  `dbhost`,
-  `osuser`,
-  `host`,
-  `sha1sum`,
-  `path`,
-  `filename`,
-  `started`
+    `id`
+  , `dbuser`
+  , `dbhost`
+  , `osuser`
+  , `host`
+  , `sha1sum`
+  , `path`
+  , `filename`
+  , `started`
 ) VALUES ( ?, ?, ?, ?, ?, ?, ?, ?, SYSDATE() )
 SQL
 # Currently unchanged values: `version`, `description`, `type`, `sqlstarted`, `finished`, `status`.
 										die( "Unable to create tracking statement handle: " . $dbh -> errstr() . "\n" ) unless( defined( $sth ) and $sth );
 										if( $safetyoff ) {
+warn "DEBUG: Inserting entry to `$mywayprocsname` for file '$schmfile'";
 											executesql( $dbh, $sth, undef,
 												   $uuid
 												,  $user
@@ -4182,13 +4265,13 @@ SQL
 					if( not( 'procedure' eq $mode ) ) {
 						my $sth = preparesql( $dbh, <<SQL );
 INSERT INTO `$mywayactionsname` (
-  `schema_id`,
-  `started`,
-  `event`,
-  `statement`,
-  `line`,
-  `time`,
-  `state`
+    `schema_id`
+  , `started`
+  , `event`
+  , `statement`
+  , `line`
+  , `time`
+  , `state`
 ) VALUES ( ?, ?, ?, ?, ?, ?, ? )
 SQL
 						die( "Unable to create tracking statement handle: " . $dbh -> errstr() . "\n" ) unless( defined( $sth ) and $sth );
@@ -4228,6 +4311,8 @@ SQL
 		}
 	}
 
+	my $schemaelapsed = tv_interval( $schemastart, [ gettimeofday() ] );
+
 	my $tablename = $mywaytablename;
 	$tablename = $mywayprocsname if( 'procedure' eq $mode );
 
@@ -4255,54 +4340,94 @@ SQL
 			print( "=> Updating " . ( 'procedure' eq $mode ? '' : 'flyway ' ) . "metadata with version '$schmversion' ...\n" );
 		}
 		if( not( 'procedure' eq $mode ) ) {
-			my $sth = preparesql( $dbh, <<SQL );
+			{
+			my $replacement = getsqlvalue( $dbh, "SELECT COUNT(*) FROM `$flywaytablename` WHERE `version` = '$schmversion'" );
+			my $sth;
+
+			if( defined( $replacement ) and $replacement =~ m/^\d+$/ and $replacement > 0 ) {
+				$sth = preparesql( $dbh, <<SQL );
 INSERT INTO `$flywaytablename` (
-  `version_rank`,
-  `installed_rank`,
-  `version`,
-  `description`,
-  `type`,
-  `script`,
-  `checksum`,
-  `installed_by`,
-  `installed_on`,
-  `execution_time`,
-  `success`
-) VALUES ( ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? )
+    `version_rank`
+  , `installed_rank`
+  , `version`
+  , `description`
+  , `type`
+  , `script`
+  , `checksum`
+  , `installed_by`
+  , `installed_on`
+  , `execution_time`
+  , `success`
+) VALUES ( ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ? )
 SQL
-			die( "Unable to create tracking statement handle: " . $dbh -> errstr() . "\n" ) unless( defined( $sth ) and $sth );
-			if( $safetyoff ) {
-				dosql( $dbh, "UNLOCK TABLES" );
-				executesql( $dbh, $sth, undef,
-					  $versionrank
-					, $installedrank
-					, $schmversion
-					, $desc
-					, $filetype
-					, $schmfile
-					   # flyway appears to initialise the checksum value at
-					   # version_rank, then for each element of the table
-					   # multiplies this by 31 and adds the hashCode() value
-					   # associated with the item in question (or zero if null),
-					   # except for 'execution_time' and 'success', which are
-					   # added directly.  This (large) value is then written to a
-					   # signed int(11) attribute in the database, which causes
-					   # the value to wrap.
-					   # I'm not going to try to reproduce this scheme here...
-					,  0
-					, $user
-					,  undef
-					,  0
-					,  1
-				);
+				die( "Unable to create tracking statement handle: " . $dbh -> errstr() . "\n" ) unless( defined( $sth ) and $sth );
+				if( $safetyoff ) {
+					dosql( $dbh, "UNLOCK TABLES" );
+					executesql( $dbh, $sth, undef,
+						  $versionrank
+						, $installedrank
+						, $schmversion
+						, $desc
+						, $filetype
+						, $schmfile
+						   # flyway appears to initialise the checksum value at
+						   # version_rank, then for each element of the table
+						   # multiplies this by 31 and adds the hashCode() value
+						   # associated with the item in question (or zero if null),
+						   # except for 'execution_time' and 'success', which are
+						   # added directly.  This (large) value is then written to a
+						   # signed int(11) attribute in the database, which causes
+						   # the value to wrap.
+						   # I'm not going to try to reproduce this scheme here...
+						,  0
+						, $user
+						,  int( $schemaelapsed + 0.5 )
+						,  1
+					);
+				}
+			} else {
+				# Again, since `version` alone is the primary key, the `success` field is fairly
+				# useless :(
+				#
+				$sth = preparesql( $dbh, <<SQL );
+UPDATE `$flywaytablename` SET
+    `version_rank` = ?
+  , `installed_rank` = ?
+  , `description` = ?
+  , `type` = ?
+  , `script` = ?
+  , `checksum` = ?
+  , `installed_by` = ?
+  , `installed_on` = CURRENT_TIMESTAMP
+  , `execution_time` = ?
+  , `success` = ?
+WHERE `version` = ?
+SQL
+				die( "Unable to create updated tracking statement handle: " . $dbh -> errstr() . "\n" ) unless( defined( $sth ) and $sth );
+				if( $safetyoff ) {
+					dosql( $dbh, "UNLOCK TABLES" );
+					executesql( $dbh, $sth, undef,
+						  $versionrank
+						, $installedrank
+						, $desc
+						, $filetype
+						, $schmfile
+						,  0
+						, $user
+						,  int( $schemaelapsed + 0.5 )
+						,  1
+						, $schmversion
+					);
+				}
 			}
 			$sth -> finish();
+			}
 		} else {
 			my $sth = preparesql( $dbh, <<SQL );
 UPDATE `$mywayprocsname` SET
-  `version` = ?,
-  `description` = ?,
-  `type` = ?
+    `version` = ?
+  , `description` = ?
+  , `type` = ?
 WHERE `id` = ?
 SQL
 # `finished` and `status` were UPDATEd just prior...
@@ -4331,59 +4456,70 @@ sub main( @ ) { # {{{
 	my( @argv ) = @_;
 
 	my $port = PORT;
+	my $marker = MARKER;
 
 	#
 	# Populate command-line arguments # {{{
 	#
 
 	my( $action_backup, $action_restore, $action_init );
-	my( $action_migrate, $action_check, $mode );
+	my( $action_migrate, $action_check );
+	my( $mode, $dosub );
 	my( $help, $desc, @paths, $file, $compat, $unsafe, $keepbackups );
 	my( $lock, $keeplock );
 	my( $force, $clear, $compress, $small );
 	my( $user, $pass, $host, $db );
 	my( $pretend, $debug, $notice, $verbose, $warn );
+	my $ok = TRUE;
+	my $getoptout = undef;
 
 	Getopt::Long::Configure( 'gnu_getopt' );
 	Getopt::Long::Configure( 'no_bundling' );
-	GetOptionsFromArray ( \@argv,
-		  'b|backup:s'					=> \$action_backup
-		,   'lock|lock-database|lock-databases!'	=> \$lock
-		,   'keep-lock!'				=> \$keeplock
-		,   'small|small-database|small-dataset!'	=> \$small
-		,   'compress:s'				=> \$compress
+	eval { GetOptionsFromArray ( \@argv,
+	  'b|backup:s'					=> \$action_backup
+	,   'lock|lock-database|lock-databases!'	=> \$lock
+	,   'keep-lock!'				=> \$keeplock
+	,   'small|small-database|small-dataset!'	=> \$small
+	,   'compress:s'				=> \$compress
 
-		, 'r|restore=s'					=> \$action_restore
-		, 'i|init:s'					=> \$action_init
-		, 'c|check!'					=> \$action_check
+	, 'r|restore=s'					=> \$action_restore
+	, 'i|init:s'					=> \$action_init
+	, 'c|check!'					=> \$action_check
 
-		, 'm|migrate!'					=> \$action_migrate
-		, 'o|mode=s'					=> \$mode
-		, 's|schemata|directory|scripts=s{,}'		=> \@paths
-		, 'f|file|filename|schema|script=s'		=> \$file
-		,   'description=s'				=> \$desc
-		,   'no-backup|no-backups!'			=> \$unsafe
-		,   'keep-backup|keep-backups!'			=> \$keepbackups
+	, 'o|mode=s'					=> \$mode
+	,   'substitute|versionate|sub!'		=> \$dosub
+	,   'marker=s'					=> \$marker
 
-		,   'clear-metadata!'				=> \$clear
-		,   'force!'					=> \$force
+	, 'm|migrate!'					=> \$action_migrate
+	, 's|schemata|directory|scripts=s{,}'		=> \@paths
+	, 'f|file|filename|schema|script=s'		=> \$file
+	,   'description=s'				=> \$desc
+	,   'no-backup|no-backups!'			=> \$unsafe
+	,   'keep-backup|keep-backups!'			=> \$keepbackups
 
-		,   'mysql-compat!'				=> \$compat
+	,   'clear-metadata!'				=> \$clear
+	,   'force!'					=> \$force
 
-		, 'u|user|username=s'				=> \$user
-		, 'p|pass|passwd|password=s'			=> \$pass
-		, 'h|host=s'					=> \$host
-		, 'd|db|database=s'				=> \$db
+	,   'mysql-compat!'				=> \$compat
 
-		,   'dry-run!'					=> \$pretend
-		,   'debug!'					=> \$debug
-		, 'n|notice!'					=> \$notice
-		, 'w|warn!'					=> \$warn
-		, 'v|verbose+'					=> \$verbose
-		,   'help|usage!'				=> \$help
-	) or die( "$fatal Getopt::Long::GetOptions failed" . ( ( defined $@ and $@ ) ? ": " . $@ : "" ) . "\n" );
+	, 'u|user|username=s'				=> \$user
+	, 'p|pass|passwd|password=s'			=> \$pass
+	, 'h|host=s'					=> \$host
+	, 'd|db|database=s'				=> \$db
 
-	my $ok = TRUE;
+	,   'dry-run!'					=> \$pretend
+	,   'debug!'					=> \$debug
+	, 'n|notice!'					=> \$notice
+	, 'w|warn!'					=> \$warn
+	, 'v|verbose+'					=> \$verbose
+	,   'help|usage!'				=> \$help
+	#) or die( "$fatal Getopt::Long::GetOptions failed" . ( ( defined $@ and $@ ) ? ": " . $@ : "" ) . "\n" );
+	); };
+	if( $@ ) {
+		$getoptout = $@ if( defined $@ and length( $@ ) );
+		$ok = FALSE;
+	};
+
 	$ok = FALSE if( ( defined( $file ) and $file ) and ( @paths and scalar( @paths ) ) );
 	$ok = FALSE unless( defined( $user ) and $user );
 	$ok = FALSE unless( defined( $pass ) and $pass );
@@ -4423,6 +4559,8 @@ sub main( @ ) { # {{{
 		$ok = FALSE if( defined( $lock ) or defined( $keeplock ) );
 		$ok = FALSE if( defined( $compress ) );
 		$ok = FALSE if( defined( $small ) );
+		$ok = FALSE if( defined( $marker ) and not( defined( $dosub ) ) );
+		$ok = FALSE if( defined( $dosub ) and not( 'procedure' eq $mode ) );
 		if( not( defined( $action_init ) ) ) {
 			$ok = FALSE unless( ( defined( $file ) and $file ) or ( @paths and scalar( @paths ) ) );
 		}
@@ -4480,6 +4618,12 @@ sub main( @ ) { # {{{
 		$keeplock = FALSE;
 	}
 
+	if( defined( $dosub ) and $dosub ) {
+		$dosub = TRUE;
+	} else {
+		$dosub = FALSE;
+	}
+
 	if( $pretend and $clear ) {
 		$ok = FALSE;
 	}
@@ -4487,12 +4631,13 @@ sub main( @ ) { # {{{
 		$ok = FALSE;
 	}
 
-	undef( $user )  unless( defined( $user ) and length( $user ) );
-	undef( $pass )  unless( defined( $pass ) and length( $pass ) );
-	undef( $host )  unless( defined( $host ) and length( $host ) );
-	undef( $db )    unless( defined( $db ) and length( $db ) );
-	undef( $mode )  unless( defined( $mode ) and length( $mode ) );
-	undef( $file )  unless( defined( $file ) and length( $file ) );
+	undef( $user ) unless( defined( $user ) and length( $user ) );
+	undef( $pass ) unless( defined( $pass ) and length( $pass ) );
+	undef( $host ) unless( defined( $host ) and length( $host ) );
+	undef( $db ) unless( defined( $db ) and length( $db ) );
+	undef( $mode ) unless( defined( $mode ) and length( $mode ) );
+	undef( $marker ) unless( defined( $marker ) and length( $marker ) );
+	undef( $file ) unless( defined( $file ) and length( $file ) );
 	undef( @paths ) unless( @paths and scalar( @paths ) );
 
 	if( ( defined( $help ) and $help ) or ( 0 == scalar( @ARGV ) ) ) {
@@ -4510,6 +4655,7 @@ sub main( @ ) { # {{{
 		print( ( " " x $length ) . "                  [--lock [--keep-lock]]\n" );
 		print( ( " " x $length ) . "scheme:           <gzip|bzip2|xz|lzma>\n" );
 		print( ( " " x $length ) . "mode:             --mode <schema|procedure>\n" );
+		print( ( " " x $length ) . "                  [--substitute [--marker <marker>]\n" );
 		print( "\n" );
 		print( ( " " x $length ) . "--mysql-compat   - Required for MySQL prior to v5.6.4\n" );
 		print( "\n" );
@@ -4517,12 +4663,18 @@ sub main( @ ) { # {{{
 		print( ( " " x $length ) . "--small-dataset  - Optimise for tables of less than 1GB in size\n" );
 		print( ( " " x $length ) . "--lock           - Lock instance for duration of backup\n" );
 		print( ( " " x $length ) . "--keep-lock      - Keep lock for up to 24 hours following backup\n" );
+		print( "\n" );
+		print( ( " " x $length ) . "--substitute     - Replace the string '$marker' with version\n" );
+		print( ( " " x $length ) . "                   number from stored procedure directory name\n" );
+		print( ( " " x $length ) . "--marker         - Use string in place of '" . MARKER . "'\n" );
+		print( "\n" );
 		print( ( " " x $length ) . "--no-backup      - Do not take backups before making changes\n" );
 		print( ( " " x $length ) . "--keep-backup    - Copy backups to a local directory on exit\n" );
 		print( ( " " x $length ) . "--clear-metadata - Remove all {my,fly}way metadata tables\n" );
 		print( ( " " x $length ) . "--force          - Allow a database to be re-initialised or\n" );
 		print( ( " " x $length ) . "                   ignore previous and target versions when\n" );
 		print( ( " " x $length ) . "                   applying schema files\n" );
+		print( "\n" );
 		print( ( " " x $length ) . "--dry-run        - Validate but do not execute schema SQL\n" );
 		print( ( " " x $length ) . "--debug          - Output copious debugging statements\n" );
 		print( ( " " x $length ) . "--verbose        - Provide more detailed status information\n" );
@@ -4536,12 +4688,15 @@ sub main( @ ) { # {{{
 		warn( "Cannot specify argument '--keep-lock' without option '--lock'\n" ) if( $keeplock and not( $lock ) );
 		warn( "Cannot specify argument '--clear-metadata' without option '--force'\n" ) if( $clear and not( $force ) );
 		warn( "Cannot specify argument '--lock' with option '--database' (locks are global)\n" ) if( $lock and defined( $db ) );
+		warn( "Cannot specify argument '--marker' without option '--substitute'\n" ) if( $marker and not( $dosub ) );
+		warn( "Cannot specify argument '--substitute' unless option '--mode' is 'procedure'\n" ) if( $dosub and not( 'procedure' eq $mode ) );
 		warn( "Required argument '--user' not specified\n" ) unless( defined( $user ) );
 		warn( "Required argument '--password' not specified\n" ) unless( defined( $pass ) );
 		warn( "Required argument '--host' not specified\n" ) unless( defined( $host ) );
 		warn( "Required argument '--database' not specified\n" ) unless( defined( $db ) );
 		warn( "Required argument '--schema' or '--schemata' not specified\n" ) unless( defined( $file ) or ( @paths ) or defined( $action_backup ) or defined( $action_restore ) );
 		warn( "Command '--restore' takes only a filename as the single argument\n" ) if( defined( $action_restore ) );
+		warn( "... additionally, Getopt failed with '$getoptout'\n" ) if( defined( $getoptout ) );
 		exit( 1 );
 	}
 
@@ -4633,10 +4788,10 @@ sub main( @ ) { # {{{
 						local $| = 1;
 
 						print( "\n=> Connecting to database '$db' ...\n" );
-						disable diagnostics;
+						#disable diagnostics;
 						$dbh = DBI -> connect( $dsn, $user, $pass, { RaiseError => 1, PrintError => 0 } )
 							or die( "Cannot create connection to DSN '$dsn': $DBI::errstr\n" );
-						enable diagnostics;
+						#enable diagnostics;
 
 						if( not ( dosql( $dbh, "FLUSH TABLES WITH READ LOCK" ) ) ) {
 							warn( "$warning Failed to lock tables\n" );
@@ -4710,10 +4865,10 @@ sub main( @ ) { # {{{
 				local $| = 1;
 
 				print( "\n=> Connecting to database '$db' ...\n" );
-				disable diagnostics;
+				#disable diagnostics;
 				$dbh = DBI -> connect( $dsn, $user, $pass, { RaiseError => 1, PrintError => 0 } )
 					or die( "Cannot create connection to DSN '$dsn': $DBI::errstr\n" );
-				enable diagnostics;
+				#enable diagnostics;
 
 				if( not ( dosql( $dbh, "FLUSH TABLES WITH READ LOCK" ) ) ) {
 					warn( "$warning Failed to lock tables transaction\n" );
@@ -4779,6 +4934,9 @@ sub main( @ ) { # {{{
 			$pattern = "*";
 
 		} else {
+			if( not( -s $path ) ) {
+				die( "$fatal Object '$path' does not exist or cannot be read\n" );
+			}
 			my $pathprefix = dirname( realpath( $path ) );
 			if( not( -d $pathprefix ) ) {
 				die( "$fatal Apparent parent directory '$pathprefix' of file '$path' does not appear to resolve to a directory\n" );
@@ -4853,8 +5011,11 @@ sub main( @ ) { # {{{
 		}
 	}
 
+	if( ( 'procedure' eq $mode ) and not( -d $basepath ) ) {
+		die( "$fatal Directory '$basepath' does not exist\n" );
+	}
 	if( ( 'procedure' eq $mode ) and not( -s $basepath . '/' . $db . '.metadata' ) ) {
-		die( "$fatal Metadata file '" . $db . '.metadata' . "' for database '$db' is not present in directory '$basepath'\n" );
+		die( "$fatal Metadata file '" . $db . '.metadata' . "' for database '$db' is not present in directory '$basepath' or cannot be read\n" );
 	}
 
 	print( "=> Processing " . ( 'procedure' eq $mode ? 'Stored Procedures' : 'files' ) . ":\n" );
@@ -4888,14 +5049,14 @@ sub main( @ ) { # {{{
 	if( defined( $action_init ) and $safetyoff ) {
 		print( "\n=> '--init' specified, ensuring that database '$db' exists ...\n" );
 		my $dsn = "DBI:mysql:host=$host;port=$port";
-		disable diagnostics;
+		#disable diagnostics;
 		my $dbh = DBI -> connect( $dsn, $user, $pass, { RaiseError => 0, PrintError => 0 } )
 			or die(
 				  "$fatal Cannot create connection to DSN '$dsn': $DBI::errstr\n"
 				. ' ' x length( $fatal )
 				. " Is the database instance running?\n"
 			);
-		enable diagnostics;
+		#enable diagnostics;
 		dosql( $dbh, "CREATE DATABASE IF NOT EXISTS `$db`" ) or die( "Failed to create database\n" );
 
 		print( "\n=> Disconnecting from database.\n" );
@@ -4910,14 +5071,14 @@ sub main( @ ) { # {{{
 
 	print( "\n=> Connecting to database '$db' ...\n" );
 	my $dsn = "DBI:mysql:database=$db;host=$host;port=$port";
-	disable diagnostics;
+	#disable diagnostics;
 	my $dbh = DBI -> connect( $dsn, $user, $pass, { RaiseError => 0, PrintError => 0 } )
 		or die(
 			  "$fatal Cannot create connection to DSN '$dsn': $DBI::errstr\n"
 		        . ' ' x length( $fatal )
 			. "(Databases will be auto-created on --init when not in dry-run mode)\n"
 		);
-	enable diagnostics;
+	#enable diagnostics;
 
 	#
 	# Create {fl,m}yway metadata tables
@@ -5075,10 +5236,10 @@ sub main( @ ) { # {{{
 					#warn( "Failed with error: " . $@ . "\n" );
 					#warn( "$fatal " . $@ . "\n" );
 					#die( "Aborted\n" );
-					disable diagnostics;
+					#disable diagnostics;
 					die( "$fatal " . $@ . "\n" );
 					# Unreachable
-					enable diagnostics;
+					#enable diagnostics;
 				}
 				$variables -> { 'first' } = FALSE if( $variables -> { 'first' } );
 			} else {
@@ -5093,10 +5254,10 @@ sub main( @ ) { # {{{
 			#warn( "Failed with error: " . $@ . "\n" );
 			#warn( "$fatal " . $@ . "\n" );
 			#die( "Aborted\n" );
-			disable diagnostics;
+			#disable diagnostics;
 			die( "$fatal " . $@ . "\n" );
 			# Unreachable
-			enable diagnostics;
+			#enable diagnostics;
 		}
 	}
 
