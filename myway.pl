@@ -2053,9 +2053,9 @@ CREATE TABLE IF NOT EXISTS `$mywaytablename` (
   , `sha1sum`		CHAR(40)	NOT NULL
   , `path`		VARCHAR(4096)	NOT NULL CHARACTER SET 'UTF8'
   , `filename`		VARCHAR(255)	NOT NULL CHARACTER SET 'UTF8'
-  , `started`		TIMESTAMP,
+  , `started`		TIMESTAMP
   , `sqlstarted`	TIMESTAMP	    NULL
-  , `finished`		TIMESTAMP,
+  , `finished`		TIMESTAMP
   , `status`		TINYINT		UNSIGNED
   , PRIMARY KEY (`id`)
 ) ENGINE='InnoDB' DEFAULT CHARSET='ASCII';
@@ -2071,8 +2071,9 @@ CREATE TABLE IF NOT EXISTS `$mywayactionsname` (
   , `line`		BIGINT		UNSIGNED
   , `time`		DECIMAL(13,3)
   , `state`		CHAR(5)
-  , INDEX `${mywayactionsname}_schema_id_idx` (`schema_id`)
-  , FOREIGN KEY (`${mywayactionsname}_schema_id_${mywaytablename}_id`) REFERENCES $mywaytablename (`id`) ON DELETE CASCADE
+  , INDEX        `${mywayactionsname}_schema_id_idx` (`schema_id`)
+  , CONSTRAINT   `${mywayactionsname}_schema_id_${mywaytablename}_id`
+    FOREIGN KEY (`schema_id`) REFERENCES `$mywaytablename` (`id`) ON DELETE CASCADE
 ) ENGINE='InnoDB' DEFAULT CHARSET='ASCII';
 DDL
 
@@ -2142,11 +2143,12 @@ sub initstate() { # {{{
 	# Known single-line comments
 	my @slc = (
 		  '#'
-		, qw( // -- )
+		,  qw( // -- )
 	);
 	# Known multi-line comment pairs
 	my %mlc = (
 		  '\/\*'	=> '\*\/'
+		, '{'		=> '}'
 	);
 
 	my %state = (
@@ -2813,8 +2815,6 @@ sub dbdump( $;$$$$$ ) { # {{{
 		# We know the database we're concerned with, so $objects gives
 		# us the tables to backup...
 		#
-
-		$optdb = '--databases ' . $auth -> { 'database' };
 		$filename = $auth -> { 'database' } . ".sql" unless( defined( $filename ) and length( $filename ) );
 
 		if( not( defined( $objects ) and length( $objects ) ) ) {
@@ -2834,6 +2834,15 @@ sub dbdump( $;$$$$$ ) { # {{{
 
 		} else {
 			die( "Unknown reference type '" . ref( $objects ) . "' for table parameter \$objects\n" );
+		}
+
+		# mysqldump accepts '<database> [tables]' or
+		# '--databases <database>', but not a combination of the two...
+		#
+		if( not( length( $opttab ) ) ) {
+			$optdb = '--databases ' . $auth -> { 'database' };
+		} else {
+			$optdb = $auth -> { 'database' };
 		}
 	} else {
 
@@ -4344,7 +4353,7 @@ SQL
 			my $replacement = getsqlvalue( $dbh, "SELECT COUNT(*) FROM `$flywaytablename` WHERE `version` = '$schmversion'" );
 			my $sth;
 
-			if( defined( $replacement ) and $replacement =~ m/^\d+$/ and $replacement > 0 ) {
+			if( defined( $replacement ) and $replacement =~ m/^\d+$/ and 0 == $replacement ) {
 				$sth = preparesql( $dbh, <<SQL );
 INSERT INTO `$flywaytablename` (
     `version_rank`
@@ -4559,7 +4568,7 @@ sub main( @ ) { # {{{
 		$ok = FALSE if( defined( $lock ) or defined( $keeplock ) );
 		$ok = FALSE if( defined( $compress ) );
 		$ok = FALSE if( defined( $small ) );
-		$ok = FALSE if( defined( $marker ) and not( defined( $dosub ) ) );
+#		$ok = FALSE if( defined( $marker ) and not( defined( $dosub ) ) );
 		$ok = FALSE if( defined( $dosub ) and not( 'procedure' eq $mode ) );
 		if( not( defined( $action_init ) ) ) {
 			$ok = FALSE unless( ( defined( $file ) and $file ) or ( @paths and scalar( @paths ) ) );
@@ -4688,7 +4697,7 @@ sub main( @ ) { # {{{
 		warn( "Cannot specify argument '--keep-lock' without option '--lock'\n" ) if( $keeplock and not( $lock ) );
 		warn( "Cannot specify argument '--clear-metadata' without option '--force'\n" ) if( $clear and not( $force ) );
 		warn( "Cannot specify argument '--lock' with option '--database' (locks are global)\n" ) if( $lock and defined( $db ) );
-		warn( "Cannot specify argument '--marker' without option '--substitute'\n" ) if( $marker and not( $dosub ) );
+#		warn( "Cannot specify argument '--marker' without option '--substitute'\n" ) if( $marker and not( $dosub ) );
 		warn( "Cannot specify argument '--substitute' unless option '--mode' is 'procedure'\n" ) if( $dosub and not( 'procedure' eq $mode ) );
 		warn( "Required argument '--user' not specified\n" ) unless( defined( $user ) );
 		warn( "Required argument '--password' not specified\n" ) unless( defined( $pass ) );
