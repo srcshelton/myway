@@ -2020,17 +2020,17 @@ our $verbosity = 0;
 our $flywaytablename = 'schema_version';
 our $flywayddl  = <<DDL;
 CREATE TABLE IF NOT EXISTS `$flywaytablename` (
-    `version_rank`	INT		NOT NULL
-  , `installed_rank`	INT		NOT NULL
-  , `version`		VARCHAR(50)	NOT NULL
-  , `description`	VARCHAR(200)	NOT NULL
-  , `type`		VARCHAR(20)	NOT NULL
-  , `script`		VARCHAR(1000)	NOT NULL
-  , `checksum`		INT		         DEFAULT NULL
-  , `installed_by`	VARCHAR(100)	NOT NULL
-  , `installed_on`	TIMESTAMP	NOT NULL DEFAULT CURRENT_TIMESTAMP
-  , `execution_time`	INT		NOT NULL
-  , `success`		BOOLEAN		NOT NULL
+    `version_rank`	INT		                          NOT NULL
+  , `installed_rank`	INT		                          NOT NULL
+  , `version`		VARCHAR(50)	                          NOT NULL
+  , `description`	VARCHAR(200)	                          NOT NULL
+  , `type`		VARCHAR(20)	                          NOT NULL
+  , `script`		VARCHAR(1000)	                          NOT NULL
+  , `checksum`		INT		DEFAULT NULL
+  , `installed_by`	VARCHAR(100)	                          NOT NULL
+  , `installed_on`	TIMESTAMP	DEFAULT CURRENT_TIMESTAMP NOT NULL
+  , `execution_time`	INT		                          NOT NULL
+  , `success`		BOOLEAN		                          NOT NULL
   , PRIMARY KEY                         (`version`)
   ,         KEY `schema_version_vr_idx` (`version_rank`)
   ,         KEY `schema_version_ir_idx` (`installed_rank`)
@@ -2045,16 +2045,16 @@ DDL
 our $mywaytablename = 'myway_schema_version';
 our $mywayddl  = <<DDL;
 CREATE TABLE IF NOT EXISTS `$mywaytablename` (
-    `id`		CHAR(36)	NOT NULL
-  , `dbuser`		CHAR(16)	NOT NULL
-  , `dbhost`		CHAR(64)	NOT NULL
-  , `osuser`		CHAR(32)	NOT NULL
-  , `host`		CHAR(64)	NOT NULL
-  , `sha1sum`		CHAR(40)	NOT NULL
-  , `path`		VARCHAR(4096)	NOT NULL CHARACTER SET 'UTF8'
-  , `filename`		VARCHAR(255)	NOT NULL CHARACTER SET 'UTF8'
+    `id`		CHAR(36)	                          NOT NULL
+  , `dbuser`		CHAR(16)	                          NOT NULL
+  , `dbhost`		CHAR(64)	                          NOT NULL
+  , `osuser`		CHAR(32)	                          NOT NULL
+  , `host`		CHAR(64)	                          NOT NULL
+  , `sha1sum`		CHAR(40)	                          NOT NULL
+  , `path`		VARCHAR(4096)	CHARACTER SET 'UTF8'      NOT NULL
+  , `filename`		VARCHAR(255)	CHARACTER SET 'UTF8'      NOT NULL
   , `started`		TIMESTAMP
-  , `sqlstarted`	TIMESTAMP	    NULL
+  , `sqlstarted`	TIMESTAMP	                              NULL
   , `finished`		TIMESTAMP
   , `status`		TINYINT		UNSIGNED
   , PRIMARY KEY (`id`)
@@ -2064,35 +2064,36 @@ DDL
 our $mywayactionsname = 'myway_schema_actions';
 our $mywayactionsddl  = <<DDL;
 CREATE TABLE IF NOT EXISTS `$mywayactionsname` (
-    `schema_id`		CHAR(36)	NOT NULL
-  , `started`		TIMESTAMP(6)	NOT NULL DEFAULT CURRENT_TIMESTAMP
-  , `event`		VARCHAR(256)	NOT NULL
-  , `statement`		VARCHAR(16384)	NOT NULL CHARACTER SET 'UTF8'
+    `schema_id`		CHAR(36)	                          NOT NULL
+  , `started`		TIMESTAMP(6)	DEFAULT CURRENT_TIMESTAMP NOT NULL
+  , `event`		VARCHAR(256)	                          NOT NULL
+  , `statement`		VARCHAR(16384)	CHARACTER SET 'UTF8'      NOT NULL
   , `line`		BIGINT		UNSIGNED
   , `time`		DECIMAL(13,3)
   , `state`		CHAR(5)
   , INDEX        `${mywayactionsname}_schema_id_idx` (`schema_id`)
   , CONSTRAINT   `${mywayactionsname}_schema_id_${mywaytablename}_id`
-    FOREIGN KEY (`schema_id`) REFERENCES `$mywaytablename` (`id`) ON DELETE CASCADE
+    FOREIGN KEY (`schema_id`) REFERENCES `$mywaytablename` (`id`)
+    ON DELETE CASCADE
 ) ENGINE='InnoDB' DEFAULT CHARSET='ASCII';
 DDL
 
 our $mywayprocsname = 'myway_stored_procedures';
 our $mywayprocsddl  = <<DDL;
 CREATE TABLE IF NOT EXISTS `$mywayprocsname` (
-    `id`		CHAR(36)	NOT NULL
-  , `dbuser`		CHAR(16)	NOT NULL
-  , `dbhost`		CHAR(64)	NOT NULL
-  , `osuser`		CHAR(32)	NOT NULL
-  , `host`		CHAR(64)	NOT NULL
-  , `sha1sum`		CHAR(40)	NOT NULL
-  , `path`		VARCHAR(4096)	NOT NULL CHARACTER SET 'UTF8'
-  , `filename`		VARCHAR(255)	NOT NULL CHARACTER SET 'UTF8'
-  , `version`		VARCHAR(50)	         CHARACTER SET 'UTF8'
-  , `description`	VARCHAR(200)	         CHARACTER SET 'UTF8'
-  , `type`		VARCHAR(20)	         CHARACTER SET 'UTF8'
+    `id`		CHAR(36)	                          NOT NULL
+  , `dbuser`		CHAR(16)	                          NOT NULL
+  , `dbhost`		CHAR(64)	                          NOT NULL
+  , `osuser`		CHAR(32)	                          NOT NULL
+  , `host`		CHAR(64)	                          NOT NULL
+  , `sha1sum`		CHAR(40)	                          NOT NULL
+  , `path`		VARCHAR(4096)	CHARACTER SET 'UTF8'      NOT NULL
+  , `filename`		VARCHAR(255)	CHARACTER SET 'UTF8'      NOT NULL
+  , `version`		VARCHAR(50)	CHARACTER SET 'UTF8'
+  , `description`	VARCHAR(200)	CHARACTER SET 'UTF8'
+  , `type`		VARCHAR(20)	CHARACTER SET 'UTF8'
   , `started`		TIMESTAMP
-  , `sqlstarted`	TIMESTAMP	NULL
+  , `sqlstarted`	TIMESTAMP	                              NULL
   , `finished`		TIMESTAMP
   , `status`		TINYINT		UNSIGNED
   , PRIMARY KEY (`id`)
@@ -2148,7 +2149,7 @@ sub initstate() { # {{{
 	# Known multi-line comment pairs
 	my %mlc = (
 		  '\/\*'	=> '\*\/'
-		, '{'		=> '}'
+		, '\{'		=> '\}'
 	);
 
 	my %state = (
@@ -2305,12 +2306,12 @@ sub processcomments( $$$ ) { # {{{
 
 				pushentry( $data, $state, 'comment', $match, "Single-line" );
 
-				#$match =~ s/\*/\\*/g;
-				#$match =~ s/\//\\\//g;
-				#$match =~ s/\(/\\(/g;
-				#$match =~ s/\)/\\)/g;
-				##$line =~ s/($match)//;
-				##my( $pre, $post ) = split( /$match/, $line );
+				# Ensure that Hints don't leave a trailing
+				# semi-colon (but also ensure that Hint-like
+				# comments do always have the correct
+				# terminator)...
+				$match .= ';' if( $match =~ m:^/\*![0-9]{5} (.+) \*/$: );
+
 				$line =~ m/^(.*?)\Q$match\E(.*?)$/;
 				my $pre = $1;
 				my $post = $2;
@@ -2327,10 +2328,13 @@ sub processcomments( $$$ ) { # {{{
 		# removed - so now check for the start of actual multi-line
 		# comments...
 		#
-		foreach my $start ( keys( %mlc ) ) {
+		MLC: foreach my $start ( keys( %mlc ) ) {
 			my $regex = $start . '.*$';
 
-			pdebug( "  C Checking for '$regex' ..." );
+			eval { qr/$regex/ };
+			die( "$fatal Invalid regex '$regex': $@\n" ) if( $@ );
+
+			pdebug( "  C Checking for multi-line initial token '$regex' ..." );
 
 			if( $line =~ m/$regex/ ) {
 				pdebug( "  C Match on '$regex'" );
@@ -2363,14 +2367,15 @@ sub processcomments( $$$ ) { # {{{
 					pdebug( "  C Remaining text is '$line', depth " . $state -> { 'depth' } );
 				} else {
 					pdebug( "  C No remaining text, depth " . $state -> { 'depth' } );
+					last MLC
 				}
 			}
 		}
 
-		foreach my $token ( @slc ) {
+		SLC: foreach my $token ( @slc ) {
 			my $regex = quotemeta( $token ) . '.*$';
 
-			pdebug( "  C Checking for '$regex' ..." );
+			pdebug( "  C Checking for single-line token '$regex' ..." );
 			if( length( $line ) and ( $line =~ m/$regex/ ) ) {
 				( my $comment = $line ) =~ s/^.*?\Q$token\E/$token/;
 				$line =~ s/$regex//g;
@@ -2691,6 +2696,8 @@ sub processline( $$;$ ) { # {{{
 sub processfile( $$ ) { # {{{
 	my( $data, $file ) = @_;
 
+	return( undef ) unless( defined( $file ) and length( $file ) and -r $file );
+
 	my $state = initstate();
 	my $validated = TRUE;
 
@@ -2837,12 +2844,14 @@ sub dbdump( $;$$$$$ ) { # {{{
 		}
 
 		# mysqldump accepts '<database> [tables]' or
-		# '--databases <database>', but not a combination of the two...
+		# '--databases <databases>', but not a combination of the two...
 		#
-		if( not( length( $opttab ) ) ) {
-			$optdb = '--databases ' . $auth -> { 'database' };
-		} else {
-			$optdb = $auth -> { 'database' };
+		if( defined( $auth -> { 'database' } ) and length( $auth -> { 'database' } ) ) {
+		#	if( not( length( $opttab ) ) ) {
+		#		$optdb = '--databases ' . $auth -> { 'database' };
+		#	} else {
+				$optdb = $auth -> { 'database' };
+		#	}
 		}
 	} else {
 
@@ -3327,13 +3336,25 @@ sub applyschema( $$$$ ) { # {{{
 
 	my( $schmfile, $schmpath, $schmext, $filetype );
 	if( not( defined( $file ) and length( $file ) ) ) {
-		die( "File name required\n" ) unless( defined( $action_init ) );
+		if( defined( $action_init ) ) {
+			if( not( length( $action_init ) ) ) {
+				die( "$fatal --init requires a parameter: Initial version not specified\n" );
+			} elsif( ( -d $action_init ) or ( -r $action_init ) ) {
+				if( $force ) {
+					pwarn( "Initial version '$action_init' looks like a filesystem object - force-continuing" );
+				} else {
+					die( "$fatal Initial version '$action_init' looks like a filesystem object - re-run with '--force' to proceed regardless\n" );
+				}
+			}
+		} else {
+			die( "$fatal File name required\n" );
+		}
 	} else {
 		die( "$fatal Cannot read from file '$file'\n" ) unless( defined( $file ) and -r $file );
 
 		( $schmfile, $schmpath, $schmext ) = fileparse( realpath( $file ), qr/\.[^.]+/ );
 		if( not( defined( $desc ) and length( $desc ) ) ) {
-			if( $schmfile =~ m/^V.*?__(.*)$/ ) {
+			if( $schmfile =~ m/^V.*?__(.*?)(?:\.d[dm]l)?$/ ) {
 				( $desc = $1 ) =~ s/_/ /g;
 			}
 		}
@@ -3354,6 +3375,7 @@ sub applyschema( $$$$ ) { # {{{
 	#
 
 	my $schmversion = $action_init;
+	$schmversion = $1 if( not( defined( $schmversion ) and length( $schmversion ) ) and ( $schmfile =~ m/^V(.*?)__/ ) );
 	$schmversion = '0' unless( defined( $schmversion ) and length( $schmversion ) );
 
 	my $metadata = {};
@@ -3586,7 +3608,7 @@ sub applyschema( $$$$ ) { # {{{
 				my $replacement = getsqlvalue( $dbh, "SELECT COUNT(*) FROM `$flywaytablename` WHERE `version` = '$schmversion'" );
 				my $sth;
 
-				if( defined( $replacement ) and $replacement =~ m/^\d+$/ and $replacement > 0 ) {
+				if( defined( $replacement ) and $replacement =~ m/^\d+$/ and 0 == $replacement ) {
 					$sth = preparesql( $dbh, <<SQL );
 INSERT INTO `$flywaytablename` (
     `version_rank`
@@ -3600,7 +3622,7 @@ INSERT INTO `$flywaytablename` (
   , `installed_on`
   , `execution_time`
   , `success`
-) VALUES ( ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ? )
+) VALUES ( ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ? )
 SQL
 					die( "Unable to create INIT statement handle: " . $dbh -> errstr() . "\n" ) unless( defined( $sth ) and $sth );
 					if( $safetyoff ) {
@@ -3613,6 +3635,7 @@ SQL
 							, '<< Flyway Init >>'
 							,  undef
 							, $user
+							#  CURRENT_TIMESTAMP
 							,  0
 							,  1
 						) or die( "Updating '$flywaytablename' with INIT failed" . ( defined( $sth -> errstr() ) ? ": " . $sth -> errstr() : ( defined( $dbh -> errstr() ) ? ": " . $dbh -> errstr() : '' ) ) . "\n" );
@@ -3649,6 +3672,7 @@ SQL
 							, '<< Flyway Init >>'
 							,  undef
 							, $user
+							#  CURRENT_TIMESTAMP
 							,  0
 							,  1
 							, $schmversion
@@ -3917,8 +3941,8 @@ SQL
 						$schmprevious = undef if( defined( $schmprevious ) and ( $schmprevious =~ m:(na|n/a):i ) );
 						print( "*> Read dubious prior version '$schmprevious'\n" ) unless( not( defined( $schmprevious ) ) or ( $schmprevious =~ m/[\d.]+/ ) );
 						print( "*> Read dubious target version '$schmtarget'\n" ) unless( not( defined( $schmtarget ) ) or ( $schmtarget =~ m/[\d.]+/ ) );
-						if( ( $schmfile =~ m/^(?:V(?:.*?)__)*V(.*?)__/ ) and not( $1 eq $schmtarget ) ) {
-							warn( "!> $warning File-name version '$1' differs from metadata version '$schmtarget'\n" );
+						if( ( $schmfile =~ m/^(?:V(?:.*?)__)*V(.*?)__/ ) and not( $1 =~ m/^$schmtarget(?:\.\d)?$/ ) ) {
+							warn( "!> $warning File-name version '$1' differs from metadata version '$schmtarget' from file '$schmfile'\n" );
 						}
 
 						if( defined( $firstcomment ) ) {
@@ -3947,11 +3971,15 @@ SQL
 								die( 'Unable to retrieve list of installed schema versions' . ( defined( $dbh -> errstr() ) ? ': ' . $dbh -> errstr() : '' ) . "\n" ) unless( scalar( $installedversions ) );
 
 								my $displayprevious = $schmprevious;
-								if( $schmprevious =~ m/^0(?:\.0+)?$/ ) {
-									$schmprevious = '0(?:\.0+)?';
+								#if( $schmprevious =~ m/^0(?:\.0+)?$/ ) {
+									#$schmprevious = '0(?:\.0+)?';
+								#}
+								my $regex = qr/0(?:(?:\.0+)+)?/;
+								if( $schmprevious =~ m/^$regex$/ ) {
+									$schmprevious = "$regex";
 								}
 								#if( /^$schmprevious$/ ~~ $installedversions )
-								if( defined( $schmprevious ) and ( qr/^$schmprevious$/ |M| $installedversions ) ) {
+								if( defined( $schmprevious ) and ( qr/^$schmprevious(?:\.\d)?$/ |M| $installedversions ) ) {
 									if( 'procedure' eq $mode ) {
 										pdebug( "Prior schema version '$displayprevious' exists in myway metadata" );
 									} else {
@@ -3973,7 +4001,7 @@ SQL
 											if( $force ) {
 												warn( "!> Prior schema version '$displayprevious' has not been applied to this database - forcibly applying ...\n" );
 											} else {
-												die( "Prior schema version '$displayprevious' has not been applied to this database - aborting.\n" );
+												die( "Prior schema version '$displayprevious' (required by '$schmfile') has not been applied to this database - aborting.\n" );
 											}
 										}
 									}
@@ -4482,6 +4510,13 @@ sub main( @ ) { # {{{
 	my $ok = TRUE;
 	my $getoptout = undef;
 
+	my $missingoption = sub {
+		my ( $argument ) = @_;
+
+		$getoptout = "value \"$argument\" has been specified with no preceeding option identifier";
+		$ok = FALSE;
+	}; # missingoption
+
 	Getopt::Long::Configure( 'gnu_getopt' );
 	Getopt::Long::Configure( 'no_bundling' );
 	eval { GetOptionsFromArray ( \@argv,
@@ -4522,12 +4557,14 @@ sub main( @ ) { # {{{
 	, 'w|warn!'					=> \$warn
 	, 'v|verbose+'					=> \$verbose
 	,   'help|usage!'				=> \$help
+
+	,   '<>'					=>  $missingoption
 	#) or die( "$fatal Getopt::Long::GetOptions failed" . ( ( defined $@ and $@ ) ? ": " . $@ : "" ) . "\n" );
 	); };
 	if( $@ ) {
 		$getoptout = $@ if( defined $@ and length( $@ ) );
 		$ok = FALSE;
-	};
+	}
 
 	$ok = FALSE if( ( defined( $file ) and $file ) and ( @paths and scalar( @paths ) ) );
 	$ok = FALSE unless( defined( $user ) and $user );
@@ -4958,7 +4995,12 @@ sub main( @ ) { # {{{
 		$basepath = $path;
 		@files = bsd_glob( $basepath . "/" . $pattern );
 		if( scalar( @files ) ) {
-			$target = \@files;
+			#$target = \@files;
+			my @targetfiles;
+			foreach my $file ( @files ) {
+				push( @targetfiles, $file ) if( not( -d $file ) and -s $file );
+			}
+			$target = \@targetfiles;
 		} else {
 			die( "$fatal No files match pattern '$pattern' in directory '$basepath'\n" );
 		}
@@ -5221,7 +5263,7 @@ sub main( @ ) { # {{{
 
 	my $variables;
 	$variables -> { 'mode' }      = $mode;
-	$variables -> { 'first' }     = ( 'procedure' eq $mode );
+	$variables -> { 'first' }     =  not( 'procedure' eq $mode );
 	$variables -> { 'backupdir' } = $backupdir;
 	$variables -> { 'clear' }     = $clear;
 	$variables -> { 'compat' }    = $compat;
