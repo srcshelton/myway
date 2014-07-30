@@ -1996,7 +1996,7 @@ sub pushstate( $$ );
 sub pushentry( $$$$$;$ );
 sub pushfragment( $$$;$$ );
 sub processline( $$;$ );
-sub processfile( $$ );
+sub processfile( $$;$$ );
 sub dbdump( $;$$$$$ );
 sub dbrestore( $$ );
 sub dosql( $$ );
@@ -2343,7 +2343,8 @@ sub processcomments( $$$ ) { # {{{
 				my( $pre, $post ) = split( /$start/, $line );
 				pdebug( "  C Sections are '$pre' & '$post'" );
 
-				if( length( $pre ) ) {
+				( my $filtered = $pre ) =~ s/\s+//g;
+				if( defined( $filtered ) and length( $filtered ) ) {
 					pdebug( "  C Processing '$pre' ..." );
 					$line = processline( $data, $pre, $masterstate );
 				} else {
@@ -2363,7 +2364,8 @@ sub processcomments( $$$ ) { # {{{
 
 				$state -> { 'depth' } ++;
 
-				if( length( $line ) ) {
+				( $filtered = $line ) =~ s/\s+//g if( defined( $line ) );
+				if( defined( $filtered ) and length( $filtered ) ) {
 					pdebug( "  C Remaining text is '$line', depth " . $state -> { 'depth' } );
 				} else {
 					pdebug( "  C No remaining text, depth " . $state -> { 'depth' } );
@@ -2389,8 +2391,10 @@ sub processcomments( $$$ ) { # {{{
 				}
 
 				pdebug( "  C Processing '$line' ..." ) if( length( $line ) );
+
 				#$line = processline( $data, $line, $masterstate ) if( length( $line ) );
-				if( length( $line ) ) {
+				( my $filtered = $line ) =~ s/\s+//g;
+				if( defined( $filtered ) and length( $filtered ) ) {
 					return( processline( $data, $line, $masterstate ) );
 				} else {
 					return( undef );
@@ -2507,7 +2511,8 @@ sub processcomments( $$$ ) { # {{{
 				undef( $line );
 			}
 
-			if( length( $line ) ) {
+			( my $filtered = $line ) =~ s/\s+//g if( defined( $line ) );
+			if( defined( $filtered ) and length( $filtered ) ) {
 				pdebug( "  C Remaining text is '$line', depth " . $state -> { 'depth' } );
 			} else {
 				pdebug( "  C No remaining text, depth " . $state -> { 'depth' } );
@@ -2629,7 +2634,7 @@ sub processline( $$;$ ) { # {{{
 			#	$tokens = $sqlparser -> structure;
 			#	$state -> { 'statements' } -> { 'tokens' } = $tokens;
 			#} else {
-			#	warn( "Failed to parse SQL statement '$command'" );
+			#	warn( "Failed to parse SQL statement '$command'\n" );
 			#}
 
 			#my $command = join( ' ', @{ $state -> { 'statements' } -> { 'entry' } } );
@@ -2693,8 +2698,8 @@ sub processline( $$;$ ) { # {{{
 	}
 } # processline # }}}
 
-sub processfile( $$ ) { # {{{
-	my( $data, $file ) = @_;
+sub processfile( $$;$$ ) { # {{{
+	my( $data, $file, $marker, $substitution ) = @_;
 
 	return( undef ) unless( defined( $file ) and length( $file ) and -r $file );
 
@@ -2714,6 +2719,14 @@ sub processfile( $$ ) { # {{{
 
 		next LINE unless( length( $line ) );
 
+		if( defined( $marker ) and length( $marker ) ) {
+			$substitution = '' unless( defined( $substitution ) and length( $substitution ) );
+
+			my $original = $line;
+			if( $line =~ s/$marker/$substitution/ ) {
+				print( "!> Substituted '$marker' for '$substitution' in string '$original'\n" );
+			}
+		}
 		# NB: $. contains the last-read line-number
 		pdebug( "$. '$line'" );
 
@@ -3308,8 +3321,9 @@ sub applyschema( $$$$ ) { # {{{
 	$action_migrate = $actions -> { 'migrate' } if( exists( $actions -> { 'migrate' } ) );
 	$action_check   = $actions -> { 'check' }   if( exists( $actions -> { 'check' } ) );
 
-	my( $tmpdir, $mode, $first, $backupdir, $safetyoff, $unsafe, $desc, $pretend, $clear, $compat, $force );
+	my( $tmpdir, $mode, $marker, $first, $backupdir, $safetyoff, $unsafe, $desc, $pretend, $clear, $compat, $force );
 	$mode      = $variables -> { 'mode' }      if( exists( $variables -> { 'mode' } ) );
+	$marker    = $variables -> { 'marker' }    if( exists( $variables -> { 'marker' } ) );
 	$first     = $variables -> { 'first' }     if( exists( $variables -> { 'first' } ) );
 	$backupdir = $variables -> { 'backupdir' } if( exists( $variables -> { 'backupdir' } ) );
 	$clear     = $variables -> { 'clear' }     if( exists( $variables -> { 'clear' } ) );
@@ -3341,9 +3355,13 @@ sub applyschema( $$$$ ) { # {{{
 				die( "$fatal --init requires a parameter: Initial version not specified\n" );
 			} elsif( ( -d $action_init ) or ( -r $action_init ) ) {
 				if( $force ) {
-					pwarn( "Initial version '$action_init' looks like a filesystem object - force-continuing" );
+					warn( "!> Initial version '$action_init' looks like a filesystem object - force-continuing\n" );
 				} else {
-					die( "$fatal Initial version '$action_init' looks like a filesystem object - re-run with '--force' to proceed regardless\n" );
+					if( $pretend ) {
+						warn( "!> Initial version '$action_init' looks like a filesystem object - would abort unless forced\n" );
+					} else {
+						die( "$fatal Initial version '$action_init' looks like a filesystem object - re-run with '--force' to proceed regardless\n" );
+					}
 				}
 			}
 		} else {
@@ -3379,17 +3397,35 @@ sub applyschema( $$$$ ) { # {{{
 	$schmversion = '0' unless( defined( $schmversion ) and length( $schmversion ) );
 
 	my $metadata = {};
+	my $procedureversion;
 	my $data = {};
 	my $invalid = FALSE;
 	my $dumpusers = FALSE;
 	my @dumptables = ();
 
 	if( 'procedure' eq $mode ) {
+		$procedureversion = $1 if( dirname( $file ) =~ m/^(?:.*?)(_v\d+_\d+)$/ );
+		if( defined( $procedureversion ) ) {
+			$procedureversion .= '` ';
+			print( "*> Will adjust Stored Procedure names with version string '$procedureversion'\n" );
+		} else {
+			if( $force ) {
+				warn( "!> Cannot determine Stored Procedure version string - removing versioning\n" );
+			} else {
+				if( $pretend ) {
+					warn( "!> Cannot determine Stored Procedure version string - would abort unless forced\n" );
+				} else {
+					die( "$fatal Cannot determine Stored Procedure version string from directory '" . dirname( $file ) . "' - aborting\n" );
+				}
+			}
+		}
+
 		# In this case, we retrieve the previous/current-version logic
 		# from the metadata file, and many files may be applied with
 		# the same versions.
-		my $metafile = dirname( realpath( $file ) ) . '/' . $db . '.metadata';
+		my $metafile = dirname( $file ) . '/' . $db . '.metadata';
 		die( "Cannot read metadata '$db.metadata' for file '$file'\n" ) unless( -s $metafile );
+		print( "*> Using metadata file '$file'\n" );
 
 		$invalid = $invalid | not( processfile( $metadata, $metafile ) );
 		die( "Metadata failed validation - aborting.\n" ) if( $invalid );
@@ -3405,7 +3441,11 @@ sub applyschema( $$$$ ) { # {{{
 		}
 	}
 
-	$invalid = $invalid | not( processfile( $data, $file ) );
+	if( ( 'procedure' eq $mode ) and defined( $marker ) and length( $marker ) ) {
+		$invalid = $invalid | not( processfile( $data, $file, $marker, $procedureversion ) );
+	} else {
+		$invalid = $invalid | not( processfile( $data, $file ) );
+	}
 	die( "Data failed validation - aborting.\n" ) if( $invalid );
 
 	#
@@ -3585,7 +3625,7 @@ sub applyschema( $$$$ ) { # {{{
 						if( $pretend ) {
 							warn( "!> Database `$db` has already been initialised to version '$version' - please use '--clear-metadata' to discard.\n" );
 						} else {
-							die( "Database `$db` has already been initialised to version '$version' - please use '--clear-metadata' to discard.\n" );
+							die( "$fatal Database `$db` has already been initialised to version '$version' - please use '--clear-metadata' to discard.\n" );
 						}
 					}
 				}
@@ -4682,7 +4722,7 @@ sub main( @ ) { # {{{
 	undef( $host ) unless( defined( $host ) and length( $host ) );
 	undef( $db ) unless( defined( $db ) and length( $db ) );
 	undef( $mode ) unless( defined( $mode ) and length( $mode ) );
-	undef( $marker ) unless( defined( $marker ) and length( $marker ) );
+	undef( $marker ) unless( $dosub and defined( $marker ) and length( $marker ) );
 	undef( $file ) unless( defined( $file ) and length( $file ) );
 	undef( @paths ) unless( @paths and scalar( @paths ) );
 
@@ -4710,7 +4750,7 @@ sub main( @ ) { # {{{
 		print( ( " " x $length ) . "--lock           - Lock instance for duration of backup\n" );
 		print( ( " " x $length ) . "--keep-lock      - Keep lock for up to 24 hours following backup\n" );
 		print( "\n" );
-		print( ( " " x $length ) . "--substitute     - Replace the string '$marker' with version\n" );
+		print( ( " " x $length ) . "--substitute     - Replace the string '" . ( ( defined( $marker ) and length( $marker ) ) ? $marker : MARKER ) . "' with version\n" );
 		print( ( " " x $length ) . "                   number from stored procedure directory name\n" );
 		print( ( " " x $length ) . "--marker         - Use string in place of '" . MARKER . "'\n" );
 		print( "\n" );
@@ -5021,26 +5061,30 @@ sub main( @ ) { # {{{
 		# they are versioned by directory, and so we don't care
 		# what they are called or what order they are applied
 		# in, but they have to all be in the same place!
+		# Note, however, that the adoption of symlinks causes problems
+		# if we use 'realpath' indiscriminately...
 		if( 'procedure' eq $mode ) {
-			my $path = realpath( $files[ 0 ] );
-			if( not( -d $path ) ) {
-				$path = dirname( $path );
+			#my $path = realpath( @{ $target }[ 0 ] );
+			#if( not( -d $path ) ) {
+				#$path = dirname( $path );
+				my $path = dirname( @{ $target }[ 0 ] );
 				if( not( -d $path ) ) {
-					die( "$fatal Cannot resolve directory name for path '" . $files[ 0 ] . "'\n" );
+					die( "$fatal Cannot resolve directory name for path '" . @{ $target }[ 0 ] . "'\n" );
 				}
-			}
+			#}
 			my $okay = TRUE;
 			my $index = -1; # Will be incremented before use...
 			PROCFILE: foreach my $singlefile ( @{ $target } ) {
-				my $singlepath = realpath( $singlefile );
-				if( not( -d $singlepath ) ) {
-					$singlepath = dirname( $singlepath );
+				#my $singlepath = realpath( $singlefile );
+				#if( not( -d $singlepath ) ) {
+					#$singlepath = dirname( $singlepath );
+					my $singlepath = dirname( $singlefile );
 					if( not( -d $singlepath ) ) {
 						$singlepath = undef;
 						$okay = FALSE;
 						warn( "$fatal Cannot resolve directory name for path '$singlefile'\n" );
 					}
-				}
+				#}
 				if( defined( $singlepath ) and not( $singlepath eq $path ) ) {
 					$okay = FALSE;
 					warn( "$fatal Directory path for file '$singlefile' does not fall within detected common directory '$path'\n" );
@@ -5263,6 +5307,7 @@ sub main( @ ) { # {{{
 
 	my $variables;
 	$variables -> { 'mode' }      = $mode;
+	$variables -> { 'marker' }    = $marker if( $dosub );
 	$variables -> { 'first' }     =  not( 'procedure' eq $mode );
 	$variables -> { 'backupdir' } = $backupdir;
 	$variables -> { 'clear' }     = $clear;
