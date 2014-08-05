@@ -3363,6 +3363,16 @@ sub applyschema( $$$$ ) { # {{{
 						die( "$fatal Initial version '$action_init' looks like a filesystem object - re-run with '--force' to proceed regardless\n" );
 					}
 				}
+			} elsif( $action_init =~ m/^--/ ) {
+				if( $force ) {
+					warn( "!> Initial version '$action_init' looks like a follow-on argument - force-continuing\n" );
+				} else {
+					if( $pretend ) {
+						warn( "!> Initial version '$action_init' looks like a follow-on argument - would abort unless forced\n" );
+					} else {
+						die( "$fatal Initial version '$action_init' looks like a follow-on argument - re-run with '--force' to proceed regardless\n" );
+					}
+				}
 			}
 		} else {
 			die( "$fatal File name required\n" );
@@ -3978,7 +3988,7 @@ SQL
 								$schmtarget = $1;
 							}
 						}
-						$schmprevious = undef if( defined( $schmprevious ) and ( $schmprevious =~ m:(na|n/a):i ) );
+						$schmprevious = undef if( defined( $schmprevious ) and ( $schmprevious =~ m#(?:na|n/a)#i ) );
 						print( "*> Read dubious prior version '$schmprevious'\n" ) unless( not( defined( $schmprevious ) ) or ( $schmprevious =~ m/[\d.]+/ ) );
 						print( "*> Read dubious target version '$schmtarget'\n" ) unless( not( defined( $schmtarget ) ) or ( $schmtarget =~ m/[\d.]+/ ) );
 						if( ( $schmfile =~ m/^(?:V(?:.*?)__)*V(.*?)__/ ) and not( $1 =~ m/^$schmtarget(?:\.\d)?$/ ) ) {
@@ -4010,20 +4020,20 @@ SQL
 								my $installedversions = getsqlvalues( $dbh, "SELECT DISTINCT(`version`) FROM `$tablename` WHERE `$statuscolumn` = $status" );
 								die( 'Unable to retrieve list of installed schema versions' . ( defined( $dbh -> errstr() ) ? ': ' . $dbh -> errstr() : '' ) . "\n" ) unless( scalar( $installedversions ) );
 
-								my $displayprevious = $schmprevious;
 								#if( $schmprevious =~ m/^0(?:\.0+)?$/ ) {
 									#$schmprevious = '0(?:\.0+)?';
 								#}
+								my $schmpreviousmatch = $schmprevious;
 								my $regex = qr/0(?:(?:\.0+)+)?/;
 								if( $schmprevious =~ m/^$regex$/ ) {
-									$schmprevious = "$regex";
+									$schmpreviousmatch = "$regex";
 								}
 								#if( /^$schmprevious$/ ~~ $installedversions )
-								if( defined( $schmprevious ) and ( qr/^$schmprevious(?:\.\d)?$/ |M| $installedversions ) ) {
+								if( defined( $schmpreviousmatch ) and ( qr/^$schmpreviousmatch(?:\.\d)?$/ |M| $installedversions ) ) {
 									if( 'procedure' eq $mode ) {
-										pdebug( "Prior schema version '$displayprevious' exists in myway metadata" );
+										pdebug( "Prior schema version '$schmprevious' exists in myway metadata" );
 									} else {
-										pdebug( "Prior schema version '$displayprevious' correctly exists in flyway metadata" );
+										pdebug( "Prior schema version '$schmprevious' correctly exists in flyway metadata" );
 									}
 								} else {
 									if( 'procedure' eq $mode ) {
@@ -4033,15 +4043,15 @@ SQL
 										# a previous version is not an issue, but we shouldn't allow installation of
 										# older and duplicate definitions without '--force'.
 										#
-										print( "*> Prior Stored Procedure definitions '$displayprevious' have not been applied to this database\n" );
+										print( "*> Prior Stored Procedure definitions '$schmprevious' have not been applied to this database\n" );
 									} else {
 										if( $pretend ) {
-											warn( "!> Prior schema version '$displayprevious' has not been applied to this database - would abort.\n" );
+											warn( "!> Prior schema version '$schmprevious' has not been applied to this database - would abort.\n" );
 										} else {
 											if( $force ) {
-												warn( "!> Prior schema version '$displayprevious' has not been applied to this database - forcibly applying ...\n" );
+												warn( "!> Prior schema version '$schmprevious' has not been applied to this database - forcibly applying ...\n" );
 											} else {
-												die( "Prior schema version '$displayprevious' (required by '$schmfile') has not been applied to this database - aborting.\n" );
+												die( "Prior schema version '$schmprevious' (required by '$schmfile') has not been applied to this database - aborting.\n" );
 											}
 										}
 									}
@@ -4732,7 +4742,7 @@ sub main( @ ) { # {{{
 		#                              2         3         4         5         6         7         8
 		#                           7890123456789012345678901234567890123456789012345678901234567890
 		print(       "Usage: $myway -u <username> -p <password> -h <host> -d <database> ...\n" );
-		print( ( " " x $length ) . "<--backup [directory] [:backup options:]|--init <version>>|...\n" );
+		print( ( " " x $length ) . "<--backup [directory] [:backup options:]|--init [version]>|...\n" );
 		print( ( " " x $length ) . "[--migrate|--check] <--scripts <directory>|--file <schema>> ...\n" );
 		print( ( " " x $length ) . "[[:mode:]] [--mysql-compat] [--no-backup|--keep-backup] ...\n" );
 		print( ( " " x $length ) . "[--clear-metadata] [--dry-run] [--force] [--debug] [--verbose]\n" );
