@@ -2758,6 +2758,11 @@ sub dbdump( $;$$$$$ ) { # {{{
 	my $host =     $auth -> { 'host' };
 
 	my $memorybackend;
+
+	if( defined( $filename ) and length( $filename ) and -d $filename and ( not( defined( $destination ) ) or not( length( $destination ) ) ) ) {
+		$destination = $filename;
+		$filename = undef;
+	}
 	if( defined( $filename ) and length( $filename ) ) {
 		if( defined( $destination ) and length( $destination ) ) {
 			if( not( -d $destination ) ) {
@@ -2940,7 +2945,8 @@ sub dbdump( $;$$$$$ ) { # {{{
 	#
 	if( not( defined( $memorybackend ) ) ) {
 		my $output = ( defined( $destination ) and length( $destination ) ? $destination . '/' : '' ) . $filename;
-		my $command = "mysqldump $optauth \"$optdb\" \"$opttab\" $optdump ";
+		my $command = "mysqldump $optauth $optdb $opttab $optdump ";
+		$command = "strace -vvfFtTs 128 -o \"${output}.strace\" $command";
 
 		if( defined( $compress ) and length( $compress ) ) {
 			if( 'gzip' eq $compress ) {
@@ -2980,7 +2986,7 @@ sub dbdump( $;$$$$$ ) { # {{{
 
 	} elsif( ( 'SCALAR' eq ref( $memorybackend ) ) or ( 'ARRAY' eq ref( $memorybackend ) ) ) {
 		pdebug( "Shell-command is: 'mysqldump $optauth $optdb $opttab $optdump'" );
-		$memorybackend = qx/ mysqldump $optauth \"$optdb\" \"$opttab\" $optdump /;
+		$memorybackend = qx/ mysqldump $optauth $optdb $opttab $optdump /;
 		if( not( defined( $memorybackend ) ) ) {
 			return( undef );
 		} else {
@@ -4637,7 +4643,7 @@ sub main( @ ) { # {{{
 
 	if( defined( $action_backup ) ) {
 		$ok = FALSE if( defined( $db ) and defined( $lock ) );
-		# TODO: Support backing-up Stored Procedures only...
+		# TODO: Support backing-up Stored Procedures separately...
 		$ok = FALSE if( 'procedure' eq $mode );
 		$ok = FALSE if( defined( $pretend ) );
 		$ok = FALSE if( defined( $clear ) );
@@ -4750,6 +4756,7 @@ sub main( @ ) { # {{{
 		print( ( " " x $length ) . "backup options:   [--compress [:scheme:]] [--small-dataset]\n" );
 		print( ( " " x $length ) . "                  [--lock [--keep-lock]]\n" );
 		print( ( " " x $length ) . "scheme:           <gzip|bzip2|xz|lzma>\n" );
+		print( "\n" );
 		print( ( " " x $length ) . "mode:             --mode <schema|procedure>\n" );
 		print( ( " " x $length ) . "                  [--substitute [--marker <marker>]\n" );
 		print( "\n" );
@@ -4960,7 +4967,11 @@ sub main( @ ) { # {{{
 
 				local $| = 1;
 
-				print( "\n=> Connecting to database '$db' ...\n" );
+				if( defined( $db ) ) {
+					print( "\n=> Connecting to database '$db' ...\n" );
+				} else {
+					print( "\n=> Connecting to database instance ...\n" );
+				}
 				#disable diagnostics;
 				$dbh = DBI -> connect( $dsn, $user, $pass, { RaiseError => 1, PrintError => 0 } )
 					or die( "Cannot create connection to DSN '$dsn': $DBI::errstr\n" );
@@ -4986,14 +4997,15 @@ sub main( @ ) { # {{{
 		# $location is specified, then create the backup in the current
 		# directory.
 		#
+		my $success;
 		if( defined( $location ) ) {
 			if( defined( $db ) and length( $db ) ) {
-				dbdump( $auth, undef, $location, undef, $compress, $small );
+				$success = dbdump( $auth, undef, $location, undef, $compress, $small );
 			} else {
-				dbdump( $auth, undef, undef, $location, $compress, $small );
+				$success = dbdump( $auth, undef, undef, $location, $compress, $small );
 			}
 		} else {
-			dbdump( $auth, undef, undef, undef, $compress, $small );
+			$success = dbdump( $auth, undef, undef, undef, $compress, $small );
 		}
 
 		if( $lock and not( $keeplock ) ) {
@@ -5003,9 +5015,18 @@ sub main( @ ) { # {{{
 			}
 		}
 
-		print( "Backup process completed successfully\n" );
+		if( defined( $success) and $success ) {
+			print( "Backup process completed successfully\n" );
 
-		exit( 0 );
+			exit( 0 );
+		} else {
+			print( "Backup process failed\n" );
+
+			exit( 1 );
+		}
+
+		# Unreachable
+		return( undef );
 	}
 
 	# }}}
