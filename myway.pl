@@ -4748,8 +4748,9 @@ sub main( @ ) { # {{{
 		#                              2         3         4         5         6         7         8
 		#                           7890123456789012345678901234567890123456789012345678901234567890
 		print(       "Usage: $myway -u <username> -p <password> -h <host> -d <database> ...\n" );
-		print( ( " " x $length ) . "<--backup [directory] [:backup options:]|--init [version]>|...\n" );
-		print( ( " " x $length ) . "[--migrate|--check] <--scripts <directory>|--file <schema>> ...\n" );
+		print( ( " " x $length ) . "<--backup [directory] [:backup options:]|...\n" );
+		print( ( " " x $length ) . " --restore <file>|--init [version]>|...\n" );
+		print( ( " " x $length ) . "[--migrate|--check] <--scripts <directory>|--file <schema>>...\n" );
 		print( ( " " x $length ) . "[[:mode:]] [--mysql-compat] [--no-backup|--keep-backup] ...\n" );
 		print( ( " " x $length ) . "[--clear-metadata] [--dry-run] [--force] [--debug] [--verbose]\n" );
 		print( "\n" );
