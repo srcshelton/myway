@@ -4813,7 +4813,7 @@ sub main( @ ) { # {{{
 
 	# -s can be used on a directory in order to determine whether it is
 	# empty...
-	if( defined( $file ) and ( -d $file ) or not ( -s $file ) ) {
+	if( defined( $file ) and ( ( -d $file ) or not ( -s $file ) ) ) {
 		warn( "File system object '$file' does not exist, is of zero length, or is not a regular file\n" );
 		warn( "(Please use the '--scripts' option to specify multiple input files or directories)\n" );
 		exit( 1 );
