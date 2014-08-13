@@ -2007,7 +2007,7 @@ sub getsqlvalues( $$;$ );
 sub dbclose( ;$$ );
 sub outputtable( $$;$ );
 sub formatastable( $$$ );
-sub applyschema( $$$$ );
+sub applyschema( $$$$;$ );
 sub main( @ );
 
 our $fatal   = "FATAL:";
@@ -3309,11 +3309,13 @@ sub formatastable( $$$ ) { # {{{
 	return( TRUE );
 } # formatastable # }}}
 
-sub applyschema( $$$$ ) { # {{{
-	my ( $file, $actions, $variables, $auth ) = @_;
+sub applyschema( $$$$;$ ) { # {{{
+	my ( $file, $actions, $variables, $auth, $schmvirtual ) = @_;
 
-	return( undef ) unless( ref( $actions ) eq 'HASH' );
-	return( undef ) unless( ref( $variables ) eq 'HASH' );
+	return( FALSE ) unless( ref( $actions ) eq 'HASH' );
+	return( FALSE ) unless( ref( $variables ) eq 'HASH' );
+	return( FALSE ) unless( not( defined( $schmvirtual ) ) or ( ( ref( $schmvirtual ) eq '' ) or ( ref( $schmvirtual ) eq 'SCALAR' ) ) );
+	$schmvirtual = ${ $schmvirtual } if( ref( $schmvirtual ) eq 'SCALAR' );
 
 	# TODO: Value written to metadata table on success
 	my $status = 0;
@@ -3556,7 +3558,7 @@ sub applyschema( $$$$ ) { # {{{
 		#
 		warn( "!> No valid SQL statements found, but continuing for now ...\n" );
 		#dbclose( undef, 'Nothing to do' );
-		#return( 1 );
+		#return( FALSE );
 	}
 	if( $invalid ) {
 		if( $safetyoff and ( not( defined( $verbosity ) ) or ( 0 == $verbosity ) ) ) {
@@ -3744,7 +3746,7 @@ SQL
 			}
 			if( not( defined( $file ) ) or defined( $action_init ) ) {
 				dbclose( $dbh );
-				return( 0 );
+				return( TRUE );
 			}
 
 			# }}}
@@ -3769,11 +3771,11 @@ SQL
 				if( ( $match eq $latest ) and ( $latest eq $previous ) ) {
 					print( "=> Skipping base initialiser file '$schmfile' ...\n" );
 					dbclose( $dbh );
-					return( 0 );
+					return( TRUE );
 				} elsif( $match eq $previous ) {
 					print( "=> Skipping pre-initialiser file '$schmfile' ...\n" );
 					dbclose( $dbh );
-					return( 0 );
+					return( TRUE );
 				}
 			}
 
@@ -3790,7 +3792,7 @@ SQL
 						warn( "!> Schema version '$schmversion' has already been applied to this database - forcibly re-applying ...\n" );
 					} else {
 						warn( "!> Schema version '$schmversion' has already been applied to this database - skipping ...\n\n" );
-						return( 0 );
+						return( TRUE );
 					}
 				}
 			}
@@ -4024,6 +4026,7 @@ SQL
 								# N.B.: $status is pre-quoted
 								#
 								my $installedversions = getsqlvalues( $dbh, "SELECT DISTINCT(`version`) FROM `$tablename` WHERE `$statuscolumn` = $status" );
+								push( @{ $installedversions }, $schmvirtual ) if( defined( $schmvirtual ) );
 								die( 'Unable to retrieve list of installed schema versions' . ( defined( $dbh -> errstr() ) ? ': ' . $dbh -> errstr() : '' ) . "\n" ) unless( scalar( $installedversions ) );
 
 								#if( $schmprevious =~ m/^0(?:\.0+)?$/ ) {
@@ -4037,7 +4040,7 @@ SQL
 								#if( /^$schmprevious$/ ~~ $installedversions )
 								if( defined( $schmpreviousmatch ) and ( qr/^$schmpreviousmatch(?:\.\d)?$/ |M| $installedversions ) ) {
 									if( 'procedure' eq $mode ) {
-										pdebug( "Prior schema version '$schmprevious' exists in myway metadata" );
+										pdebug( "Prior Stored Procedure definitions '$schmprevious' exist in myway metadata" );
 									} else {
 										pdebug( "Prior schema version '$schmprevious' correctly exists in flyway metadata" );
 									}
@@ -4057,6 +4060,8 @@ SQL
 											if( $force ) {
 												warn( "!> Prior schema version '$schmprevious' has not been applied to this database - forcibly applying ...\n" );
 											} else {
+warn( " > DEBUG: \$installedversions:\n" );
+print Dumper $installedversions;
 												die( "Prior schema version '$schmprevious' (required by '$schmfile') has not been applied to this database - aborting.\n" );
 											}
 										}
@@ -4103,10 +4108,11 @@ SQL
 												warn( "!> " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " target version '$schmtarget' has already been applied to this database - forcibly applying ...\n" );
 											} else {
 												warn( "!> Schema target version '$schmtarget' has already been applied to this database - skipping ...\n" );
-												return( 0 );
+												return( TRUE );
 											}
 										}
 										$okay = FALSE;
+										$fresh = FALSE;
 									}
 								}
 								#}
@@ -4120,7 +4126,7 @@ SQL
 											warn( "!> Existing " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " version '$latest' is greater than target '$schmtarget', and has already been applied to this database - forcibly applying ...\n" );
 										} else {
 											warn( "!> Existing " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " version '$latest' is greater than target '$schmtarget', and has already been applied to this database - skipping ...\n" );
-											return( 0 );
+											return( TRUE );
 										}
 									}
 									$okay = FALSE;
@@ -4135,9 +4141,9 @@ SQL
 							}
 
 							if( not( $statements ) and not( defined( $schmprevious ) and defined( $schmtarget ) ) ) {
-								warn( "!> No valid SQL statements found, and previous and target versions are not both defined\n" );
+								warn( "!> No valid SQL statements found; previous and target versions are not both defined\n" );
 								dbclose( undef, 'Nothing to do' );
-								return( 1 );
+								return( TRUE );
 							}
 
 							$status = $oldstatus;
@@ -4543,6 +4549,7 @@ SQL
 	}
 	dbclose( $dbh );
 
+	return( \$schmversion );
 } # applyschema # }}}
 
 sub main( @ ) { # {{{
@@ -4801,6 +4808,14 @@ sub main( @ ) { # {{{
 		warn( "Required argument '--schema' or '--schemata' not specified\n" ) unless( defined( $file ) or ( @paths ) or defined( $action_backup ) or defined( $action_restore ) );
 		warn( "Command '--restore' takes only a filename as the single argument\n" ) if( defined( $action_restore ) );
 		warn( "... additionally, Getopt failed with '$getoptout'\n" ) if( defined( $getoptout ) );
+		exit( 1 );
+	}
+
+	# -s can be used on a directory in order to determine whether it is
+	# empty...
+	if( defined( $file ) and ( -d $file ) or not ( -s $file ) ) {
+		warn( "File system object '$file' does not exist, is of zero length, or is not a regular file\n" );
+		warn( "(Please use the '--scripts' option to specify multiple input files or directories)\n" );
 		exit( 1 );
 	}
 
@@ -5351,6 +5366,8 @@ sub main( @ ) { # {{{
 	$variables -> { 'tmpdir' }    = $tmpdir;
 	$variables -> { 'unsafe' }    = $unsafe;
 
+	my $version = undef;
+
 	if( scalar( @files ) ) {
 		@files = ( shift( @files ) ) if( defined( $action_init ) );
 
@@ -5358,7 +5375,26 @@ sub main( @ ) { # {{{
 			if( -r $item ) {
 				print "*> Processing file '$item' ...\n";
 				eval {
-					applyschema( $item, $actions, $variables, $auth );
+					if( defined( $version ) ) {
+						$version = applyschema( $item, $actions, $variables, $auth, $version );
+					} else {
+						$version = applyschema( $item, $actions, $variables, $auth );
+					}
+					if( not( defined( $version ) ) ) {
+						if( $pretend ) {
+							die( "applyversion() returned undef\n" );
+						}
+					} elsif( ref( $version ) eq 'SCALAR' ) {
+						print( "*> This session now has base version '${ $version }'\n" );
+					} elsif( ref( $version ) eq '' ) {
+						if( not( $version ) ) {
+							die( "applyschema() failed\n" );
+						}
+					} else {
+						warn( "applyschema() returned invalid data '$version':\n" );
+						print Dumper $version;
+						die( "applyschema() returned invalid response\n" );
+					}
 				};
 				if( $@ ) {
 					#warn( "Failed with error: " . $@ . "\n" );
@@ -5376,7 +5412,7 @@ sub main( @ ) { # {{{
 		}
 	} else {
 		eval {
-			applyschema( $file, $actions, $variables, $auth );
+			die( "applyschema() failed\n" ) unless( applyschema( $file, $actions, $variables, $auth ) );
 		};
 		if( $@ ) {
 			#warn( "Failed with error: " . $@ . "\n" );
