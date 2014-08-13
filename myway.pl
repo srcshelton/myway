@@ -277,8 +277,13 @@ sub parse( $$ ) {
 		die "Cannot parse " . uc($type) . " queries"
 			unless $type =~ m/$allowed_types/i;
 	}
+	elsif( $query eq ';' ) {
+		# This is a bit of a hack to catch hints which are passed
+		# through this far...
+		return( undef );
+	}
 	else {
-		die "Query does not begin with a word";  # shouldn't happen
+		die "Query '$query' does not begin with a word";  # shouldn't happen
 	}
 
 	$query = $self->normalize_keyword_spaces($query);
@@ -2310,7 +2315,9 @@ sub processcomments( $$$ ) { # {{{
 				# semi-colon (but also ensure that Hint-like
 				# comments do always have the correct
 				# terminator)...
-				$match .= ';' if( $match =~ m:^/\*![0-9]{5} (.+) \*/$: );
+				#$match .= ';' if( $match =~ m:^/\*![0-9]{5} (.+) \*/$: );
+				# This should no longer happen, as hints don't
+				# get passed to this code-path.
 
 				$line =~ m/^(.*?)\Q$match\E(.*?)$/;
 				my $pre = $1;
@@ -2546,11 +2553,20 @@ sub processline( $$;$ ) { # {{{
 
 	return( undef ) unless( defined( $line ) );
 
-	pdebug( "  * Start processing text '$line' ..." );
+	# Previously, we were looking for lines where the entirity of the line
+	# was a hint in order to handle the text as a hint rather than as a
+	# comment - however, it transpires that hints can correctly appear
+	# within a statement also, so we'll just have to return any hint-like
+	# data as-is.  Hopefully this will be safe...
+	if( $line =~ m#(^|\s+)/\*![0-9]{5} .+ \*/(\s+|;\s*$)# ) {
+		pdebug( "  * Not processing text with hint '$line' ..." );
+	} else {
+		pdebug( "  * Start processing text '$line' ..." );
 
-	$line = processcomments( $data, $line, $state );
+		$line = processcomments( $data, $line, $state );
 
-	return( $line ) unless( defined( $line ) );
+		return( $line ) unless( defined( $line ) );
+	}
 
 	pdebug( "  S Line '$line' should contain a statement..." );
 
@@ -3077,6 +3093,7 @@ sub dosql( $$ ) { # {{{
 	#}
 	return( undef ) unless( defined( $st ) and length( $st ) );
 
+	pdebug( "SQL: Sending to database: \"$st\"" );
 	eval {
 		my $result = $dbh -> do( $st );
 		if( not( defined( $result ) ) ) {
@@ -3108,6 +3125,7 @@ sub preparesql( $$ ) { # {{{
 	#}
 	return( undef ) unless( defined( $st ) and length( $st ) );
 
+	pdebug( 'SQL: Preparing: "' . join( ' ', split( /\s*\n\s*/, $st ) ) . '"' );
 	my $sth = $dbh -> prepare_cached( $st );
 	if( $@ ) {
 		warn( "\nError when processing SQL statement:\n$st\n$@\n" . $dbh -> errstr() . "\n" );
@@ -3140,6 +3158,8 @@ sub executesql( $$$;@ ) { # {{{
 		return( undef ) unless( defined( $sth ) and $sth );
 	}
 
+	pdebug( 'SQL: Executing: "' . join( ' ', split( /\s*\n\s*/, $dbh -> { 'Statement' } ) ) . '"' ) if( defined( $dbh -> { 'Statement' } ) );
+	pdebug( 'SQL: Parameters: "' . join( '", "', grep defined, @values ) . '"' ) if( defined( @values ) and scalar( @values ) );
 	eval {
 		my $result = $sth -> execute( @values );
 		if( not( defined( $result ) ) ) {
@@ -3503,7 +3523,7 @@ sub applyschema( $$$$;$ ) { # {{{
 					$text = qq($text);
 
 					# FIXME: Filter known edge-cases which the Parser fails to tokenise...
-					if( not( $text =~ m/^(LOCK|UNLOCK|SET|CREATE PROCEDURE) /i ) ) {
+					if( not( $text =~ m/^((LOCK|UNLOCK|SET|CREATE PROCEDURE )|\s*\/\*\!)/i ) ) {
 						$output -> ( 'Unable to parse ' . $texttype . 'entry "' . $text . '"' );
 						$invalid = TRUE;
 					}
@@ -3519,7 +3539,9 @@ sub applyschema( $$$$;$ ) { # {{{
 			my $type = $entry -> { 'tokens' } -> { 'type' };
 			my $object = $entry -> { 'tokens' } -> { 'object' };
 			if( ( defined( $type ) and ( 'create' eq lc( $type ) ) ) and ( defined( $object ) and ( 'user' eq lc( $object ) ) ) ) {
-				$dumpusers = TRUE unless( -e $tmpdir . 'mysql.users.sql' );
+				if( defined( $tmpdir ) and -d $tmpdir ) {
+					$dumpusers = TRUE unless( -e $tmpdir . '/' . 'mysql.users.sql' );
+				}
 			}
 			foreach my $key ( keys( $entry -> { 'tokens' } ) ) {
 				if( ref( $entry -> { 'tokens' } -> { $key } ) eq 'ARRAY' ) {
@@ -3768,14 +3790,16 @@ SQL
 				my @sortedversions = sort { versioncmp( $a, $b ) } ( $version, $match );
 				my $latest = pop( @sortedversions );
 				my $previous = pop( @sortedversions );
-				if( ( $match eq $latest ) and ( $latest eq $previous ) ) {
-					print( "=> Skipping base initialiser file '$schmfile' ...\n" );
-					dbclose( $dbh );
-					return( TRUE );
-				} elsif( $match eq $previous ) {
-					print( "=> Skipping pre-initialiser file '$schmfile' ...\n" );
-					dbclose( $dbh );
-					return( TRUE );
+				if( not( $force ) ) {
+					if( ( $match eq $latest ) and ( $latest eq $previous ) ) {
+						print( "=> Skipping base initialiser file '$schmfile' ...\n" );
+						dbclose( $dbh );
+						return( TRUE );
+					} elsif( $match eq $previous ) {
+						print( "=> Skipping pre-initialiser file '$schmfile' ...\n" );
+						dbclose( $dbh );
+						return( TRUE );
+					}
 				}
 			}
 
@@ -4239,7 +4263,9 @@ warn "DEBUG: Inserting entry to `$mywayprocsname` for file '$schmfile'";
 					foreach my $line ( @{ $statement -> { 'entry' } } ) {
 						chomp( $line );
 						# Check for database hints...
-						if( $line =~ m:^/\*![0-9]{5} (.+) \*/;?: ) {
+						#if( $line =~ m:^/\*![0-9]{5} (.+) \*/;?: ) {
+						#if( $line =~ m#(?:^|\s+)/\*![0-9]{5} (.+) \*/(?:\s+|;\s*$)# ) {
+						if( $line =~ m:/\*![0-9]{5} (.+) \*/: ) {
 							print( "-> Hint: " . $1 . "\n" ) if( $verbosity );
 							if( $safetyoff ) {
 								dosql( $dbh, $line ) or die( "Statement execution failed\n" );
@@ -4252,7 +4278,9 @@ warn "DEBUG: Inserting entry to `$mywayprocsname` for file '$schmfile'";
 					my $line = $statement -> { 'entry' };
 					chomp( $line );
 					# Check for database hints...
-					if( $line =~ m:^/\*![0-9]{5} (.+) \*/;?: ) {
+					#if( $line =~ m:^/\*![0-9]{5} (.+) \*/;?: ) {
+					#if( $line =~ m#(?:^|\s+)/\*![0-9]{5} (.+) \*/(?:\s+|;\s*$)# ) {
+					if( $line =~ m:/\*![0-9]{5} (.+) \*/: ) {
 						print( "-> Hint: " . $1 . "\n" ) if( $verbosity );
 						if( $safetyoff ) {
 							dosql( $dbh, $line ) or die( "Statement execution failed\n" );
@@ -4323,7 +4351,17 @@ warn "DEBUG: Inserting entry to `$mywayprocsname` for file '$schmfile'";
 					chomp( $line );
 					$line =~ s/^\s+//;
 					$line =~ s/\s+$//;
-					print( "-> " . $line . "\n" ) if( $verbosity );
+					if( $verbosity ) {
+						if( $line =~ m:^(.*)/\*![0-9]{5} (.+) \*/;?(.*)$: ) {
+							my $statement = '';
+							$statement .= $1 if( defined( $1 ) and length( $1 ) );
+							$statement .= $3 if( defined( $3 ) and length( $3 ) );
+							print( "-> Hint: " . $2 . "\n" );
+							print( "-> " . $statement . "\n" ) if( length( $statement ) );
+						} else {
+							print( "-> " . $line . "\n" );
+						}
+					}
 
 					# FIXME: Hack!!
 					$line =~ s/\$\$\s*$//;
