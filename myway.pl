@@ -111,7 +111,7 @@ $Data::Dumper::Sortkeys  = 1;
 $Data::Dumper::Quotekeys = 0;
 
 sub new( $% );
-sub parse( $$ );
+sub parse( $$;$ );
 
 sub parse_alter( $$ );
 sub parse_call( $$ );
@@ -244,9 +244,11 @@ sub new( $% ) {
 #   it means the query doesn't have that part.  E.g. INSERT has an INTO clause
 #   but DELETE does not, and only DELETE and SELECT have FROM clauses.  Each
 #   clause struct is different; see their respective parse_CLAUSE subs.
-sub parse( $$ ) {
-	my ( $self, $query ) = @_;
+sub parse( $$;$ ) {
+	my ( $self, $query, $delim ) = @_;
 	return unless $query;
+
+	$delim = ';' unless( defined( $delim ) and length( $delim ) );
 
 	#MKDEBUG && _d('Query:', $query);
 
@@ -277,9 +279,9 @@ sub parse( $$ ) {
 		die "Cannot parse " . uc($type) . " queries"
 			unless $type =~ m/$allowed_types/i;
 	}
-	elsif( $query eq ';' ) {
-		# This is a bit of a hack to catch hints which are passed
-		# through this far...
+	elsif( $query eq $delim ) {
+		# This is a bit of a hack to catch fragments after hints which
+		# may have been passed through this far...
 		return( undef );
 	}
 	else {
@@ -2663,11 +2665,16 @@ sub processline( $$;$ ) { # {{{
 			my $sqlparser = SQLParser -> new();
 			my $command = join( ' ', @{ $state -> { 'statements' } -> { 'entry' } } );
 			my $tokens;
-			if( $command =~ m/^use\s+`?(.+?)`?$/ ) {
+			if( $command =~ m/^use\s+`?(.+?)`?$/i ) {
 				warn( "$warning Not parsing prohibited command '$command'\n" );
+
+			} elsif( $command =~ m/^\s*$delim\s*$/ ) {
+				pdebug( "  S Not parsing lone delimiter from '$command', but pushing statements array ..." );
+				pushstate( $data, $state -> { 'statements' } );
+
 			} else {
 				eval {
-					$tokens = $sqlparser -> parse( $command );
+					$tokens = $sqlparser -> parse( $command, $delim );
 				};
 				if( $@ ) {
 					warn( $@ . "\n" );
@@ -3159,7 +3166,7 @@ sub executesql( $$$;@ ) { # {{{
 	}
 
 	pdebug( 'SQL: Executing: "' . join( ' ', split( /\s*\n\s*/, $dbh -> { 'Statement' } ) ) . '"' ) if( defined( $dbh -> { 'Statement' } ) );
-	pdebug( 'SQL: Parameters: "' . join( '", "', grep defined, @values ) . '"' ) if( defined( @values ) and scalar( @values ) );
+	pdebug( 'SQL: Parameters: "' . join( '", "', grep defined, @values ) . '"' ) if( @values and scalar( @values ) );
 	eval {
 		my $result = $sth -> execute( @values );
 		if( not( defined( $result ) ) ) {
@@ -3523,7 +3530,7 @@ sub applyschema( $$$$;$ ) { # {{{
 					$text = qq($text);
 
 					# FIXME: Filter known edge-cases which the Parser fails to tokenise...
-					if( not( $text =~ m/^((LOCK|UNLOCK|SET|CREATE PROCEDURE )|\s*\/\*\!)/i ) ) {
+					if( not( $text =~ m/^((LOCK|UNLOCK|SET|CREATE PROCEDURE|GRANT) |\s*\/\*\!)/i ) ) {
 						$output -> ( 'Unable to parse ' . $texttype . 'entry "' . $text . '"' );
 						$invalid = TRUE;
 					}
@@ -3899,15 +3906,23 @@ SQL
 				}
 
 				my @usertables = [ 'columns_priv', 'procs_priv', 'proxies_priv', 'tables_priv', 'user' ];
+				my @backuptables;
+				my $showtables = FALSE;
 				foreach my $table ( @usertables ) {
 					#if( not( /^$table$/ ~~ @{ $availabletables } ) )
-					if( defined( $table ) and not( qr/^$table$/ |M| \@{ $availabletables } ) ) {
-						warn( "'$table' table does not appear to exist in 'mysql' database.  Detected databases were:\n" );
-						foreach $table ( @{ $availabletables } ) {
-							warn( "\t$table\n" );
-						}
-						die( "Aborting\n" );
+					if( qr/^$table$/ |M| \@{ $availabletables } ) {
+						push( @backuptables, $table );
+					} else {
+						warn( "'$table' table does not appear to exist in 'mysql' database.\n" );
+						$showtables = TRUE;
 					}
+				}
+				if( $showtables ) {
+					warn( "Detected databases were:\n" );
+					foreach my $table ( @{ $availabletables } ) {
+						warn( "\t$table\n" );
+					}
+					die( "Aborting\n" ) if( not( @backuptables ) or ( 0 == scalar( @backuptables ) ) );
 				}
 
 				print( "\n=> User alterations detected - backing-up MySQL `user` and *`_priv` tables ...\n" );
@@ -3918,7 +3933,7 @@ SQL
 					, 'host'	=> $host
 					, 'database'	=> 'mysql'
 				};
-				dbdump( $auth, @usertables, $tmpdir, "mysql.userpriv.$uuid.sql" ) or die( "Database backup failed - aborting" );
+				dbdump( $auth, @backuptables, $tmpdir, "mysql.userpriv.$uuid.sql" ) or die( "Database backup failed - aborting" );
 
 				print( "\n=> MySQL table backups completed\n" );
 			}
@@ -4085,7 +4100,7 @@ SQL
 												warn( "!> Prior schema version '$schmprevious' has not been applied to this database - forcibly applying ...\n" );
 											} else {
 warn( " > DEBUG: \$installedversions:\n" );
-print Dumper $installedversions;
+print Data::Dumper -> Dump( [ $installedversions ], [ qw( *versions ) ] );
 												die( "Prior schema version '$schmprevious' (required by '$schmfile') has not been applied to this database - aborting.\n" );
 											}
 										}
@@ -4262,32 +4277,30 @@ warn "DEBUG: Inserting entry to `$mywayprocsname` for file '$schmfile'";
 					} # }}}
 					foreach my $line ( @{ $statement -> { 'entry' } } ) {
 						chomp( $line );
-						# Check for database hints...
-						#if( $line =~ m:^/\*![0-9]{5} (.+) \*/;?: ) {
-						#if( $line =~ m#(?:^|\s+)/\*![0-9]{5} (.+) \*/(?:\s+|;\s*$)# ) {
-						if( $line =~ m:/\*![0-9]{5} (.+) \*/: ) {
-							print( "-> Hint: " . $1 . "\n" ) if( $verbosity );
-							if( $safetyoff ) {
-								dosql( $dbh, $line ) or die( "Statement execution failed\n" );
-							}
-						} else {
+						# Hints are no longer passed as comments, so this block
+						# is no longer necessary...
+						#if( $line =~ m:/\*![0-9]{5} (.+) \*/: ) {
+						#	print( "-> Hint: " . $1 . "\n" ) if( $verbosity );
+						#	if( $safetyoff ) {
+						#		dosql( $dbh, $line ) or die( "Statement execution failed\n" );
+						#	}
+						#} else {
 							print( " > " . $line . "\n" ) if( $verbosity );
-						}
+						#}
 					}
 				} else {
 					my $line = $statement -> { 'entry' };
 					chomp( $line );
-					# Check for database hints...
-					#if( $line =~ m:^/\*![0-9]{5} (.+) \*/;?: ) {
-					#if( $line =~ m#(?:^|\s+)/\*![0-9]{5} (.+) \*/(?:\s+|;\s*$)# ) {
-					if( $line =~ m:/\*![0-9]{5} (.+) \*/: ) {
-						print( "-> Hint: " . $1 . "\n" ) if( $verbosity );
-						if( $safetyoff ) {
-							dosql( $dbh, $line ) or die( "Statement execution failed\n" );
-						}
-					} else {
+					# Hints are no longer passed as comments, so this block
+					# is no longer necessary...
+					#if( $line =~ m:/\*![0-9]{5} (.+) \*/: ) {
+					#	print( "-> Hint: " . $1 . "\n" ) if( $verbosity );
+					#	if( $safetyoff ) {
+					#		dosql( $dbh, $line ) or die( "Statement execution failed\n" );
+					#	}
+					#} else {
 						print( " > " . $line . "\n" ) if( $verbosity );
-					}
+					#}
 				} # }}}
 			} elsif( 'statement' eq $statement -> { 'type' } ) {
 				if( defined( $statement -> { 'tokens' } -> { 'type' } ) and ( $statement -> { 'tokens' } -> { 'type' } ) ) { # {{{
@@ -5430,7 +5443,7 @@ sub main( @ ) { # {{{
 						}
 					} else {
 						warn( "applyschema() returned invalid data '$version':\n" );
-						print Dumper $version;
+						print Data::Dumper -> Dump( [ $version ], [ qw( *version ) ] );
 						die( "applyschema() returned invalid response\n" );
 					}
 				};
