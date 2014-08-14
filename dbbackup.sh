@@ -25,89 +25,6 @@ std_TRACE="${TRACE:-0}"
 
 (( std_TRACE )) && set -o xtrace
 
-function setconfigurevars() {
-	local prefix eprefix bindir sbindir libexecdir sysconfdir
-	local sharedstatedir localstatedir libdir includedir oldincludedir
-	local datarootdir datadir infodir localedir mandir docdir htmldir
-	eval $( std::parseargs "${@:-}" ) || {
-		set -- $( std::parseargs --strip -- "${@:-}" )
-		prefix="${1:-}"
-		eprefix="${2:-}"
-		bindir="${3:-}"
-		sbindir="${4:-}"
-		libexecdir="${5:-}"
-		sysconfdir="${6:-}"
-		sharedstatedir="${7:-}"
-		localstatedir="${8:-}"
-		libdir="${9:-}"
-		includedir="${10:-}"
-		oldincludedir="${11:-}"
-		datarootdir="${12:-}"
-		datadir="${13:-}"
-		infodir="${14:-}"
-		localedir="${15:-}"
-		mandir="${16:-}"
-		docdir="${17:-}"
-		htmldir="${18:-}"
-	}
-
-	if [[ -n "${prefix:-}" ]]; then
-		export PREFIX="${prefix%/}"
-	else
-		export PREFIX="/usr/local"
-	fi
-	if [[ -n "${eprefix:-}" ]]; then
-		export EPREFIX="${eprefix%/}"
-	else
-		export EPREFIX="${PREFIX}"
-	fi
-
-	export BINDIR="${bindir:-${EPREFIX}/bin}"
-	export SBINDIR="${sbindir:-${EPREFIX}/sbin}"
-	export LIBEXECDIR="${libexecdir:-${EPREFIX}/libexec}"
-	export SYSCONFDIR="${sysconfdir:-${PREFIX}/etc}"
-	export SHAREDSTATEDIR="${sharedstatedir:-${PREFIX}/com}"
-	export LOCALSTATEDIR="${localstatedir:-${PREFIX}/var}"
-	export LIBDIR="${libdir:-${EPREFIX}/lib}"
-	export INCLUDEDIR="${includedir:-${PREFIX}/include}"
-	export OLDINCLUDEDIR="${oldincludedir:-/usr/include}"
-	export DATAROOTDIR="${datarootdir:-${PREFIX}/share}"
-	export DATADIR="${datadir:-${DATAROOTDIR}}"
-	export INFODIR="${infodir:-${DATAROOTDIR}/info}"
-	export LOCALEDIR="${localedir:-${DATAROOTDIR}/locale}"
-	export MANDIR="${mandir:-${DATAROOTDIR}/man}"
-	export DOCDIR="${docdir:-${DATAROOTDIR}/doc}"
-	export HTMLDIR="${htmldir:-${DOCDIR}}"
-
-	if [[ -d "${PREFIX:-}/" && -d "${EPREFIX:-}/" ]]; then
-		return 0
-	fi
-
-	return 1
-} # setconfigurevars
-
-function getinifilesection() {
-	local file="${1:-}" ; shift
-	local section="${1:-}" ; shift
-
-	[[ -n "${file:-}" && -s "${file}" ]] || return 1
-	[[ -n "${section:-}" ]] || return 1
-
-	local script
-	# By printing output before setting output to 1, we prevent the section
-	# header itself from being returned.
-	std::define script <<-EOF
-		BEGIN				{ output = 0 }
-		/^\s*\[.*\]\s*$/		{ output = 0 }
-		( 1 == output )			{ print \$0 }
-		/^\s*\[${section}\]\s*$/	{ output = 1 }
-	EOF
-
-	respond "$( awk -- "${script:-}" "${file}" )"
-
-	return ${?}
-} # getinifilesection
-
 function getmysqlport() {
 	local block="${@:-}"
 
@@ -116,7 +33,7 @@ function getmysqlport() {
 
 	[[ -r "${mysqlconfroot}"/"${mysqlconffile}" ]] || die "Cannot read MySQL configuration file '${mysqlconfroot}/${mysqlconffile}'"
 
-	local mysqldsection="$( getinifilesection "${mysqlconfroot}"/"${mysqlconffile}" 'mysqld' )"
+	local mysqldsection="$( std::getfilesection "${mysqlconfroot}"/"${mysqlconffile}" 'mysqld' )"
 	local -i mysqlport="$( grep -Ei -- '^\s*port\s*=\s*[0-9]{1,5}\s*$' <<<"${mysqldsection}" | cut -d'=' -f 2- )"
 	debug "Found MySQL port ${mysqlport:-<unknown>} from '${mysqlconfroot}/${mysqlconffile}'"
 
@@ -165,7 +82,7 @@ function main() {
 			 --location <directory>
 EOF
 
-	setconfigurevars \
+	std::configure \
 		-prefix		/		\
 		-eprefix	/usr		\
 		-datarootdir	/usr/share	\
@@ -237,7 +154,7 @@ EOF
 	local -i port="$( getmysqlport "${mysqlslaveidcodeblock}" )"
 
 	args="-u ${user} -p${pass} -h localhost"
-	[[ -n "${db}" ]] && args="${args} ${db}"
+	[[ -n "${db:-}" ]] && args="${args} ${db}"
 	$mysql ${args} <<<'SHOW STATUS'
 } # main
 
