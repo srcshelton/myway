@@ -4044,6 +4044,7 @@ SQL
 
 						if( defined( $firstcomment ) ) {
 							my $oldstatus = $status;
+							my $greaterversionpresent = FALSE;
 
 							my $tablename = $flywaytablename;
 							my $statuscolumn = 'success';
@@ -4052,60 +4053,6 @@ SQL
 								$tablename = $mywayprocsname;
 								$statuscolumn = 'status';
 								$status = "'$status'";
-							}
-
-							if( not( defined( $schmprevious ) ) ) {
-								print( "*> No previous version defined in schema comments - not validating previous installation chain\n" );
-							#} elsif( not( /^$flywaytablename$/ ~~ @{ $availabletables } ) )
-							} elsif( defined( $tablename ) and not( qr/^$tablename$/ |M| \@{ $availabletables } ) ) {
-								warn( "!> metadata table `$tablename` does not exist - not validating previous installation chain\n" );
-							} else {
-								# Ensure that we only consider successfully-applied versions (via $status)...
-								#
-								# N.B.: $status is pre-quoted
-								#
-								my $installedversions = getsqlvalues( $dbh, "SELECT DISTINCT(`version`) FROM `$tablename` WHERE `$statuscolumn` = $status" );
-								push( @{ $installedversions }, $schmvirtual ) if( defined( $schmvirtual ) );
-								die( 'Unable to retrieve list of installed schema versions' . ( defined( $dbh -> errstr() ) ? ': ' . $dbh -> errstr() : '' ) . "\n" ) unless( scalar( $installedversions ) );
-
-								#if( $schmprevious =~ m/^0(?:\.0+)?$/ ) {
-									#$schmprevious = '0(?:\.0+)?';
-								#}
-								my $schmpreviousmatch = $schmprevious;
-								my $regex = qr/0(?:(?:\.0+)+)?/;
-								if( $schmprevious =~ m/^$regex$/ ) {
-									$schmpreviousmatch = "$regex";
-								}
-								#if( /^$schmprevious$/ ~~ $installedversions )
-								if( defined( $schmpreviousmatch ) and ( qr/^$schmpreviousmatch(?:\.\d)?$/ |M| $installedversions ) ) {
-									if( 'procedure' eq $mode ) {
-										pdebug( "Prior Stored Procedure definitions '$schmprevious' exist in myway metadata" );
-									} else {
-										pdebug( "Prior schema version '$schmprevious' correctly exists in flyway metadata" );
-									}
-								} else {
-									if( 'procedure' eq $mode ) {
-										# Stored Procedures should be entirely self-contained, so we can apply any
-										# future version at any point, regardless of what is already present (with
-										# and cleanup/migration performed by metadata commands).  Therefore, lacking
-										# a previous version is not an issue, but we shouldn't allow installation of
-										# older and duplicate definitions without '--force'.
-										#
-										print( "*> Prior Stored Procedure definitions '$schmprevious' have not been applied to this database\n" );
-									} else {
-										if( $pretend ) {
-											warn( "!> Prior schema version '$schmprevious' has not been applied to this database - would abort.\n" );
-										} else {
-											if( $force ) {
-												warn( "!> Prior schema version '$schmprevious' has not been applied to this database - forcibly applying ...\n" );
-											} else {
-warn( " > DEBUG: \$installedversions:\n" );
-print Data::Dumper -> Dump( [ $installedversions ], [ qw( *versions ) ] );
-												die( "Prior schema version '$schmprevious' (required by '$schmfile') has not been applied to this database - aborting.\n" );
-											}
-										}
-									}
-								}
 							}
 
 							if( not( defined( $schmtarget ) ) ) {
@@ -4168,6 +4115,7 @@ print Data::Dumper -> Dump( [ $installedversions ], [ qw( *versions ) ] );
 											return( TRUE );
 										}
 									}
+									$greaterversionpresent = TRUE;
 									$okay = FALSE;
 								} elsif( $fresh ) { # and ( $first )
 									print( "*> " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " version '$schmtarget' is a fresh install\n" );
@@ -4176,6 +4124,64 @@ print Data::Dumper -> Dump( [ $installedversions ], [ qw( *versions ) ] );
 								}
 								if( $okay ) {
 									$schmversion = $schmtarget;
+								}
+							}
+
+							if( not( defined( $schmprevious ) ) ) {
+								print( "*> No previous version defined in schema comments - not validating previous installation chain\n" );
+							#} elsif( not( /^$flywaytablename$/ ~~ @{ $availabletables } ) )
+							} elsif( defined( $tablename ) and not( qr/^$tablename$/ |M| \@{ $availabletables } ) ) {
+								warn( "!> metadata table `$tablename` does not exist - not validating previous installation chain\n" );
+							} else {
+								# Ensure that we only consider successfully-applied versions (via $status)...
+								#
+								# N.B.: $status is pre-quoted
+								#
+								my $installedversions = getsqlvalues( $dbh, "SELECT DISTINCT(`version`) FROM `$tablename` WHERE `$statuscolumn` = $status" );
+								push( @{ $installedversions }, $schmvirtual ) if( defined( $schmvirtual ) );
+								die( 'Unable to retrieve list of installed schema versions' . ( defined( $dbh -> errstr() ) ? ': ' . $dbh -> errstr() : '' ) . "\n" ) unless( scalar( $installedversions ) );
+
+								#if( $schmprevious =~ m/^0(?:\.0+)?$/ ) {
+									#$schmprevious = '0(?:\.0+)?';
+								#}
+								my $schmpreviousmatch = $schmprevious;
+								my $regex = qr/0(?:(?:\.0+)+)?/;
+								if( $schmprevious =~ m/^$regex$/ ) {
+									$schmpreviousmatch = "$regex";
+								}
+								if( $greaterversionpresent ) {
+									print( "*> Not validating previous versions as target version has already been exceeded\n" );
+								} else {
+									#if( /^$schmprevious$/ ~~ $installedversions )
+									if( defined( $schmpreviousmatch ) and ( qr/^$schmpreviousmatch(?:\.\d)?$/ |M| $installedversions ) ) {
+										if( 'procedure' eq $mode ) {
+											pdebug( "Prior Stored Procedure definitions '$schmprevious' exist in myway metadata" );
+										} else {
+											pdebug( "Prior schema version '$schmprevious' correctly exists in flyway metadata" );
+										}
+									} else {
+										if( 'procedure' eq $mode ) {
+											# Stored Procedures should be entirely self-contained, so we can apply any
+											# future version at any point, regardless of what is already present (with
+											# and cleanup/migration performed by metadata commands).  Therefore, lacking
+											# a previous version is not an issue, but we shouldn't allow installation of
+											# older and duplicate definitions without '--force'.
+											#
+											print( "*> Prior Stored Procedure definitions '$schmprevious' have not been applied to this database\n" );
+										} else {
+											if( $pretend ) {
+												warn( "!> Prior schema version '$schmprevious' has not been applied to this database - would abort.\n" );
+											} else {
+												if( $force ) {
+													warn( "!> Prior schema version '$schmprevious' has not been applied to this database - forcibly applying ...\n" );
+												} else {
+warn( " > DEBUG: \$installedversions:\n" );
+print Data::Dumper -> Dump( [ $installedversions ], [ qw( *versions ) ] );
+													die( "Prior schema version '$schmprevious' (required by '$schmfile') has not been applied to this database - aborting.\n" );
+												}
+											}
+										}
+									}
 								}
 							}
 
