@@ -2962,6 +2962,31 @@ sub dbdump( $;$$$$$ ) { # {{{
 			 . ' --order-by-primary --quick --quote-names'
 			 . ' --routines --set-charset --triggers --tz-utc'
 			 . ' --verbose';
+		# Let's assume that if we're doing a full backup in this way,
+		# then we're either backing up from a master node, or that this
+		# behaviour is likely what we need regardless...
+		#
+		# --master-data: Write binary log name and position to output;
+		# --dump-slave:  Include CHANGE MASTER statement that provides
+		#                master log position.
+		#
+		# By using argument '2' the CHANGE MASTER command is commented,
+		# allowing tracking of where the backup was taken from without
+		# mandating restoration to a slave.
+		#
+		$optdump .= ' --master-data=2';
+		#$optdump .= ' --dump-slave=2';
+
+		# N.B. The '--gtid' option is present in MariaDB mysqldump
+		#      10.0.13 and above only (although earlier 10.1.x versions
+		#      may also lack the option...)
+		if( qx( mysqldump --version ) =~ m/ Distrib ([^-,]+)[-,]/ ) {
+			my @sortedversions = sort { versioncmp( $a, $b ) } ( $1, '10.0.12' );
+			my $latest = pop( @sortedversions );
+			if( not( $latest eq '10.0.12' )  ) {
+				$optdump .= ' --gtid';
+			}
+		}
 	}
 
 	# N.B.: We're not capturing STDERR in either instance...
@@ -2969,7 +2994,7 @@ sub dbdump( $;$$$$$ ) { # {{{
 	if( not( defined( $memorybackend ) ) ) {
 		my $output = ( defined( $destination ) and length( $destination ) ? $destination . '/' : '' ) . $filename;
 		my $command = "mysqldump $optauth $optdb $opttab $optdump ";
-		$command = "strace -vvfFtTs 128 -o \"${output}.strace\" $command";
+		$command = "strace -vvfFtTs 128 -o \"${output}.strace\" $command" if( DEBUG );
 
 		if( defined( $compress ) and length( $compress ) ) {
 			if( 'gzip' eq $compress ) {
