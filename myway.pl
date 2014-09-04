@@ -3817,7 +3817,11 @@ SQL
 			#if( /^$schmversion$/ ~~ $metadataversions )
 			if( defined( $schmversion ) and ( qr/^$schmversion$/ |M| $metadataversions ) ) {
 				if( $pretend ) {
-					warn( "!> Schema version '$schmversion' has already been applied to this database - would skip ...\n" );
+					if( $force ) {
+						warn( "!> Schema version '$schmversion' has already been applied to this database - would forcibly re-apply ...\n" );
+					} else {
+						warn( "!> Schema version '$schmversion' has already been applied to this database - would skip ...\n" );
+					}
 				} else {
 					if( $force ) {
 						warn( "!> Schema version '$schmversion' has already been applied to this database - forcibly re-applying ...\n" );
@@ -4088,7 +4092,11 @@ SQL
 										$fresh = FALSE;
 									} else {
 										if( $pretend ) {
-											warn( "!> " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " target version '$schmtarget' has already been applied to this database - would skip ...\n" );
+											if( $force or ( 'procedure' eq $mode ) ) {
+												warn( "!> " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " target version '$schmtarget' has already been applied to this database - would forcibly re-apply ...\n" );
+											} else {
+												warn( "!> " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " target version '$schmtarget' has already been applied to this database - would skip ...\n" );
+											}
 										} else {
 											if( $force or ( 'procedure' eq $mode ) ) {
 												warn( "!> " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " target version '$schmtarget' has already been applied to this database - forcibly applying ...\n" );
@@ -4106,7 +4114,11 @@ SQL
 								my $latest = pop( @sortedversions );
 								if( not( $latest eq $schmtarget ) ) {
 									if( $pretend ) {
-										warn( "!> Existing " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " version '$latest' is greater than target '$schmtarget', and has already been applied to this database - would skip ...\n" );
+										if( $force ) {
+											warn( "!> Existing " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " version '$latest' is greater than target '$schmtarget', and has already been applied to this database - would forcibly re-apply ...\n" );
+										} else {
+											warn( "!> Existing " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " version '$latest' is greater than target '$schmtarget', and has already been applied to this database - would skip ...\n" );
+										}
 									} else {
 										if( $force ) {
 											warn( "!> Existing " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " version '$latest' is greater than target '$schmtarget', and has already been applied to this database - forcibly applying ...\n" );
@@ -4170,7 +4182,11 @@ SQL
 											print( "*> Prior Stored Procedure definitions '$schmprevious' have not been applied to this database\n" );
 										} else {
 											if( $pretend ) {
-												warn( "!> Prior schema version '$schmprevious' has not been applied to this database - would abort.\n" );
+												if( $force ) {
+													warn( "!> Prior schema version '$schmprevious' has not been applied to this database - would forcibly apply ...\n" );
+												} else {
+													warn( "!> Prior schema version '$schmprevious' has not been applied to this database - would abort.\n" );
+												}
 											} else {
 												if( $force ) {
 													warn( "!> Prior schema version '$schmprevious' has not been applied to this database - forcibly applying ...\n" );
