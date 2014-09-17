@@ -2780,6 +2780,10 @@ sub dbdump( $;$$$$$ ) { # {{{
 	my $password = $auth -> { 'password' };
 	my $host =     $auth -> { 'host' };
 
+	my $port;
+	$port = $auth -> { 'port' } if( defined( $auth -> { 'port' } ) and $auth -> { 'port' } );
+	$port = PORT unless( defined( $port ) and $port );
+
 	my $memorybackend;
 
 	if( defined( $filename ) and length( $filename ) and -d $filename and ( not( defined( $destination ) ) or not( length( $destination ) ) ) ) {
@@ -2974,17 +2978,34 @@ sub dbdump( $;$$$$$ ) { # {{{
 		# allowing tracking of where the backup was taken from without
 		# mandating restoration to a slave.
 		#
-		$optdump .= ' --master-data=2';
-		#$optdump .= ' --dump-slave=2';
+		print( "\n=> Checking Master status of database on '$host' ...\n" );
+		my $dsn = "DBI:mysql:host=$host;port=$port";
+		#disable diagnostics;
+		my $dbh = DBI -> connect( $dsn, $user, $password, { RaiseError => 1, PrintError => 0 } )
+			or die( "Cannot create connection to DSN '$dsn': $DBI::errstr\n" );
+		#enable diagnostics;
 
-		# N.B. The '--gtid' option is present in MariaDB mysqldump
-		#      10.0.13 and above only (although earlier 10.1.x versions
-		#      may also lack the option...)
-		if( qx( mysqldump --version ) =~ m/ Distrib ([^-,]+)[-,]/ ) {
-			my @sortedversions = sort { versioncmp( $a, $b ) } ( $1, '10.0.12' );
-			my $latest = pop( @sortedversions );
-			if( not( $latest eq '10.0.12' )  ) {
-				$optdump .= ' --gtid';
+		my $master = getsqlvalue( $dbh, 'SELECT @@log_bin' );
+
+		print( "\n=> Complete - disconnecting from database ...\n" );
+		$dbh -> disconnect;
+
+		if( 1 == $master ) {
+			print( "\n*> Database has bin-logging enabled - adding '--master-data' option\n" );
+
+			$optdump .= ' --master-data=2';
+			#$optdump .= ' --dump-slave=2';
+
+			# N.B. The '--gtid' option is present in MariaDB mysqldump
+			#      10.0.13 and above only (although earlier 10.1.x versions
+			#      may also lack the option...)
+			if( qx( mysqldump --version ) =~ m/ Distrib ([^-,]+)[-,]/ ) {
+				my @sortedversions = sort { versioncmp( $a, $b ) } ( $1, '10.0.12' );
+				my $latest = pop( @sortedversions );
+				if( not( $latest eq '10.0.12' )  ) {
+					print( "\n*> mysqldump supports Global Transaction IDs - adding '--gtid' option\n" );
+					$optdump .= ' --gtid';
+				}
 			}
 		}
 	}
@@ -3085,9 +3106,10 @@ sub dbrestore( $$ ) { # {{{
 		$decompress = 'gunzip -cq';
 	} elsif( $file =~ /\.xz$/ ) {
 		$decompress = 'unxz -cdq';
-	} elsif( $file =~ /\.xz$/ ) {
+	} elsif( $file =~ /\.lzma$/ ) {
 		$decompress = 'unlzma -cdq';
 	}
+	pdebug( "Will decompress data with command '$decompress'" ) if( defined( $decompress) and length( $decompress ) );
 
 	my $command;
 	if( which( 'pv' ) ) {
@@ -3099,11 +3121,11 @@ sub dbrestore( $$ ) { # {{{
 		if( defined( $ENV{ 'LINES' } ) and $ENV{ 'LINES' } ) {
 			$rows = ' -H ' . $ENV{ 'LINES' };
 		}
-		$command = 'pv -e -p -t -r -a -b -c ' . $columns . $rows . ' -N "' . basename( $file ) . '" "' . $file . ( defined( $decompress ) ? '" | ' . $decompress : '"' ) . ' | { ' . $mysql . " -u $user -p$password -h $host mysql 2>&1 ; }"
+		$command = 'pv -e -p -t -r -a -b -c ' . $columns . $rows . ' -N "' . basename( $file ) . '" "' . $file . ( defined( $decompress ) ? '" | ' . $decompress : '"' ) . ' | { ' . $mysql . " -u $user -p$password -h $host 2>&1 ; }"
 	} else {
 		warn( "$warning Cannot locate 'pv' executable: only errors will be reported\n\n" );
 
-		$command = 'cat "' . basename( $file ) . '" "' . $file . '" | { ' . $mysql . " -u $user -p$password -h $host mysql 2>&1 ; }"
+		$command = 'cat "' . basename( $file ) . '" "' . $file . ( defined( $decompress ) ? '" | ' . $decompress : '"' ) . ' | { ' . $mysql . " -u $user -p$password -h $host 2>&1 ; }"
 	}
 	pdebug( "Restore command is '$command'" );
 	exec( $command ) or die( "Failed to execute 'pv' in order to monitor data restoration: $!\n" );
