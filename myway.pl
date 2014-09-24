@@ -3654,7 +3654,7 @@ sub applyschema( $$$$;$ ) { # {{{
 	# Open target database connection
 	#
 
-	print( "\n=> Connecting to database '$db' ...\n" );
+	print( "\n=> Connecting to database `$db` ...\n" );
 	my $dsn = "DBI:mysql:database=$db;host=$host;port=$port";
 	#disable diagnostics;
 	my $dbh = DBI -> connect( $dsn, $user, $pass, { RaiseError => 1, PrintError => 0 } )
@@ -3669,7 +3669,7 @@ sub applyschema( $$$$;$ ) { # {{{
 	die( 'Unable to retrieve list of available databases' . ( defined( $dbh -> errstr() ) ? ': ' . $dbh -> errstr() : '' ) . "\n" ) unless( scalar( $availabledatabases ) );
 
 	$availabletables = getsqlvalues( $dbh, "SHOW TABLES" );
-	warn( "Unable to retrieve list of tables for database '$db'" . ( defined( $dbh -> errstr() ) ? ': ' . $dbh -> errstr() : '' ) . "\n" ) unless( scalar( $availabletables ) );
+	warn( "Unable to retrieve list of tables for database `$db`" . ( defined( $dbh -> errstr() ) ? ': ' . $dbh -> errstr() : '' ) . "\n" ) unless( scalar( $availabletables ) );
 
 	#
 	# Populate tracking tables, if necessary # {{{
@@ -3949,7 +3949,7 @@ SQL
 			} else {
 				#if( not( /^mysql$/ ~~ @{ $availabledatabases } ) )
 				if( not( qr/^mysql$/ |M| \@{ $availabledatabases } ) ) {
-					warn( "'mysql' database does not appear to exist.  Detected databases were:\n" );
+					warn( "`mysql` database does not appear to exist.  Detected databases were:\n" );
 					foreach my $database ( @{ $availabledatabases } ) {
 						warn( "\t$database\n" );
 					}
@@ -3964,7 +3964,7 @@ SQL
 					if( qr/^$table$/ |M| \@{ $availabletables } ) {
 						push( @backuptables, $table );
 					} else {
-						warn( "'$table' table does not appear to exist in 'mysql' database.\n" );
+						warn( "`$table` table does not appear to exist in `mysql` database.\n" );
 						$showtables = TRUE;
 					}
 				}
@@ -4000,9 +4000,9 @@ SQL
 					print( "=> Referenced table `$table` has not yet been created ...\n" );
 				} else {
 					if( $pretend ) {
-						print( "\nS> Would back-up `$table` table.\n" );
+						print( "\nS> Would back-up table `$table`.\n" );
 					} else {
-						print( "\n=> Backing-up `$table` table ...\n" );
+						print( "\n=> Backing-up table `$table`...\n" );
 
 						my $auth = {
 							  'user'	=> $user
@@ -4012,7 +4012,7 @@ SQL
 						};
 						dbdump( $auth, $table, $tmpdir, "$db.$table.$uuid.sql" ) or die( "Database backup failed - aborting" );
 
-						print( "\n=> Database '$db' table '$table' backup completed with UUID '$uuid'\n" );
+						print( "\n=> Backup of  `$db`.`$table` completed with UUID '$uuid'\n" );
 					}
 				}
 			}
@@ -4687,7 +4687,7 @@ sub main( @ ) { # {{{
 	my( $mode, $dosub );
 	my( $help, $desc, @paths, $file, $compat, $unsafe, $keepbackups );
 	my( $lock, $keeplock );
-	my( $force, $clear, $compress, $small );
+	my( $force, $clear, $compress, $small, $split );
 	my( $user, $pass, $host, $db );
 	my( $pretend, $debug, $notice, $verbose, $warn );
 	my $ok = TRUE;
@@ -4708,6 +4708,7 @@ sub main( @ ) { # {{{
 	,   'keep-lock!'				=> \$keeplock
 	,   'small|small-database|small-dataset!'	=> \$small
 	,   'compress:s'				=> \$compress
+	,   'split|separate-files!'			=> \$split
 
 	, 'r|restore=s'					=> \$action_restore
 	, 'i|init:s'					=> \$action_init
@@ -4778,6 +4779,7 @@ sub main( @ ) { # {{{
 		$ok = FALSE if( defined( $lock ) or defined( $keeplock ) );
 		$ok = FALSE if( defined( $compress ) );
 		$ok = FALSE if( defined( $small ) );
+		$ok = FALSE if( defined( $split ) );
 		# TODO: Support restoring Stored Procedures only...
 		$ok = FALSE if( 'procedure' eq $mode );
 		$ok = FALSE if( defined( $pretend ) );
@@ -4788,6 +4790,7 @@ sub main( @ ) { # {{{
 		$ok = FALSE if( defined( $lock ) or defined( $keeplock ) );
 		$ok = FALSE if( defined( $compress ) );
 		$ok = FALSE if( defined( $small ) );
+		$ok = FALSE if( defined( $split ) );
 #		$ok = FALSE if( defined( $marker ) and not( defined( $dosub ) ) );
 		$ok = FALSE if( defined( $dosub ) and not( 'procedure' eq $mode ) );
 		if( not( defined( $action_init ) ) ) {
@@ -4828,6 +4831,11 @@ sub main( @ ) { # {{{
 		$small = TRUE;
 	} else {
 		$small = FALSE;
+	}
+	if( defined( $split ) and $split ) {
+		$split = TRUE;
+	} else {
+		$split = FALSE;
 	}
 	if( defined( $unsafe ) and $unsafe ) {
 		$unsafe = TRUE;
@@ -4882,7 +4890,7 @@ sub main( @ ) { # {{{
 		print( ( " " x $length ) . "[--clear-metadata] [--dry-run] [--force] [--debug] [--verbose]\n" );
 		print( "\n" );
 		print( ( " " x $length ) . "backup options:   [--compress [:scheme:]] [--small-dataset]\n" );
-		print( ( " " x $length ) . "                  [--lock [--keep-lock]]\n" );
+		print( ( " " x $length ) . "                  [--lock [--keep-lock]] [--separate-files]\n" );
 		print( ( " " x $length ) . "scheme:           <gzip|bzip2|xz|lzma>\n" );
 		print( "\n" );
 		print( ( " " x $length ) . "mode:             --mode <schema|procedure>\n" );
@@ -4916,6 +4924,7 @@ sub main( @ ) { # {{{
 		warn( "Mutually-exclusive arguments '--no-backup' and '--keep-backup' cannot both be specified\n" ) if( $unsafe and $keepbackups );
 		warn( "Cannot specify argument '--compress' without option '--backup'\n" ) if( defined( $compress ) and not( defined( $action_backup ) ) );
 		warn( "Cannot specify argument '--lock' or '--keep-lock' without option '--backup'\n" ) if( ( $lock or $keeplock ) and not( defined( $action_backup ) ) );
+		warn( "Cannot specify argument '--separate-files' without option '--backup'\n" ) if( $split and not( defined( $action_backup ) ) );
 		warn( "Cannot specify argument '--keep-lock' without option '--lock'\n" ) if( $keeplock and not( $lock ) );
 		warn( "Cannot specify argument '--clear-metadata' without option '--force'\n" ) if( $clear and not( $force ) );
 		warn( "Cannot specify argument '--lock' with option '--database' (locks are global)\n" ) if( $lock and defined( $db ) );
@@ -4983,136 +4992,151 @@ sub main( @ ) { # {{{
 			$action_backup = TRUE;
 		}
 
+		my $dsn;
 		my $dbh;
-		if( $lock ) {
-			my $dsn = "DBI:mysql:database=mysql;host=$host;port=$port";
+		my $availabledatabases;
+		my $availabletables;
 
-			if( $keeplock ) {
+		if( $lock and $keeplock ) {
+			# The child must exit before the parent, so
+			# we'll fork, lock tables and wait (for a long
+			# time) in the parent, and then perform the
+			# backup in the child...
+			#
+			# ... unfortunately, this prevents us from
+			# (easily) obtaining an exit status from the
+			# child process.
+			#
+			# ... so what we actually need to do is fork
+			# twice, and have the parent call waitpid() on
+			# the (more likely to exit) child process
+			# running the backup.
+			#
+			my $firstchildpidorzero = fork;
+			die( "fork() failed: $!\n" ) unless( defined( $firstchildpidorzero ) );
 
-				# The child must exit before the parent, so
-				# we'll fork, lock tables and wait (for a long
-				# time) in the parent, and then perform the
-				# backup in the child...
-				#
-				# ... unfortunately, this prevents us from
-				# (easily) obtaining an exit status from the
-				# child process.
-				#
-				# ... so what we actually need to do is fork
-				# twice, and have the parent call waitpid() on
-				# the (more likely to exit) child process
-				# running the backup.
-				#
-				my $firstchildpidorzero = fork;
-				die( "fork() failed: $!\n" ) unless( defined( $firstchildpidorzero ) );
+			if( 0 == $firstchildpidorzero ) {
+				# Child process
 
-				if( 0 == $firstchildpidorzero ) {
-					# Child process
+				setpgrp( 0, 0 );
+
+				# ... this now goes on to perform the
+				# backup.
+			} else {
+				# Parent process
+
+				my $secondchildpidorzero = fork;
+				die( "fork() failed: $!\n" ) unless( defined( $secondchildpidorzero ) );
+
+				if( 0 == $secondchildpidorzero ) {
+					# Second child process
 
 					setpgrp( 0, 0 );
 
-					# ... this now goes on to perform the
-					# backup.
+					local $| = 1;
+
+					if( defined( $db ) and length( $db ) ) {
+						$dsn = "DBI:mysql:database=$db;host=$host;port=$port";
+						print( "\n=> Connecting to database `$db` ...\n" );
+					} else {
+						$dsn = "DBI:mysql:host=$host;port=$port";
+						print( "\n=> Connecting to database instance ...\n" );
+					}
+
+					#disable diagnostics;
+					$dbh = DBI -> connect( $dsn, $user, $pass, { RaiseError => 1, PrintError => 0 } )
+						or die( "Cannot create connection to DSN '$dsn': $DBI::errstr\n" );
+					#enable diagnostics;
+
+					if( not ( dosql( $dbh, "FLUSH TABLES WITH READ LOCK" ) ) ) {
+						warn( "$warning Failed to globally lock all instance databases' tables\n" );
+						$lock = FALSE;
+						$keeplock = FALSE;
+					} else {
+						print( "\n=> All databases on host '$host' are now globally locked for 24 hours, or until" );
+						print( "\n=> this process is interupted." );
+						print( "\n=> The backup process will continue concurrently.\n" );
+					}
+					dosql( $dbh, "SELECT(SLEEP(86400))" );
+
+					print( "=> 86400 seconds elapsed, dropping locks and disconnecting.\n" );
+
+					if( $dbh -> ping ) {
+						dosql( $dbh, "UNLOCK TABLES" );
+						$dbh -> disconnect;
+					}
+
+					exit( 0 );
+
+					# End second child process
 				} else {
 					# Parent process
 
-					my $secondchildpidorzero = fork;
-					die( "fork() failed: $!\n" ) unless( defined( $secondchildpidorzero ) );
+					local $| = 1;
 
-					if( 0 == $secondchildpidorzero ) {
-						# Second child process
+					my $rc;
 
-						setpgrp( 0, 0 );
-
-						local $| = 1;
-
-						print( "\n=> Connecting to database '$db' ...\n" );
-						#disable diagnostics;
-						$dbh = DBI -> connect( $dsn, $user, $pass, { RaiseError => 1, PrintError => 0 } )
-							or die( "Cannot create connection to DSN '$dsn': $DBI::errstr\n" );
-						#enable diagnostics;
-
-						if( not ( dosql( $dbh, "FLUSH TABLES WITH READ LOCK" ) ) ) {
-							warn( "$warning Failed to lock tables\n" );
-							$lock = FALSE;
-							$keeplock = FALSE;
-						} else {
-							print( "\n=> All databases on host '$host' are now globally locked for 24 hours, or until" );
-							print( "\n=> this process is interupted." );
-							print( "\n=> The backup process will continue concurrently.\n" );
-						}
-						dosql( $dbh, "SELECT(SLEEP(86400))" );
-
-						print( "=> 86400 seconds elapsed, dropping locks and disconnecting.\n" );
-
-						if( $dbh -> ping ) {
-							dosql( $dbh, "UNLOCK TABLES" );
-							$dbh -> disconnect;
-						}
-
-						exit( 0 );
-
-						# End second child process
-					} else {
-						# Parent process
-
-						local $| = 1;
-
-						my $rc;
-
-						if( waitpid( $firstchildpidorzero, 0 ) > 0 ) {
-							my( $sig, $core );
-							( $rc, $sig, $core ) = ( $? >> 8, $? & 127, $? & 128 );
-							if( $core ) {
-								warn( "$fatal backup process $firstchildpidorzero core-dumped\n" );
-								kill( -15, $secondchildpidorzero ) if( $secondchildpidorzero );
-							} elsif( 9 == $sig ) {
-								warn( "$warning backup process $firstchildpidorzero was KILLed\n" );
-								kill( -15, $secondchildpidorzero ) if( $secondchildpidorzero );
-							} else {
-								pwarn( "backup process $firstchildpidorzero returned $rc" . ( $sig ? " after signal $sig" : '' ) ) unless( 0 == $rc );
-
-								print( "\n=> All databases on host '$host' remain globally locked for 24 hours, or until" );
-								print( "\n=> this process is terminated." );
-							}
-						} else {
-							pwarn( "backup process $firstchildpidorzero disappeared" );
+					if( waitpid( $firstchildpidorzero, 0 ) > 0 ) {
+						my( $sig, $core );
+						( $rc, $sig, $core ) = ( $? >> 8, $? & 127, $? & 128 );
+						if( $core ) {
+							warn( "$fatal backup process $firstchildpidorzero core-dumped\n" );
 							kill( -15, $secondchildpidorzero ) if( $secondchildpidorzero );
-						}
-
-						if( waitpid( $secondchildpidorzero, 0 ) > 0 ) {
-							my( $sig, $core );
-							( $rc, $sig, $core ) = ( $? >> 8, $? & 127, $? & 128 );
-							if( $core ) {
-								warn( "$fatal lock process $secondchildpidorzero core-dumped\n" );
-							} elsif( 9 == $sig ) {
-								warn( "$warning lock process $secondchildpidorzero was KILLed\n" );
-							} else {
-								pwarn( "lock process $secondchildpidorzero returned $rc" . ( $sig ? " after signal $sig" : '' ) );
-							}
+						} elsif( 9 == $sig ) {
+							warn( "$warning backup process $firstchildpidorzero was KILLed\n" );
+							kill( -15, $secondchildpidorzero ) if( $secondchildpidorzero );
 						} else {
-							pwarn( "lock process $secondchildpidorzero disappeared" );
+							pwarn( "backup process $firstchildpidorzero returned $rc" . ( $sig ? " after signal $sig" : '' ) ) unless( 0 == $rc );
+
+							print( "\n=> All databases on host '$host' remain globally locked for 24 hours, or until" );
+							print( "\n=> this process is terminated." );
 						}
-
-						exit( $rc );
-
-						# End parent process
+					} else {
+						pwarn( "backup process $firstchildpidorzero disappeared" );
+						kill( -15, $secondchildpidorzero ) if( $secondchildpidorzero );
 					}
+
+					if( waitpid( $secondchildpidorzero, 0 ) > 0 ) {
+						my( $sig, $core );
+						( $rc, $sig, $core ) = ( $? >> 8, $? & 127, $? & 128 );
+						if( $core ) {
+							warn( "$fatal lock process $secondchildpidorzero core-dumped\n" );
+						} elsif( 9 == $sig ) {
+							warn( "$warning lock process $secondchildpidorzero was KILLed\n" );
+						} else {
+							pwarn( "lock process $secondchildpidorzero returned $rc" . ( $sig ? " after signal $sig" : '' ) );
+						}
+					} else {
+						pwarn( "lock process $secondchildpidorzero disappeared" );
+					}
+
+					exit( $rc );
+
+					# End parent process
 				}
-			} else { # not( $keeplock )
+			}
+		}
 
-				local $| = 1;
+		{
+			local $| = 1;
 
-				if( defined( $db ) ) {
-					print( "\n=> Connecting to database '$db' ...\n" );
-				} else {
-					print( "\n=> Connecting to database instance ...\n" );
-				}
-				#disable diagnostics;
-				$dbh = DBI -> connect( $dsn, $user, $pass, { RaiseError => 1, PrintError => 0 } )
-					or die( "Cannot create connection to DSN '$dsn': $DBI::errstr\n" );
-				#enable diagnostics;
+			if( defined( $db ) and length( $db ) ) {
+				$dsn = "DBI:mysql:database=$db;host=$host;port=$port";
+				print( "\n=> Connecting to database `$db` ...\n" );
+			} else {
+				$dsn = "DBI:mysql:host=$host;port=$port";
+				print( "\n=> Connecting to database instance ...\n" );
+			}
 
+			#disable diagnostics;
+			$dbh = DBI -> connect( $dsn, $user, $pass, { RaiseError => 1, PrintError => 0 } )
+				or die( "Cannot create connection to DSN '$dsn': $DBI::errstr\n" );
+			#enable diagnostics;
+
+			$availabledatabases = getsqlvalues( $dbh, "SHOW DATABASES" ) if( $split and ( not( defined( $db ) ) or not( length( $db ) ) ) );
+			$availabletables = getsqlvalues( $dbh, "SHOW TABLES" ) if( $split and defined( $db ) and length( $db ) );
+
+			if( $lock and not( $keeplock ) ) {
 				if( not ( dosql( $dbh, "FLUSH TABLES WITH READ LOCK" ) ) ) {
 					warn( "$warning Failed to lock tables transaction\n" );
 					$lock = FALSE;
@@ -5134,15 +5158,44 @@ sub main( @ ) { # {{{
 		# directory.
 		#
 		my $success;
-		if( defined( $location ) ) {
+		#if( defined( $location ) ) {
 			if( defined( $db ) and length( $db ) ) {
-				$success = dbdump( $auth, undef, $location, undef, $compress, $small );
+				if( not( $split ) or not( scalar( @{ $availabletables } ) ) ) {
+					if( not( scalar( @{ $availabletables } ) ) ) {
+						print( "!> Unable to retrieve list of tables for database `$db`, backing up all tables to '$location' ...\n" );
+					}
+					# $location is a file-name ...
+					$success = dbdump( $auth, undef, undef, $location, $compress, $small );
+				} else {
+					# Write per-table files to $location/ ...
+					foreach my $table ( @{ $availabletables } ) {
+						print( "*> Backing up table `$db`.`$table` to '$location/$db.$table.sql' ...\n" );
+						my $tablesuccess = dbdump( $auth, $table, $location, "$db.$table.sql", $compress, $small );
+						$success += $tablesuccess;
+						print( "!> Table `$table` failed to backup: $tablesuccess\n" ) if( not( $tablesuccess ) );
+					}
+				}
 			} else {
-				$success = dbdump( $auth, undef, undef, $location, $compress, $small );
+				if( not( $split ) or not( scalar( @{ $availabledatabases } ) ) ) {
+					if( not( scalar( @{ $availabledatabases } ) ) ) {
+						print( "!> Unable to retrieve list of databases for instance, backing up all databases to single file\n" );
+					}
+					# $location is a directory ...
+					$success = dbdump( $auth, undef, $location, undef, $compress, $small );
+				} else {
+					# Write per-database files to $location/ ...
+					foreach my $database ( @{ $availabledatabases } ) {
+						next if( qr/^$database$/ |M| [ 'information_schema', 'performance_schema' ] );
+						print( "*> Backing up database `$database` to '$location/$database.sql' ...\n" );
+						my $databasesuccess = dbdump( $auth, $database, $location, "$database.sql", $compress, $small );
+						$success += $databasesuccess;
+						print( "!> Database `$database` failed to backup: $databasesuccess\n" ) if( not( $databasesuccess ) );
+					}
+				}
 			}
-		} else {
-			$success = dbdump( $auth, undef, undef, undef, $compress, $small );
-		}
+		#} else {
+		#	$success = dbdump( $auth, undef, undef, undef, $compress, $small );
+		#}
 
 		if( $lock and not( $keeplock ) ) {
 			if( $dbh -> ping ) {
@@ -5277,7 +5330,7 @@ sub main( @ ) { # {{{
 		die( "$fatal Directory '$basepath' does not exist\n" );
 	}
 	if( ( 'procedure' eq $mode ) and not( -s $basepath . '/' . $db . '.metadata' ) ) {
-		die( "$fatal Metadata file '" . $db . '.metadata' . "' for database '$db' is not present in directory '$basepath' or cannot be read\n" );
+		die( "$fatal Metadata file '" . $db . '.metadata' . "' for database `$db` is not present in directory '$basepath' or cannot be read\n" );
 	}
 
 	print( "=> Processing " . ( 'procedure' eq $mode ? 'Stored Procedures' : 'files' ) . ":\n" );
@@ -5309,7 +5362,7 @@ sub main( @ ) { # {{{
 	#
 
 	if( defined( $action_init ) and $safetyoff ) {
-		print( "\n=> '--init' specified, ensuring that database '$db' exists ...\n" );
+		print( "\n=> '--init' specified, ensuring that database `$db` exists ...\n" );
 		my $dsn = "DBI:mysql:host=$host;port=$port";
 		#disable diagnostics;
 		my $dbh = DBI -> connect( $dsn, $user, $pass, { RaiseError => 0, PrintError => 0 } )
@@ -5331,7 +5384,7 @@ sub main( @ ) { # {{{
 	# Open mysql database connection to ensure metadata tables exist # {{{
 	#
 
-	print( "\n=> Connecting to database '$db' ...\n" );
+	print( "\n=> Connecting to database `$db` ...\n" );
 	my $dsn = "DBI:mysql:database=$db;host=$host;port=$port";
 	#disable diagnostics;
 	my $dbh = DBI -> connect( $dsn, $user, $pass, { RaiseError => 0, PrintError => 0 } )
@@ -5386,9 +5439,9 @@ sub main( @ ) { # {{{
 		}
 
 		if( $pretend ) {
-			print( "\nS> Would ensure that $name '$tname' table exists.\n" );
+			print( "\nS> Would ensure that $name `$tname` table exists.\n" );
 		} else {
-			print( "\n=> Ensuring that $name '$tname' table exists ...\n" );
+			print( "\n=> Ensuring that $name `$tname` table exists ...\n" );
 			dosql( $dbh, $ddl ) or die( "Table creation failed\n" );
 
 			eval {

@@ -68,7 +68,7 @@ function processarg() {
 } # processarg
 
 function main() {
-	local args user pass host db location
+	local args user pass host="localhost" db="" location
 	local -i rc
 
 	# Ensure that 'fuser' will work...
@@ -94,7 +94,7 @@ EOF
 	local mysql="$( std::requires --path mysql )"
 	[[ -x "${mysql}" ]] || die "Cannot execute required binary '${mysql}'"
 
-	args="$( getopt -o 'u:p:d:l:h' --longoptions 'user:,username:,pass:,password:,database:,location:,help' -n "${NAME}" -- "${@:-}" )"
+	args="$( getopt -o 'u:p:o:d:l:h' --longoptions 'user:,username:,pass:,password:,database:,location:,help' -n "${NAME}" -- "${@:-}" )"
 	if (( ${?} )); then
 		die "Cannot parse command-line options '${@:-}'"
 	fi
@@ -112,6 +112,11 @@ EOF
 				;;
 			-p|--pass|--password)
 				pass="$( processarg "${1}" "${2:-}" )" ; rc=${?}
+				(( rc )) || die "Parameter '${1}' requires an argument"
+				shift ${rc}
+				;;
+			-o|--host|--hostname)
+				host="$( processarg "${1}" "${2:-}" )" ; rc=${?}
 				(( rc )) || die "Parameter '${1}' requires an argument"
 				shift ${rc}
 				;;
@@ -153,10 +158,53 @@ EOF
 	EOF
 	local -i port="$( getmysqlport "${mysqlslaveidcodeblock}" )"
 
-	args="-u ${user} -p${pass} -h localhost"
+	args="-u ${user} -p${pass} -h ${host:-localhost}"
 	[[ -n "${db:-}" ]] && args="${args} ${db}"
-	$mysql ${args} <<<'SHOW STATUS'
+
+	local slavestatus
+	std::emktemp slavestatus "${$}" || die "std::emktemp failed in ${FUNCNAME}: ${?}"
+	[[ -n "${slavestatus:-}" ]] || die "std::emktemp failed to create a file"
+	[[ -r "${slavestatus}" ]] || die "std::emktemp failed to create file '${slavestatus}'"
+
+	$mysql ${args} <<<'SHOW SLAVE STATUS \G' > "${slavestatus}"
+	grep -q 'Slave_IO_Running: Yes$' "${slavestatus}" || warn "MySQL/MariaDB Slave I/O thread not running - updates are not being received"
+	grep -q 'Slave_SQL_Running: Yes$' "${slavestatus}" || warn "MySQL/MariaDB Slave SQL thread not running - updates are not being applied"
+	grep -q 'Slave_IO_State: Waiting for master to send event$' "${slavestatus}" || die "Slave is not in a quiescent state - aborting"
+	local errtype
+	for errtype in "" _IO _SQL; do
+		if ! grep -q "Last${errtype:-}_Errno: 0$" "${slavestatus}"; then
+			local -i lasterrno
+			local lasterrmsg
+			lasterrno=$(( $( grep "Last${errtype:-}_Errno: " "${slavestatus}" | cut -d':' -f 2- ) ))
+			if (( lasterrno != 0 )); then
+				lasterrmsg="$( grep "Last${errtype:-}_Error: " "${slavestatus}" | cut -d':' -f 2- | cut -d' ' -f 2- )"
+				die "Slave has ${errtype:+${errtype#_} }error ${lasterrno}${lasterrmsg:+: ${lasterrmsg}} - aborting"
+			fi
+		fi
+	done
+	grep -q 'Seconds_Behind_Master: 0$' "${slavestatus}" || die "MySQL/MariaDB Slave is running behind master - aborting"
+
+	# Slave is good to go!
+	$mysql ${args} <<<'STOP SLAVE SQL_THREAD'
+	$mysql ${args} <<<'SHOW SLAVE STATUS \G' > "${slavestatus}"
+	grep -q 'Slave_SQL_Running: No$' "${slavestatus}" || die "Failed to stop Slave SQL thread"
+
+	info "Executing 'myway.pl -u ${user} -p ${pass} -h ${host:-localhost} --backup ${location}/$( date +%Y%m%d ).${host:-localhost}.backup.sql --compress xz --lock'"
+	time myway.pl -u "${user}" -p "${pass}" -h "${host:-localhost}" --backup "${location}"/"$( date +%Y%m%d )"."${host:-localhost}".backup.sql --compress xz --lock && {
+		info "Backup '${location}/$( date +%Y%m%d ).${host:-localhost}.backup.sql' successfully created"
+	} || {
+		error "Backup to '${location}/$( date +%Y%m%d ).${host:-localhost}.backup.sql' failed: ${?}"
+	}
+
+	$mysql ${args} <<<'START SLAVE SQL_THREAD'
+	$mysql ${args} <<<'SHOW SLAVE STATUS \G' > "${slavestatus}"
+	grep -q 'Slave_SQL_Running: Yes$' "${slavestatus}" || die "Failed to start Slave SQL thread"
+
+	return 0
 } # main
+
+std::requires myway.pl
+myway.pl --help >/dev/null 2>/dev/null || die "Cannot execute dbtools/myway.pl - are appropriate Perl modules installed?"
 
 main "${@:-}"
 
