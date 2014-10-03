@@ -5070,7 +5070,7 @@ sub main( @ ) { # {{{
 
 					# End second child process
 				} else {
-					# Parent process
+					# Still the (original) parent process
 
 					local $| = 1;
 
@@ -5112,31 +5112,36 @@ sub main( @ ) { # {{{
 
 					exit( $rc );
 
-					# End parent process
+					# End original parent process
 				}
 			}
 		}
 
-		{
-			local $| = 1;
+		local $| = 1;
 
-			if( defined( $db ) and length( $db ) ) {
-				$dsn = "DBI:mysql:database=$db;host=$host;port=$port";
-				print( "\n=> Connecting to database `$db` ...\n" );
-			} else {
-				$dsn = "DBI:mysql:host=$host;port=$port";
-				print( "\n=> Connecting to database instance ...\n" );
-			}
+		if( defined( $db ) and length( $db ) ) {
+			$dsn = "DBI:mysql:database=$db;host=$host;port=$port";
+			print( "\n=> Connecting to database `$db` ...\n" );
+		} else {
+			$dsn = "DBI:mysql:host=$host;port=$port";
+			print( "\n=> Connecting to database instance ...\n" );
+		}
 
-			#disable diagnostics;
-			$dbh = DBI -> connect( $dsn, $user, $pass, { RaiseError => 1, PrintError => 0 } )
-				or die( "Cannot create connection to DSN '$dsn': $DBI::errstr\n" );
-			#enable diagnostics;
+		#disable diagnostics;
+		$dbh = DBI -> connect( $dsn, $user, $pass, { RaiseError => 1, PrintError => 0 } )
+			or die( "Cannot create connection to DSN '$dsn': $DBI::errstr\n" );
+		#enable diagnostics;
 
-			$availabledatabases = getsqlvalues( $dbh, "SHOW DATABASES" ) if( $split and ( not( defined( $db ) ) or not( length( $db ) ) ) );
-			$availabletables = getsqlvalues( $dbh, "SHOW TABLES" ) if( $split and defined( $db ) and length( $db ) );
+		if( defined( $db ) and length( $db ) ) {
+			$availabletables = getsqlvalues( $dbh, "SHOW TABLES" );
+		} else {
+			$availabledatabases = getsqlvalues( $dbh, "SHOW DATABASES" );
+		}
 
-			if( $lock and not( $keeplock ) ) {
+		if( not( $lock ) ) {
+			$dbh -> disconnect;
+		} else { # $lock
+			if( not( $keeplock ) ) {
 				if( not ( dosql( $dbh, "FLUSH TABLES WITH READ LOCK" ) ) ) {
 					warn( "$warning Failed to lock tables transaction\n" );
 					$lock = FALSE;
@@ -5160,8 +5165,8 @@ sub main( @ ) { # {{{
 		my $success;
 		#if( defined( $location ) ) {
 			if( defined( $db ) and length( $db ) ) {
-				if( not( $split ) or not( scalar( @{ $availabletables } ) ) ) {
-					if( not( scalar( @{ $availabletables } ) ) ) {
+				if( not( $split ) or not( $availabletables and scalar( @{ $availabletables } ) ) ) {
+					if( not( $availabletables and scalar( @{ $availabletables } ) ) ) {
 						print( "!> Unable to retrieve list of tables for database `$db`, backing up all tables to '$location' ...\n" );
 					}
 					# $location is a file-name ...
@@ -5176,7 +5181,7 @@ sub main( @ ) { # {{{
 					}
 				}
 			} else {
-				if( not( $split ) or not( scalar( @{ $availabledatabases } ) ) ) {
+				if( not( $split ) or not( $availabledatabases and scalar( @{ $availabledatabases } ) ) ) {
 					if( not( scalar( @{ $availabledatabases } ) ) ) {
 						print( "!> Unable to retrieve list of databases for instance, backing up all databases to single file\n" );
 					}
@@ -5186,7 +5191,7 @@ sub main( @ ) { # {{{
 					# Write per-database files to $location/ ...
 					foreach my $database ( @{ $availabledatabases } ) {
 						next if( qr/^$database$/ |M| [ 'information_schema', 'performance_schema' ] );
-						print( "*> Backing up database `$database` to '$location/$database.sql' ...\n" );
+						print( "\n*> Backing up database `$database` to '$location/$database.sql' ...\n" );
 						my $databasesuccess = dbdump( $auth, $database, $location, "$database.sql", $compress, $small );
 						$success += $databasesuccess;
 						print( "!> Database `$database` failed to backup: $databasesuccess\n" ) if( not( $databasesuccess ) );

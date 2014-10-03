@@ -42,7 +42,7 @@ function getmysqlport() {
 
 	[[ -d /proc/${mysqlpid} ]] || die "MySQL process '${mysqlpid:-<not set>}' cannot be located"
 
-	if [[ -n "${block:-}" ]]; then
+	if [[ -v block && -n "${block:-}" ]]; then
 		eval ${block} || exit 1
 	fi
 
@@ -57,9 +57,9 @@ function processarg() {
 	local opt="${1:-}"; shift
 	local arg="${1:-}"; shift
 
-	[[ -n "${opt:-}" ]] || return 0
+	[[ -v opt && -n "${opt:-}" ]] || return 0
 
-	if [[ -n "${arg:-}" ]]; then
+	if [[ -v arg && -n "${arg:-}" ]]; then
 		respond "${arg}"
 		return 1
 	else
@@ -140,7 +140,7 @@ EOF
 		esac
 		shift
 	done
-	if ! [[ -n "${user:-}" && -n "${pass:-}" && -n "${location:-}" ]]; then
+	if ! [[ -v user && -v pass && -v location && -n "${user:-}" && -n "${pass:-}" && -n "${location:-}" ]]; then
 		std::usage
 		exit 1
 	fi
@@ -159,11 +159,10 @@ EOF
 	local -i port="$( getmysqlport "${mysqlslaveidcodeblock}" )"
 
 	args="-u ${user} -p${pass} -h ${host:-localhost}"
-	[[ -n "${db:-}" ]] && args="${args} ${db}"
 
 	local slavestatus
 	std::emktemp slavestatus "${$}" || die "std::emktemp failed in ${FUNCNAME}: ${?}"
-	[[ -n "${slavestatus:-}" ]] || die "std::emktemp failed to create a file"
+	[[ -v slavestatus && -n "${slavestatus:-}" ]] || die "std::emktemp failed to create a file"
 	[[ -r "${slavestatus}" ]] || die "std::emktemp failed to create file '${slavestatus}'"
 
 	$mysql ${args} <<<'SHOW SLAVE STATUS \G' > "${slavestatus}"
@@ -182,18 +181,29 @@ EOF
 			fi
 		fi
 	done
-	grep -q 'Seconds_Behind_Master: 0$' "${slavestatus}" || die "MySQL/MariaDB Slave is running behind master - aborting"
+	grep -Eq 'Seconds_Behind_Master: (0|NULL)$' "${slavestatus}" || die "MySQL/MariaDB Slave is running behind master - aborting"
 
 	# Slave is good to go!
 	$mysql ${args} <<<'STOP SLAVE SQL_THREAD'
 	$mysql ${args} <<<'SHOW SLAVE STATUS \G' > "${slavestatus}"
 	grep -q 'Slave_SQL_Running: No$' "${slavestatus}" || die "Failed to stop Slave SQL thread"
 
-	info "Executing 'myway.pl -u ${user} -p ${pass} -h ${host:-localhost} --backup ${location}/$( date +%Y%m%d ).${host:-localhost}.backup.sql --compress xz --lock'"
-	time myway.pl -u "${user}" -p "${pass}" -h "${host:-localhost}" --backup "${location}"/"$( date +%Y%m%d )"."${host:-localhost}".backup.sql --compress xz --lock && {
-		info "Backup '${location}/$( date +%Y%m%d ).${host:-localhost}.backup.sql' successfully created"
+	local file="${location}/$( date +%Y%m%d ).${host:-localhost}"
+	if [[ -v db && -n "${db:-}" ]]; then
+		file+=".${db}.sql"
+	fi
+	local cmd="myway.pl -u ${user} -p ${pass} -h ${host:-localhost} --backup ${file} --compress xz"
+	if [[ -v db && -n "${db:-}" ]]; then
+		cmd+=" --database ${db}"
+	else
+		cmd+=" --lock --separate-files"
+	fi
+
+	info "Executing '${cmd}'"
+	time ${cmd:-false} && {
+		info "Backup '${file}' successfully created"
 	} || {
-		error "Backup to '${location}/$( date +%Y%m%d ).${host:-localhost}.backup.sql' failed: ${?}"
+		error "Backup to '${file}' failed: ${?}"
 	}
 
 	$mysql ${args} <<<'START SLAVE SQL_THREAD'
