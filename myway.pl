@@ -2955,7 +2955,8 @@ sub dbdump( $;$$$$$ ) { # {{{
 			 . ' --include-master-host-port --no-autocommit'
 			 . ' --order-by-primary --quote-names'
 			 . ' --routines --set-charset --single-transaction'
-			 . ' --triggers --tz-utc --verbose';
+			 . ' --triggers --tz-utc'
+			 ;
 	} else {
 		$optdump = '--skip-opt --add-drop-database --add-drop-table'
 			 . ' --add-locks --allow-keywords --comments'
@@ -2965,7 +2966,7 @@ sub dbdump( $;$$$$$ ) { # {{{
 			 . ' --include-master-host-port --lock-all-tables'
 			 . ' --order-by-primary --quick --quote-names'
 			 . ' --routines --set-charset --triggers --tz-utc'
-			 . ' --verbose';
+			 ;
 		# Let's assume that if we're doing a full backup in this way,
 		# then we're either backing up from a master node, or that this
 		# behaviour is likely what we need regardless...
@@ -3009,6 +3010,11 @@ sub dbdump( $;$$$$$ ) { # {{{
 			}
 		}
 	}
+	if( defined( $verbosity ) and ( $verbosity > 0 ) ) {
+		$$optdump .= ' --verbose';
+	}
+
+	print( "\n=> Commencing database backup ...\n" );
 
 	# N.B.: We're not capturing STDERR in either instance...
 	#
