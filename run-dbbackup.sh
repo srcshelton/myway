@@ -139,10 +139,10 @@ function main() {
 #	done
 
 	# We'll handle backup-pruning in two stages - the first will
-	# enumerate all backups (oldest first) and determine which
-	# should be erased, then the second (newest first) will ensure
-	# that we're not removing *all* backups (which could happen if
-	# no backup has been created for some period) and will actually
+	# enumerate all backups (newest to oldest, so that files have a chance
+	# to be aged-out) and determine which should be erased, then the second
+	# will ensure that we're not removing *all* backups (which could happen
+	# if no backup has been created for some period) and will actually
 	# action any required deletions.
 
 	info "Archiving and removing old backup files from '${dirname}' ..."
@@ -162,12 +162,13 @@ function main() {
 	local -i stamp number
 	local files
 
-	# Process the oldest files first ...
+	# Process the newest files first, but override their entries with older
+	# files as appropriate ...
 	find "${dirname}"/ -mindepth 1 -maxdepth 1 -type f -or -type d	\
 		| sed 's|^.*/||'					\
 		| grep -E '^[0-9]{8}\.'					\
 		| cut -d'.' -f 1					\
-		| sort -n						\
+		| sort -rn						\
 		| uniq							\
 		| while read -r stamp; do
 			if (( stamp < thisyear )); then
@@ -187,12 +188,12 @@ function main() {
 			fi
 		  done
 
-	# Process the newest files first ...
+	# Process files in time-order ...
 	find "${dirname}"/ -mindepth 1 -maxdepth 1 -type f -or -type d	\
 		| sed 's|^.*/||'					\
 		| grep -E '^[0-9]{8}\.'					\
 		| cut -d'.' -f 1					\
-		| sort -rn						\
+		| sort -n						\
 		| uniq							\
 		| while read -r stamp; do
 			files="$( ls -1d "${dirname}"/"${stamp}".* )"
