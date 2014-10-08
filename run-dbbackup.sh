@@ -198,33 +198,33 @@ function main() {
 		| while read -r stamp; do
 			files="$( ls -1d "${dirname}"/"${stamp}".* )"
 			if (( stamp < thisyear )); then
-				warn "Backup files $( sed "s/^/'/ ; s/ /' '/g ; s/$/'/" <<<"${files}" ) are more than a year old and will be removed ..."
+				warn "Backup files $( std::formatlist $( sed "s/^/'/ ; s/ /' '/g ; s/$/'/" <<<"${files}" ) ) are more than a year old and will be removed ..."
 			elif (( stamp < thismonth )); then
 				if grep -w " ${stamp} " <<<" ${month[@]:-} "; then
-					note "Backup files $( sed "s/^/'/ ; s/ /' '/g ; s/$/'/" <<<"${files}" ) are more than a month old, but will be preserved ..."
+					note "Backup files $( std::formatlist $( sed "s/^/'/ ; s/ /' '/g ; s/$/'/" <<<"${files}" ) ) are more than a month old, but will be preserved ..."
 					ls -1d "${dirname}"/"${stamp}".* | while read -r files; do
 						keep=( "${keep[@]:-}" "${files}" )
 					done
 				else
-					warn "Backup files $( sed "s/^/'/ ; s/ /' '/g ; s/$/'/" <<<"${files}" ) are more than a month old, and will be removed ..."
+					warn "Backup files $( std::formatlist $( sed "s/^/'/ ; s/ /' '/g ; s/$/'/" <<<"${files}" ) ) are more than a month old, and will be removed ..."
 					ls -1d "${dirname}"/"${stamp}".* | while read -r files; do
 						delete=( "${delete[@]:-}" "${files}" )
 					done
 				fi
 			elif (( stamp < thisweek )); then
 				if grep -w " ${stamp} " <<<" ${week[@]:-} "; then
-					note "Backup files $( sed "s/^/'/ ; s/ /' '/g ; s/$/'/" <<<"${files}" ) are more than a week old, but will be preserved ..."
+					note "Backup files $( std::formatlist $( sed "s/^/'/ ; s/ /' '/g ; s/$/'/" <<<"${files}" ) ) are more than a week old, but will be preserved ..."
 					ls -1d "${dirname}"/"${stamp}".* | while read -r files; do
 						keep=( "${keep[@]:-}" "${files}" )
 					done
 				else
-					warn "Backup files $( sed "s/^/'/ ; s/ /' '/g ; s/$/'/" <<<"${files}" ) are more than a week old, and will be removed ..."
+					warn "Backup files $( std::formatlist $( sed "s/^/'/ ; s/ /' '/g ; s/$/'/" <<<"${files}" ) ) are more than a week old, and will be removed ..."
 					ls -1d "${dirname}"/"${stamp}".* | while read -r files; do
 						delete=( "${delete[@]:-}" "${files}" )
 					done
 				fi
 			else
-				note "Backup files $( sed "s/^/'/ ; s/ /' '/g ; s/$/'/" <<<"${files}" ) will be preserved ..."
+				note "Backup files $( std::formatlist $( sed "s/^/'/ ; s/ /' '/g ; s/$/'/" <<<"${files}" ) ) will be preserved ..."
 			fi
 		  done
 
