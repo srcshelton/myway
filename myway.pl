@@ -3011,10 +3011,13 @@ sub dbdump( $;$$$$$ ) { # {{{
 		}
 	}
 	if( defined( $verbosity ) and ( $verbosity > 0 ) ) {
-		$$optdump .= ' --verbose';
+		$optdump .= ' --verbose';
 	}
 
-	print( "\n=> Commencing database backup ...\n" );
+	my $msg = 'Commencing database backup';
+	$msg .= ' - there may be a delay while a GLOBAL READ LOCK is obtained' if( not( $transactional ) );
+	print( "\n=> " . $msg . " ...\n" );
+	print( "\n!> Passing control to 'mysqldump' from this point onwards.\n\n" );
 
 	# N.B.: We're not capturing STDERR in either instance...
 	#
