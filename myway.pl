@@ -1929,8 +1929,13 @@ sub _d { # {{{
 {
 package myway;
 
+use 5.014; # ... so that push/pop/etc work on scalars (experimental).
+
 use strict;
 use warnings;
+
+no warnings "experimental::autoderef";
+# ... because we should be able to push and splice via references.
 
 # We have to enable and disable this module at run-time due to generating
 # "Uncaught exception from user code" errors during certain DBI failures.
@@ -1964,10 +1969,10 @@ use match::smart;
 use Cwd qw( getcwd realpath );
 use DBI;
 use DBI::Format;
+use File::Basename;
 use File::Copy;
 use File::Glob qw( :glob );
 use File::Path qw( make_path );
-use File::Basename;
 use File::Temp;
 use File::Touch;
 use File::Which;
@@ -2985,6 +2990,7 @@ sub dbdump( $;$$$$$ ) { # {{{
 		my $dbh = DBI -> connect( $dsn, $user, $password, { RaiseError => 1, PrintError => 0 } )
 			or die( "Cannot create connection to DSN '$dsn': $DBI::errstr\n" );
 		#enable diagnostics;
+		$dbh -> { 'InactiveDestroy' } = 1;
 
 		my $master = getsqlvalue( $dbh, 'SELECT @@log_bin' );
 
@@ -3159,6 +3165,14 @@ sub dosql( $$ ) { # {{{
 	pdebug( "SQL: Sending to database: \"$st\"" );
 	eval {
 		my $result = $dbh -> do( $st );
+
+		# We're now seeing 'CREATE TABLE IF NOT EXISTS' throwing a
+		# warning, and then we abort with 'MySQL server has gone away'
+		# ... which is weird :(
+		#
+		# Update: Setting 'InactiveDestroy' on $dbh seems to resolve
+		#         this by enabling auto-reconnect.
+		#
 		if( not( defined( $result ) ) ) {
 			#die( "Error when processing SQL statement:\n$st\n" );
 			die( $dbh -> errstr() );
@@ -3380,14 +3394,52 @@ sub formatastable( $$$ ) { # {{{
 
 	my( $read, $write ) = FileHandle::pipe;
 
-	outputtable( $dbh, $st, $write );
-	$write -> close();
+	# If we're writing more than 8k(?) of data, the pipe will block until
+	# it is read from and drained... but in the code below, this only
+	# happens once the table is fully written, resulting in a deadlock :(
+	#
+	my $firstchildpidorzero = fork;
+	die( "fork() failed: $!\n" ) unless( defined( $firstchildpidorzero ) );
 
-	while( my $line = $read -> getline() ) {
-		chomp( $line );
-		print( $indent . $line . "\n" );
+	if( 0 == $firstchildpidorzero ) {
+		# Child process
+
+		setpgrp( 0, 0 );
+
+		$read -> close();
+
+		# We'll output the table (to our pipe) in the child process, so
+		# that the parent retains all I/O.
+		#
+		outputtable( $dbh, $st, $write );
+		$write -> close();
+
+		exit( 0 );
+	} else {
+		# Parent process
+
+		$write -> close();
+
+		while( my $line = $read -> getline() ) {
+			chomp( $line );
+			print( $indent . $line . "\n" );
+		}
+		$read -> close();
+
+		if( waitpid( $firstchildpidorzero, 0 ) > 0 ) {
+			my( $rc, $sig, $core ) = ( $? >> 8, $? & 127, $? & 128 );
+
+			if( $core ) {
+				warn( "$fatal rendering process $firstchildpidorzero core-dumped\n" );
+			} elsif( 9 == $sig ) {
+				warn( "$warning rendering process $firstchildpidorzero was KILLed\n" );
+			} else {
+				pwarn( "rendering process $firstchildpidorzero returned $rc" . ( $sig ? " after signal $sig" : '' ) ) unless( 0 == $rc );
+			}
+		} else {
+			pwarn( "backup process $firstchildpidorzero disappeared" );
+		}
 	}
-	$read -> close();
 
 	return( TRUE );
 } # formatastable # }}}
@@ -3669,6 +3721,7 @@ sub applyschema( $$$$;$ ) { # {{{
 	my $dbh = DBI -> connect( $dsn, $user, $pass, { RaiseError => 1, PrintError => 0 } )
 		or die( "Cannot create connection to DSN '$dsn': $DBI::errstr\n" );
 	#enable diagnostics;
+	$dbh -> { 'InactiveDestroy' } = 1;
 
 	$uuid = getsqlvalue( $dbh, "SELECT UUID()" );
 
@@ -5056,6 +5109,7 @@ sub main( @ ) { # {{{
 					$dbh = DBI -> connect( $dsn, $user, $pass, { RaiseError => 1, PrintError => 0 } )
 						or die( "Cannot create connection to DSN '$dsn': $DBI::errstr\n" );
 					#enable diagnostics;
+					$dbh -> { 'InactiveDestroy' } = 1;
 
 					if( not ( dosql( $dbh, "FLUSH TABLES WITH READ LOCK" ) ) ) {
 						warn( "$warning Failed to globally lock all instance databases' tables\n" );
@@ -5087,7 +5141,9 @@ sub main( @ ) { # {{{
 
 					if( waitpid( $firstchildpidorzero, 0 ) > 0 ) {
 						my( $sig, $core );
+
 						( $rc, $sig, $core ) = ( $? >> 8, $? & 127, $? & 128 );
+
 						if( $core ) {
 							warn( "$fatal backup process $firstchildpidorzero core-dumped\n" );
 							kill( -15, $secondchildpidorzero ) if( $secondchildpidorzero );
@@ -5140,6 +5196,7 @@ sub main( @ ) { # {{{
 		$dbh = DBI -> connect( $dsn, $user, $pass, { RaiseError => 1, PrintError => 0 } )
 			or die( "Cannot create connection to DSN '$dsn': $DBI::errstr\n" );
 		#enable diagnostics;
+		$dbh -> { 'InactiveDestroy' } = 1;
 
 		if( defined( $db ) and length( $db ) ) {
 			$availabletables = getsqlvalues( $dbh, "SHOW TABLES" );
@@ -5386,6 +5443,7 @@ sub main( @ ) { # {{{
 				. " Is the database instance running?\n"
 			);
 		#enable diagnostics;
+		$dbh -> { 'InactiveDestroy' } = 1;
 		dosql( $dbh, "CREATE DATABASE IF NOT EXISTS `$db`" ) or die( "Failed to create database\n" );
 
 		print( "\n=> Disconnecting from database.\n" );
@@ -5408,6 +5466,7 @@ sub main( @ ) { # {{{
 			. "(Databases will be auto-created on --init when not in dry-run mode)\n"
 		);
 	#enable diagnostics;
+	$dbh -> { 'InactiveDestroy' } = 1;
 
 	#
 	# Create {fl,m}yway metadata tables
