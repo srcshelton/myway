@@ -1943,7 +1943,7 @@ no warnings "experimental::autoderef";
 # ... in actual fact, diagnostics causes more problems than it solves.  It does
 # appear to be, in reality, quite silly.
 
-use constant VERSION =>  1.0.3;
+use constant VERSION =>  1.0.4;
 
 use constant TRUE    =>  1;
 use constant FALSE   =>  0;
