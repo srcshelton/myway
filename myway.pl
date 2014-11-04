@@ -1934,7 +1934,7 @@ use 5.014; # ... so that push/pop/etc work on scalars (experimental).
 use strict;
 use warnings;
 
-no if $] >= 5.02, warnings => 'experimental::autoderef';
+no if ( $] >= 5.02 ), warnings => 'experimental::autoderef';
 # ... because we should be able to push and splice via references, noting that
 # this warning doesn't exist on earlier perl versions and so can't be
 # unconditionally disabled.  Sigh.
