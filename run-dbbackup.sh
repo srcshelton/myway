@@ -74,69 +74,6 @@ function main() {
 	# * Keep one monthly backup for up to a year.
 	#
 	info "Preparing to process existing backups ..."
-#	local -i year=$(( $( date +"%Y" -d "@${ts}" ) ))
-#	local -i month=$(( $( date +"%m" -d "@${ts}" ) ))
-#	local -i day=$(( $( date +"%d" -d "@${ts}" ) ))
-#
-#	local -i targetyear=${year}
-#	local -i targetmonth=${month}
-#	local -i targetday=${day}
-#
-#	mkdir -p "${dirname}"/"${year}${month}" ; (( rc += ${?} ))
-#	mkdir -p "${dirname}"/"${year}" ; (( rc += ${?} ))
-
-#	while ! (( rc )); do
-#		if (( day < 8 )); then
-#			if (( month < 1 )); then
-#				(( targetyear -- ))
-#				(( targetmonth = 12 ))
-#
-#				mkdir -p "${dirname}"/"${targetyear}" ; (( rc += ${?} ))
-#			else
-#				(( targetmonth -- ))
-#			fi
-#			(( targetday = $( date +"%d" -d "@$(( ts - ( 7 * 24 * 60 * 60 ) ))" ) ))
-#
-#			mkdir -p "${dirname}"/"${targetyear}${targetmonth}" ; (( rc += ${?} ))
-#		else
-#			(( targetday -= 7 ))
-#		fi
-#
-#		(( rc )) && break
-#
-#		info "Archiving and removing old backup files from '${dirname}' ..."
-#
-#		local -i cutoff=${targetyear}${targetmonth}${targetday}
-#		local -i tooold=${targetyear}${targetmonth}00
-#		local -i stamp
-#		local files
-#
-#		find "${dirname}"/ -mindepth 1 -maxdepth 1 -type f -or -type d \
-#			| sed 's|^.*/||' \
-#			| grep -E '^[0-9]{8}\.' \
-#			| cut -d'.' -f 1 \
-#			| sort -rn \
-#			| uniq
-#			| while read -r stamp; do
-#				if (( stamp < cutoff )); then
-#					files="$( ls -1d "${dirname}"/"${stamp}".* )"
-#					if (( stamp < tooold )); then
-#						warn "Backup files $( sed "s/^/'/ ; s/ /' '/g ; s/$/'/" <<<"${files}" ) will be deleted ..."
-#						(( std_DEBUG )) || rm -frv "${dirname}"/"${stamp}".* ; (( rc += ${?} ))
-#					else
-#						note "Backup files $( sed "s/^/'/ ; s/ /' '/g ; s/$/'/" <<<"${files}" ) will be archived ..."
-#						(( std_DEBUG )) || mv -v "${dirname}"/"${stamp}".* "${dirname}"/"${year}${month}"/ ; (( rc += ${?} ))
-#					fi
-#					(( rc )) && {
-#						error "Action returned ${rc} - aborting historical backup processing"
-#						break
-#					}
-#				else # (( stamp >= cutoff ))
-#					files="$( ls -1d "${dirname}"/"${stamp}".* )"
-#					note "Backup files $( sed "s/^/'/ ; s/ /' '/g ; s/$/'/" <<<"${files}" ) will be preserved ..."
-#				fi
-#			  done
-#	done
 
 	# We'll handle backup-pruning in two stages - the first will
 	# enumerate all backups (newest to oldest, so that files have a chance
@@ -144,7 +81,7 @@ function main() {
 	# will ensure that we're not removing *all* backups (which could happen
 	# if no backup has been created for some period) and will actually
 	# action any required deletions.
-
+	#
 	info "Archiving and removing old backup files from '${dirname}' ..."
 
 	# N.B. Whilst providing a rich selection of date-related figures,
@@ -164,69 +101,73 @@ function main() {
 
 	# Process the newest files first, but override their entries with older
 	# files as appropriate ...
-	find "${dirname}"/ -mindepth 1 -maxdepth 1 -type f -or -type d	\
-		| sed 's|^.*/||'					\
-		| grep -E '^[0-9]{8}\.'					\
-		| cut -d'.' -f 1					\
-		| sort -rn						\
-		| uniq							\
-		| while read -r stamp; do
-			if (( stamp < thisyear )); then
-				ls -1d "${dirname}"/"${stamp}".* | while read -r files; do
-					delete=( "${delete[@]:-}" "${files}" )
-				done
-			elif (( stamp < thismonth )); then
-				(( number = $( sed -r 's/^[0-9]{4}([0-9]{2})[0-9]{2}$/\1/' <<<"${stamp}" ) ))
-				(( month[number] = stamp ))
-			elif (( stamp < thisweek )); then
-				(( number = $( date +"%W" -d "${stamp}" ) - startingweek ))
-				(( week[number] = stamp ))
-			else
-				ls -1d "${dirname}"/"${stamp}".* | while read -r files; do
-					keep=( "${keep[@]:-}" "${files}" )
-				done
-			fi
-		  done
+	while read -r stamp; do
+		if (( stamp < thisyear )); then
+			while read -r files; do
+				delete+=( "${files}" )
+			done < <( ls -1d "${dirname}"/"${stamp}".* )
+		elif (( stamp < thismonth )); then
+			number=$(( $( sed -r 's/^[0-9]{4}([0-9]{2})[0-9]{2}$/\1/' <<<"${stamp}" ) ))
+			month[number]=${stamp}
+		elif (( stamp < thisweek )); then
+			number=$(( $( date +"%W" -d "${stamp}" ) - startingweek ))
+			# This will potentially do odd things for the first week of a new month...
+			(( number < 0 )) && number=0
+			week[number]=${stamp}
+		else
+			while read -r files; do
+				keep+=( "${files}" )
+			done < <( ls -1d "${dirname}"/"${stamp}".* )
+		fi
+	done < <(
+		find "${dirname}"/ -mindepth 1 -maxdepth 1 -type f -or -type d	\
+			| sed 's|^.*/||'					\
+			| grep -E '^[0-9]{8}\.'					\
+			| cut -d'.' -f 1					\
+			| sort -rn						\
+			| uniq
+	)
 
 	# Process files in time-order ...
-	find "${dirname}"/ -mindepth 1 -maxdepth 1 -type f -or -type d	\
-		| sed 's|^.*/||'					\
-		| grep -E '^[0-9]{8}\.'					\
-		| cut -d'.' -f 1					\
-		| sort -n						\
-		| uniq							\
-		| while read -r stamp; do
-			files="$( ls -1d "${dirname}"/"${stamp}".* )"
-			if (( stamp < thisyear )); then
-				warn "Backup files $( std::formatlist $( sed "s/^/'/ ; s/ /' '/g ; s/$/'/" <<<"${files}" ) ) are more than a year old and will be removed ..."
-			elif (( stamp < thismonth )); then
-				if grep -w " ${stamp} " <<<" ${month[@]:-} "; then
-					note "Backup files $( std::formatlist $( sed "s/^/'/ ; s/ /' '/g ; s/$/'/" <<<"${files}" ) ) are more than a month old, but will be preserved ..."
-					ls -1d "${dirname}"/"${stamp}".* | while read -r files; do
-						keep=( "${keep[@]:-}" "${files}" )
-					done
-				else
-					warn "Backup files $( std::formatlist $( sed "s/^/'/ ; s/ /' '/g ; s/$/'/" <<<"${files}" ) ) are more than a month old, and will be removed ..."
-					ls -1d "${dirname}"/"${stamp}".* | while read -r files; do
-						delete=( "${delete[@]:-}" "${files}" )
-					done
-				fi
-			elif (( stamp < thisweek )); then
-				if grep -w " ${stamp} " <<<" ${week[@]:-} "; then
-					note "Backup files $( std::formatlist $( sed "s/^/'/ ; s/ /' '/g ; s/$/'/" <<<"${files}" ) ) are more than a week old, but will be preserved ..."
-					ls -1d "${dirname}"/"${stamp}".* | while read -r files; do
-						keep=( "${keep[@]:-}" "${files}" )
-					done
-				else
-					warn "Backup files $( std::formatlist $( sed "s/^/'/ ; s/ /' '/g ; s/$/'/" <<<"${files}" ) ) are more than a week old, and will be removed ..."
-					ls -1d "${dirname}"/"${stamp}".* | while read -r files; do
-						delete=( "${delete[@]:-}" "${files}" )
-					done
-				fi
+	while read -r stamp; do
+		files="$( ls -1d "${dirname}"/"${stamp}".* )"
+		if (( stamp < thisyear )); then
+			warn "Backup files $( std::formatlist $( sed "s/^/'/ ; s/ /' '/g ; s/$/'/" <<<"${files}" ) ) are more than a year old and will be removed ..."
+		elif (( stamp < thismonth )); then
+			if grep -qw " ${stamp} " <<<" ${month[@]:-} "; then
+				note "Backup files $( std::formatlist $( sed "s/^/'/ ; s/ /' '/g ; s/$/'/" <<<"${files}" ) ) are more than a month old, but will be preserved ..."
+				while read -r files; do
+					keep+=( "${files}" )
+				done < <( ls -1d "${dirname}"/"${stamp}".* )
 			else
-				note "Backup files $( std::formatlist $( sed "s/^/'/ ; s/ /' '/g ; s/$/'/" <<<"${files}" ) ) will be preserved ..."
+				warn "Backup files $( std::formatlist $( sed "s/^/'/ ; s/ /' '/g ; s/$/'/" <<<"${files}" ) ) are more than a month old, and will be removed ..."
+				while read -r files; do
+					delete+=( "${files}" )
+				done < <( ls -1d "${dirname}"/"${stamp}".* )
 			fi
-		  done
+		elif (( stamp < thisweek )); then
+			if grep -qw " ${stamp} " <<<" ${week[@]:-} "; then
+				note "Backup files $( std::formatlist $( sed "s/^/'/ ; s/ /' '/g ; s/$/'/" <<<"${files}" ) ) are more than a week old, but will be preserved ..."
+				while read -r files; do
+					keep+=( "${files}" )
+				done < <( ls -1d "${dirname}"/"${stamp}".* )
+			else
+				warn "Backup files $( std::formatlist $( sed "s/^/'/ ; s/ /' '/g ; s/$/'/" <<<"${files}" ) ) are more than a week old, and will be removed ..."
+				while read -r files; do
+					delete+=( "${files}" )
+				done < <( ls -1d "${dirname}"/"${stamp}".* )
+			fi
+		else
+			note "Backup files $( std::formatlist $( sed "s/^/'/ ; s/ /' '/g ; s/$/'/" <<<"${files}" ) ) will be preserved ..."
+		fi
+	done < <(
+		find "${dirname}"/ -mindepth 1 -maxdepth 1 -type f -or -type d	\
+			| sed 's|^.*/||'					\
+			| grep -E '^[0-9]{8}\.'					\
+			| cut -d'.' -f 1					\
+			| sort -n						\
+			| uniq
+	)
 
 	if [[ -z "${delete[@]:-}" ]]; then
 		warn "No files scheduled to be removed - continuing"
