@@ -2011,6 +2011,8 @@ sub pushentry( $$$$$;$ );
 sub pushfragment( $$$;$$ );
 sub processline( $$;$ );
 sub processfile( $$;$$ );
+sub dbopen( $$$$;$$ );
+sub dbclose( ;$$ );
 sub dbdump( $;$$$$$ );
 sub dbrestore( $$ );
 sub dosql( $$ );
@@ -2018,7 +2020,6 @@ sub preparesql( $$ );
 sub executesql( $$$;@ );
 sub getsqlvalue( $$ );
 sub getsqlvalues( $$;$ );
-sub dbclose( ;$$ );
 sub outputtable( $$;$ );
 sub formatastable( $$$ );
 sub applyschema( $$$$;$ );
@@ -2027,9 +2028,8 @@ sub main( @ );
 our $fatal   = "FATAL:";
 our $warning = "WARN: ";
 
-
-our $safetyoff = FALSE;
 our $verbosity = 0;
+
 
 our $flywaytablename = 'schema_version';
 our $flywayddl  = <<DDL;
@@ -2056,6 +2056,10 @@ DDL
 # sized to hold the maximum permissible value for the field-type, according to
 # the appropraite standards - mostly POSIX.
 #
+# TIMESTAMP fields must be provided with a non-zero default value (or NULL)
+# as the //second// and further TIMESTAMP fields will be implicitly created
+# as DEFAULT 0, which breaks when NO_ZERO_DATE is in effect...
+#
 our $mywaytablename = 'myway_schema_version';
 our $mywayddl  = <<DDL;
 CREATE TABLE IF NOT EXISTS `$mywaytablename` (
@@ -2068,8 +2072,8 @@ CREATE TABLE IF NOT EXISTS `$mywaytablename` (
   , `path`		VARCHAR(4096)	CHARACTER SET 'UTF8'      NOT NULL
   , `filename`		VARCHAR(255)	CHARACTER SET 'UTF8'      NOT NULL
   , `started`		TIMESTAMP
-  , `sqlstarted`	TIMESTAMP	                              NULL
-  , `finished`		TIMESTAMP
+  , `sqlstarted`	TIMESTAMP	DEFAULT NULL                  NULL
+  , `finished`		TIMESTAMP       DEFAULT NULL                  NULL
   , `status`		TINYINT		UNSIGNED
   , PRIMARY KEY (`id`)
 ) ENGINE='InnoDB' DEFAULT CHARSET='ASCII';
@@ -2107,8 +2111,8 @@ CREATE TABLE IF NOT EXISTS `$mywayprocsname` (
   , `description`	VARCHAR(200)	CHARACTER SET 'UTF8'
   , `type`		VARCHAR(20)	CHARACTER SET 'UTF8'
   , `started`		TIMESTAMP
-  , `sqlstarted`	TIMESTAMP	                              NULL
-  , `finished`		TIMESTAMP
+  , `sqlstarted`	TIMESTAMP	DEFAULT NULL                  NULL
+  , `finished`		TIMESTAMP       DEFAULT NULL                  NULL
   , `status`		TINYINT		UNSIGNED
   , PRIMARY KEY (`id`)
 ) ENGINE='InnoDB' DEFAULT CHARSET='ASCII';
@@ -2771,6 +2775,53 @@ sub processfile( $$;$$ ) { # {{{
 	return( $validated );
 } # processfile # }}}
 
+sub dbopen( $$$$;$$ ) { # {{{
+	my( $dbh, $dsn, $user, $password, $strict, $options ) = @_;
+
+	my $error = undef;
+	$options = { RaiseError => 1, PrintError => 0 } unless( $options );
+
+	#disable diagnostics;
+	$$dbh = DBI -> connect( $dsn, $user, $password, $options )
+		or $error = "Cannot create connection to DSN '$dsn': $DBI::errstr";
+	#enable diagnostics;
+
+	if( defined( $$dbh ) ) {
+		$$dbh -> { 'InactiveDestroy' } = 1;
+
+		if( $strict ) {
+			my $mode = getsqlvalue( $$dbh, 'SELECT @@SESSION.sql_mode' );
+			if( $mode !~ m/^.*,?(((STRICT_ALL_TABLES|STRICT_TRANS_TABLES),.*(STRICT_ALL_TABLES|STRICT_TRANS_TABLES))|TRADITIONAL),?.*$/i ) {
+				$mode .= ( defined( $mode ) and length ( $mode ) ? ',' : '' ) . "TRADITIONAL";
+				dosql( $$dbh, "SET SESSION sql_mode = 'TRADITIONAL'" );
+			}
+			$mode = getsqlvalue( $$dbh, 'SELECT @@SESSION.innodb_strict_mode' );
+			if( not( defined( $mode ) ) or ( $mode eq 0 ) ) {
+				dosql( $$dbh, "SET SESSION innodb_strict_mode = ON" );
+			}
+		}
+	}
+
+	return( $error );
+} # dbclose # }}}
+
+sub dbclose( ;$$ ) { # {{{
+	my( $dbh, $message ) = @_;
+
+	$message = "Complete" unless( defined( $message ) and length( $message ) );
+
+	if( defined( $dbh ) ) {
+		print( "\n=> $message - disconnecting from database ...\n" );
+		$dbh -> disconnect;
+	}
+
+	my( $sec, $min, $hour, $mday, $mon, $year, $wday, $yday, $isdst ) = localtime( time );
+	$year += 1900;
+	printf( "\n=> %s finished at %04d/%02d/%02d %02d:%02d.%02d\n\n", $0, $year, $mon, $mday, $hour, $min, $sec );
+
+	return( TRUE );
+} # dbclose # }}}
+
 sub dbdump( $;$$$$$ ) { # {{{
 	my( $auth, $objects, $destination, $filename, $compress, $transactional ) = @_;
 
@@ -2988,11 +3039,9 @@ sub dbdump( $;$$$$$ ) { # {{{
 		#
 		print( "\n=> Checking Master status of database on '$host' ...\n" );
 		my $dsn = "DBI:mysql:host=$host;port=$port";
-		#disable diagnostics;
-		my $dbh = DBI -> connect( $dsn, $user, $password, { RaiseError => 1, PrintError => 0 } )
-			or die( "Cannot create connection to DSN '$dsn': $DBI::errstr\n" );
-		#enable diagnostics;
-		$dbh -> { 'InactiveDestroy' } = 1;
+		my $dbh;
+		my $error = dbopen( \$dbh, $dsn, $user, $password, FALSE );
+		die( $error ."\n" ) if $error;
 
 		my $master = getsqlvalue( $dbh, 'SELECT @@log_bin' );
 
@@ -3045,7 +3094,7 @@ sub dbdump( $;$$$$$ ) { # {{{
 				$output .= '.bz2';
 				$command .= " | bzip2 -z9cf - > \"$output\"";
 			} else {
-				die( "Unknown compression scheme '$compress'" );
+				die( "Unknown compression scheme '$compress'\n" );
 			}
 		} else {
 			$command .= "--result-file=\"$output\"";
@@ -3054,7 +3103,7 @@ sub dbdump( $;$$$$$ ) { # {{{
 			touch( $output );
 		};
 		if( $@ ) {
-			die( "$fatal $@" );
+			die( "$fatal $@\n" );
 		}
 
 		pdebug( "Shell-command is: '$command'" );
@@ -3177,7 +3226,7 @@ sub dosql( $$ ) { # {{{
 		#
 		if( not( defined( $result ) ) ) {
 			#die( "Error when processing SQL statement:\n$st\n" );
-			die( $dbh -> errstr() );
+			die( $dbh -> errstr() . "\n" );
 		}
 	};
 	if( $@ ) {
@@ -3243,7 +3292,7 @@ sub executesql( $$$;@ ) { # {{{
 		my $result = $sth -> execute( @values );
 		if( not( defined( $result ) ) ) {
 			#die( "Error when processing SQL statement:\n$st\n" );
-			die( $dbh -> errstr() );
+			die( $dbh -> errstr() . "\n" );
 		}
 	};
 	if( $@ ) {
@@ -3345,23 +3394,6 @@ sub getsqlvalues( $$;$ ) { # {{{
 
 	return( \@response );
 } # getsqlvalues # }}}
-
-sub dbclose( ;$$ ) { # {{{
-	my( $dbh, $message ) = @_;
-
-	$message = "Complete" unless( defined( $message ) and length( $message ) );
-
-	if( defined( $dbh ) ) {
-		print( "\n=> $message - disconnecting from database ...\n" );
-		$dbh -> disconnect;
-	}
-
-	my( $sec, $min, $hour, $mday, $mon, $year, $wday, $yday, $isdst ) = localtime( time );
-	$year += 1900;
-	printf( "\n=> %s finished at %04d/%02d/%02d %02d:%02d.%02d\n\n", $0, $year, $mon, $mday, $hour, $min, $sec );
-
-	return( TRUE );
-} # dbclose # }}}
 
 sub outputtable( $$;$ ) { # {{{
 	my( $dbh, $st, $fh ) = @_;
@@ -3466,7 +3498,7 @@ sub applyschema( $$$$;$ ) { # {{{
 	$action_migrate = $actions -> { 'migrate' } if( exists( $actions -> { 'migrate' } ) );
 	$action_check   = $actions -> { 'check' }   if( exists( $actions -> { 'check' } ) );
 
-	my( $tmpdir, $mode, $marker, $first, $backupdir, $safetyoff, $unsafe, $desc, $pretend, $clear, $compat, $force );
+	my( $tmpdir, $mode, $marker, $first, $backupdir, $safetyoff, $strict, $unsafe, $desc, $pretend, $clear, $compat, $force );
 	$mode      = $variables -> { 'mode' }      if( exists( $variables -> { 'mode' } ) );
 	$marker    = $variables -> { 'marker' }    if( exists( $variables -> { 'marker' } ) );
 	$first     = $variables -> { 'first' }     if( exists( $variables -> { 'first' } ) );
@@ -3477,6 +3509,7 @@ sub applyschema( $$$$;$ ) { # {{{
 	$force     = $variables -> { 'force' }     if( exists( $variables -> { 'force' } ) );
 	$pretend   = $variables -> { 'pretend' }   if( exists( $variables -> { 'pretend' } ) );
 	$safetyoff = $variables -> { 'safetyoff' } if( exists( $variables -> { 'safetyoff' } ) );
+	$strict    = $variables -> { 'strict' }    if( exists( $variables -> { 'strict' } ) );
 	$tmpdir    = $variables -> { 'tmpdir' }    if( exists( $variables -> { 'tmpdir' } ) );
 	$unsafe    = $variables -> { 'unsafe' }    if( exists( $variables -> { 'unsafe' } ) );
 
@@ -3719,11 +3752,9 @@ sub applyschema( $$$$;$ ) { # {{{
 
 	print( "\n=> Connecting to database `$db` ...\n" );
 	my $dsn = "DBI:mysql:database=$db;host=$host;port=$port";
-	#disable diagnostics;
-	my $dbh = DBI -> connect( $dsn, $user, $pass, { RaiseError => 1, PrintError => 0 } )
-		or die( "Cannot create connection to DSN '$dsn': $DBI::errstr\n" );
-	#enable diagnostics;
-	$dbh -> { 'InactiveDestroy' } = 1;
+	my $dbh;
+	my $error = dbopen( \$dbh, $dsn, $user, $pass, $strict );
+	die( $error ."\n" ) if $error;
 
 	$uuid = getsqlvalue( $dbh, "SELECT UUID()" );
 
@@ -4048,7 +4079,7 @@ SQL
 					, 'host'	=> $host
 					, 'database'	=> 'mysql'
 				};
-				dbdump( $auth, @backuptables, $tmpdir, "mysql.userpriv.$uuid.sql" ) or die( "Database backup failed - aborting" );
+				dbdump( $auth, @backuptables, $tmpdir, "mysql.userpriv.$uuid.sql" ) or die( "Database backup failed - aborting\n" );
 
 				print( "\n=> MySQL table backups completed\n" );
 			}
@@ -4074,7 +4105,7 @@ SQL
 							, 'host'	=> $host
 							, 'database'	=> $db
 						};
-						dbdump( $auth, $table, $tmpdir, "$db.$table.$uuid.sql" ) or die( "Database backup failed - aborting" );
+						dbdump( $auth, $table, $tmpdir, "$db.$table.$uuid.sql" ) or die( "Database backup failed - aborting\n" );
 
 						print( "\n=> Backup of  `$db`.`$table` completed with UUID '$uuid'\n" );
 					}
@@ -4749,11 +4780,12 @@ sub main( @ ) { # {{{
 	my( $action_backup, $action_restore, $action_init );
 	my( $action_migrate, $action_check );
 	my( $mode, $dosub );
-	my( $help, $desc, @paths, $file, $compat, $unsafe, $keepbackups );
+	my( $help, $desc, @paths, $file, $unsafe, $keepbackups );
+	my( $compat, $relaxed, $strict );
 	my( $lock, $keeplock );
 	my( $force, $clear, $compress, $small, $split );
 	my( $user, $pass, $host, $db );
-	my( $pretend, $debug, $notice, $verbose, $warn );
+	my( $pretend, $safetyoff, $debug, $notice, $verbose, $warn );
 	my $ok = TRUE;
 	my $getoptout = undef;
 
@@ -4793,6 +4825,7 @@ sub main( @ ) { # {{{
 	,   'force!'					=> \$force
 
 	,   'mysql-compat!'				=> \$compat
+	,   'mysql-relaxed|relaxed!'			=> \$relaxed
 
 	, 'u|user|username=s'				=> \$user
 	, 'p|pass|passwd|password=s'			=> \$pass
@@ -4891,6 +4924,13 @@ sub main( @ ) { # {{{
 		$pretend = FALSE;
 		$safetyoff = TRUE;
 	}
+	if( defined( $relaxed ) and $relaxed ) {
+		$relaxed = TRUE;
+		$strict = FALSE;
+	} else {
+		$relaxed = FALSE;
+		$strict = TRUE;
+	}
 	if( defined( $small ) and $small ) {
 		$small = TRUE;
 	} else {
@@ -4961,6 +5001,7 @@ sub main( @ ) { # {{{
 		print( ( " " x $length ) . "                  [--substitute [--marker <marker>]\n" );
 		print( "\n" );
 		print( ( " " x $length ) . "--mysql-compat   - Required for MySQL prior to v5.6.4\n" );
+		print( ( " " x $length ) . "--mysql-relaxed  - Do not operate in STRICT mode\n" );
 		print( "\n" );
 		print( ( " " x $length ) . "--compress       - Compress backups [using <scheme> compression]\n" );
 		print( ( " " x $length ) . "--small-dataset  - Optimise for tables of less than 1GB in size\n" );
@@ -5107,11 +5148,8 @@ sub main( @ ) { # {{{
 						print( "\n=> Connecting to database instance ...\n" );
 					}
 
-					#disable diagnostics;
-					$dbh = DBI -> connect( $dsn, $user, $pass, { RaiseError => 1, PrintError => 0 } )
-						or die( "Cannot create connection to DSN '$dsn': $DBI::errstr\n" );
-					#enable diagnostics;
-					$dbh -> { 'InactiveDestroy' } = 1;
+					my $error = dbopen( \$dbh, $dsn, $user, $pass, $strict );
+					die( $error ."\n" ) if $error;
 
 					if( not ( dosql( $dbh, "FLUSH TABLES WITH READ LOCK" ) ) ) {
 						warn( "$warning Failed to globally lock all instance databases' tables\n" );
@@ -5194,11 +5232,8 @@ sub main( @ ) { # {{{
 			print( "\n=> Connecting to database instance ...\n" );
 		}
 
-		#disable diagnostics;
-		$dbh = DBI -> connect( $dsn, $user, $pass, { RaiseError => 1, PrintError => 0 } )
-			or die( "Cannot create connection to DSN '$dsn': $DBI::errstr\n" );
-		#enable diagnostics;
-		$dbh -> { 'InactiveDestroy' } = 1;
+		my $error = dbopen( \$dbh, $dsn, $user, $pass, $strict );
+		die( $error ."\n" ) if $error;
 
 		if( defined( $db ) and length( $db ) ) {
 			$availabletables = getsqlvalues( $dbh, "SHOW TABLES" );
@@ -5437,16 +5472,11 @@ sub main( @ ) { # {{{
 	if( defined( $action_init ) and $safetyoff ) {
 		print( "\n=> '--init' specified, ensuring that database `$db` exists ...\n" );
 		my $dsn = "DBI:mysql:host=$host;port=$port";
-		#disable diagnostics;
-		my $dbh = DBI -> connect( $dsn, $user, $pass, { RaiseError => 0, PrintError => 0 } )
-			or die(
-				  "$fatal Cannot create connection to DSN '$dsn': $DBI::errstr\n"
-				. ' ' x length( $fatal )
-				. " Is the database instance running?\n"
-			);
-		#enable diagnostics;
-		$dbh -> { 'InactiveDestroy' } = 1;
-		dosql( $dbh, "CREATE DATABASE IF NOT EXISTS `$db`" ) or die( "Failed to create database\n" );
+		my $dbh;
+		my $error = dbopen( \$dbh, $dsn, $user, $pass, $strict, { RaiseError => 0, PrintError => 0 } );
+		die( $fatal . ' ' . $error . "\n" . ' ' x length( $fatal ) . " Is the database instance running?\n" ) if $error;
+
+		dosql( $dbh, "CREATE DATABASE IF NOT EXISTS `$db`" ) or die( "Failed to create database: " . $dbh -> errstr() . "\n" );
 
 		print( "\n=> Disconnecting from database.\n" );
 		$dbh -> disconnect;
@@ -5460,15 +5490,9 @@ sub main( @ ) { # {{{
 
 	print( "\n=> Connecting to database `$db` ...\n" );
 	my $dsn = "DBI:mysql:database=$db;host=$host;port=$port";
-	#disable diagnostics;
-	my $dbh = DBI -> connect( $dsn, $user, $pass, { RaiseError => 0, PrintError => 0 } )
-		or die(
-			  "$fatal Cannot create connection to DSN '$dsn': $DBI::errstr\n"
-		        . ' ' x length( $fatal )
-			. "(Databases will be auto-created on --init when not in dry-run mode)\n"
-		);
-	#enable diagnostics;
-	$dbh -> { 'InactiveDestroy' } = 1;
+	my $dbh;
+	my $error = dbopen( \$dbh, $dsn, $user, $pass, $strict, { RaiseError => 0, PrintError => 0 } );
+	die( $fatal . ' ' . $error . "\n" . ' ' x length( $fatal ) . "(Databases will be auto-created on --init when not in dry-run mode)\n" ) if $error;
 
 	#
 	# Create {fl,m}yway metadata tables
@@ -5508,9 +5532,9 @@ sub main( @ ) { # {{{
 		my $ddl    = $table -> { 'ddl'    };
 		my $action = $table -> { 'action' };
 
-		if( $compat and $ddl =~ m/\stimestamp\([0-6]\)\s/ ) {
-			print( "\n*> Removing micro-second precision for <mysql-5.6.4 compatibility ...\n" );
-			$ddl =~ s/(\stimestamp)\([0-6]\)(\s)/$1$2/g;
+		if( $compat and $ddl =~ m/\stimestamp\([0-6]\)\s/i ) {
+			print( "\n*> Removing micro-second precision from definition for <mysql-5.6.4 compatibility ...\n" );
+			$ddl =~ s/(\stimestamp)\([0-6]\)(\s)/$1$2/gi;
 		}
 
 		if( $pretend ) {
@@ -5536,10 +5560,44 @@ sub main( @ ) { # {{{
 				}
 			}
 
-			# If we've dropped into MySQL compatibility mode previously (as
-			# above) then revert the change now...
+			# If we've dropped into MySQL compatibility mode
+			# previously (as above) then revert the change now...
 			#
 			if( ( $tname eq $mywayactionsname ) and not( $compat ) ) {
+				my $st = "DESCRIBE `$tname`";
+				my $sth = executesql( $dbh, undef, $st );
+				if( not( defined( $sth ) and $sth ) ) {
+					warn( "Unable to create statement handle to execute '$st': " . $dbh -> errstr() . "\n" );
+				} else {
+					while( my $ref = $sth -> fetchrow_arrayref() ) {
+						my $field = @{ $ref }[ 0 ];
+						my $type = @{ $ref }[ 1 ];
+
+						# XXX: Hard-coded table structure :(
+						if( ( $field eq 'started' ) and ( $type =~ m/timestamp/i ) ) {
+							if( lc( $type ) eq 'timestamp' ) {
+
+								# XXX: Hard-coded SQL
+								#
+								if ( dosql( $dbh, "ALTER TABLE `$tname` MODIFY `started` TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP" ) ) {
+									print( "=> MySQL compatibility option on table `$tname` removed\n" );
+								} else {
+									print( "*> MySQL compatibility option on table `$tname` could not be removed\n" );
+								}
+							}
+						}
+					}
+
+					$sth -> finish();
+				}
+			}
+
+			# Older myway.pl releases lacked a `sqlstarted`
+			# attribute on metadata tables, and so could not
+			# differentiate between when backups commenced and when
+			# we actually started executing a SQL statement - let's fix this ;)
+			#
+			if( $tname eq $mywaytablename ) {
 				my $st = "DESCRIBE `$tname`";
 				my $sth = executesql( $dbh, undef, $st );
 				if( not( defined( $sth ) and $sth ) ) {
@@ -5552,18 +5610,7 @@ sub main( @ ) { # {{{
 						my $type = @{ $ref }[ 1 ];
 
 						# XXX: Hard-coded table structure :(
-						if( ( $field eq 'started' ) and ( $type =~ m/timestamp/i ) ) {
-							if( $type eq 'timestamp' ) {
-
-								# XXX: Hard-coded SQL
-								#
-								if ( dosql( $dbh, "ALTER TABLE `$mywayactionsname` MODIFY `started` timestamp(6) NOT NULL DEFAULT CURRENT_TIMESTAMP" ) ) {
-									print( "=> MySQL compatibility option on table `$mywayactionsname` removed\n" );
-								} else {
-									print( "*> MySQL compatibility option on table `$mywayactionsname` could not be removed\n" );
-								}
-							}
-						} elsif( $field eq 'sqlstarted' ) {
+						if( $field eq 'sqlstarted' ) {
 							$foundexecutionstarted = TRUE;
 						}
 					}
@@ -5572,10 +5619,10 @@ sub main( @ ) { # {{{
 						# XXX: Hard-coded SQL
 						#
 						eval {
-							if ( dosql( $dbh, "ALTER TABLE `$mywayactionsname` ADD COLUMN `sqlstarted` timestamp AFTER `started`" ) ) {
-								print( "=> Additional timing column for table `$mywayactionsname` added\n" );
+							if ( dosql( $dbh, "ALTER TABLE `$tname` ADD COLUMN `sqlstarted` TIMESTAMP NULL DEFAULT NULL AFTER `started`" ) ) {
+								print( "=> Additional timing column for table `$tname` added\n" );
 							} else {
-								print( "*> Additional timing column for table `$mywayactionsname` could not be added\n" );
+								print( "*> Additional timing column for table `$tname` could not be added\n" );
 							}
 						};
 					}
@@ -5611,6 +5658,7 @@ sub main( @ ) { # {{{
 	$variables -> { 'force' }     = $force;
 	$variables -> { 'pretend' }   = $pretend;
 	$variables -> { 'safetyoff' } = $safetyoff;
+	$variables -> { 'strict' }    = $strict;
 	$variables -> { 'tmpdir' }    = $tmpdir;
 	$variables -> { 'unsafe' }    = $unsafe;
 
