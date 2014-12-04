@@ -666,7 +666,8 @@ sub parse_insert( $$ ) { # {{{
 	MKDEBUG && _d('Clause:', $next_clause, $values);
 
 	# Save any leftovers.  If there are any, parsing missed something.
-	($struct->{unknown}) = ($string =~ m/^\s*\Q$next_clause\E\s*$values\s*(.*)$/i);
+	($struct->{unknown}) = ($string =~ m/^\s*\Q$next_clause\E\s*\Q$values\E\s*(.*)$/i);
+	#($struct->{unknown}) = ($string =~ m/^\s*\Q$next_clause\E\s*$values\s*(.*)$/i);
 	#($struct->{unknown}) = ($string =~ m/^\s*$next_clause\s*$values\s*(.*)$/i);
 
 #	if ( my @into = ($query =~ m/
@@ -2005,6 +2006,8 @@ sub pwarn( $;$ );
 sub pfatal( $;$ );
 sub getvalue( $$ );
 sub initstate();
+sub compressquotes( $$ );
+sub decompressquotes( $$ );
 sub checkentry( $$;$$ );
 sub pushstate( $$ );
 sub pushentry( $$$$$;$ );
@@ -2073,19 +2076,27 @@ CREATE TABLE IF NOT EXISTS `$mywaytablename` (
   , `filename`		VARCHAR(255)	CHARACTER SET 'UTF8'      NOT NULL
   , `started`		TIMESTAMP
   , `sqlstarted`	TIMESTAMP	DEFAULT NULL                  NULL
-  , `finished`		TIMESTAMP       DEFAULT NULL                  NULL
+  , `finished`		TIMESTAMP	DEFAULT NULL                  NULL
   , `status`		TINYINT		UNSIGNED
   , PRIMARY KEY (`id`)
 ) ENGINE='InnoDB' DEFAULT CHARSET='ASCII';
 DDL
 
+# Previously, `statement` was of type VARCHAR(16384) - but SQL statements may
+# be as many bytes as specified by the 'max_allowed_packet' variable, which
+# defaults to 16MB.  To cope with this without truncation, we must use a TEXT
+# field-type.  It is possible that, since this occurance is rare, it would be
+# more advantageous performance-wise to store two fields: one for 'short' lines
+# (of up to 32676 UTF-8 characters) and one for lines that wouldn't fit into a
+# maximally-sized VARCHAR()...
+#
 our $mywayactionsname = 'myway_schema_actions';
 our $mywayactionsddl  = <<DDL;
 CREATE TABLE IF NOT EXISTS `$mywayactionsname` (
     `schema_id`		CHAR(36)	                          NOT NULL
   , `started`		TIMESTAMP(6)	DEFAULT CURRENT_TIMESTAMP NOT NULL
   , `event`		VARCHAR(256)	                          NOT NULL
-  , `statement`		VARCHAR(16384)	CHARACTER SET 'UTF8'      NOT NULL
+  , `statement`		LONGTEXT	CHARACTER SET 'UTF8'      NOT NULL
   , `line`		BIGINT		UNSIGNED
   , `time`		DECIMAL(13,3)
   , `state`		CHAR(5)
@@ -2112,7 +2123,7 @@ CREATE TABLE IF NOT EXISTS `$mywayprocsname` (
   , `type`		VARCHAR(20)	CHARACTER SET 'UTF8'
   , `started`		TIMESTAMP
   , `sqlstarted`	TIMESTAMP	DEFAULT NULL                  NULL
-  , `finished`		TIMESTAMP       DEFAULT NULL                  NULL
+  , `finished`		TIMESTAMP	DEFAULT NULL                  NULL
   , `status`		TINYINT		UNSIGNED
   , PRIMARY KEY (`id`)
 ) ENGINE='InnoDB' DEFAULT CHARSET='ASCII';
@@ -2169,6 +2180,13 @@ sub initstate() { # {{{
 		  '\/\*'	=> '\*\/'
 		, '\{'		=> '\}'
 	);
+	## Known quotation symbols
+	#my @quo = (
+	#	  '`'
+	#	, "'"
+	#	, '"'
+	#);
+	my @str = ();
 
 	my %state = (
 		  'symbol'	=>       undef	# Used to hold the closing characters of a multi-line comment or statement delimiter
@@ -2180,9 +2198,106 @@ sub initstate() { # {{{
 
 	@{ $state{ 'slc' } } = @slc;
 	%{ $state{ 'mlc' } } = %mlc;
+	#@{ $state{ 'quo' } } = @quo;
+	@{ $state{ 'str' } } = @str;
 
 	return( \%state );
 } # initstate # }}}
+
+sub compressquotes( $$ ) { # {{{
+	my( $line, $state ) = @_;
+
+	#my @quo = @{ $state -> { 'quo' } };
+	my $quochanged = FALSE;
+
+	## Try to isolate any quoted text (to be expanded out later) so that we
+	## aren't trying to comment-check user-data...
+	##
+	#for( my $index = 0 ; $index < scalar( @quo ) ; $index++ ) {
+	#	my $character = $quo[ $index ];
+	#	$quochanged = TRUE if( $line =~ s/(\\$character|$character$character)/__MW_QUO_${index}__/g );
+	#}
+	#pdebug( "  q Escaped-quote filtered line is now '$line'" ) if( $quochanged );
+
+	# We're only going to attempt to handle quoted text which starts and
+	# ends on the same line.  However, a string such as:
+	#
+	#     don't do this */ /* don't do this either
+	#
+	# ... is problematic because the central portion does appear to be a
+	# valid quoted string.  If we were to process comments first and only
+	# look for quoted strings outside of comments, then we risk thinking
+	# that text within a quoted string such as:
+	#
+	#     mime-type: text/*
+	#
+	# ... is actually the start of a comment.  At least we can ensure that
+	# apparent quotes a balanced before we consider them...
+	#
+	my $filteredline = $line;
+	my $strchanged = FALSE;
+	foreach my $match ( ( $line =~ m/$RE{ quoted }/g ) ) {
+		my $index = scalar( @{ $state -> { 'str' } } );
+		$filteredline =~ s/\Q$match\E/__MW_STR_${index}__/;
+		push( $state -> { 'str' }, $match );
+		$strchanged = TRUE;
+		pdebug( "  q Replacing '$match' with '__MW_STR_${index}__' to give '$filteredline'" );
+	}
+	pdebug( "  q Quote-reduced line is now '$filteredline'" ) if( $quochanged or $strchanged );
+
+	return( $filteredline );
+} # compressquotes # }}}
+
+sub decompressquotes( $$ ) { # {{{
+	my( $line, $state ) = @_;
+
+	return( undef ) unless( defined( $line ) and length( $line ) );
+
+	# This function must perform the exact opposite of compressquotes(),
+	# above...
+
+	my @str = @{ $state -> { 'str' } };
+	my $strchanged = FALSE;
+
+	if( scalar( @str ) ) {
+		# For some reason, I can't initialise with scalar( @str ) and
+		# then decrement with --$index?
+		#
+		for( my $index = ( scalar( @str ) - 1 ) ; $index >= 0 ; $index-- ) {
+			my $match = $str[ $index ];
+			if( defined( $match ) and length( $match ) ) {
+				if( $line =~ s/__MW_STR_${index}__/$match/ ) {
+					pdebug( "  Q Replaced '__MW_STR_${index}__' wth '$match' to give '$line'" );
+					$strchanged = TRUE;
+					@{ $state -> { 'str' } }[ $index ] = undef;
+				}
+			}
+		}
+	}
+
+	#my @quo = @{ $state -> { 'quo' } };
+	my $quochanged = FALSE;
+
+	#if( scalar( @quo ) ) {
+	#	for( my $index = ( scalar( @quo ) - 1 ) ; $index >= 0 ; $index -- ) {
+	#		my $character = $quo[ $index ];
+
+	#		# We don't store whether the character was backslash-
+	#		# escaped or double-character escaped - let's default
+	#		# to the former, on the basis of it being more
+	#		# obivous...
+	#		#
+	#		if( $line =~ s/__MW_QUO_${index}__/\\$character/g ) {
+	#			$quochanged = TRUE;
+	#		}
+	#	}
+	#	pdebug( "  Q Escaped-quote filtered line is now '$line'" ) if( $quochanged );
+	#}
+
+	pdebug( "  Q Quote-expanded line is now '$line'" ) if( $quochanged or $strchanged );
+
+	return( $line );
+} # decompressquotes # }}}
 
 sub checkentry( $$;$$ ) { # {{{
 	my ( $data, $state, $description, $line ) = @_;
@@ -2304,6 +2419,8 @@ sub processcomments( $$$ ) { # {{{
 	my @slc = @{ $state -> { 'slc' } };
 	my %mlc = %{ $state -> { 'mlc' } };
 
+	$line = compressquotes( $line, $masterstate );
+
 	# Handle comments
 
 	if( 0 == $state -> { 'depth' } ) {
@@ -2322,7 +2439,7 @@ sub processcomments( $$$ ) { # {{{
 			foreach my $match ( ( $line =~ m/$RE{ balanced }{ -begin => $start }{ -end => $end }{ -keep }/g ) ) {
 				pdebug( "  C ... matched on sub-string '$match'" );
 
-				pushentry( $data, $state, 'comment', $match, "Single-line" );
+				pushentry( $data, $state, 'comment', decompressquotes( $match, $masterstate ), "Single-line" );
 
 				# Ensure that Hints don't leave a trailing
 				# semi-colon (but also ensure that Hint-like
@@ -2407,7 +2524,7 @@ sub processcomments( $$$ ) { # {{{
 				if( defined( $comment ) ) {
 					pdebug( "  C Found single-line comment '$comment', remaining text '$line'" );
 
-					pushentry( $data, $state, 'comment', $comment, 'One-line' );
+					pushentry( $data, $state, 'comment', decompressquotes( $comment, $masterstate ), 'One-line' );
 				}
 
 				pdebug( "  C Processing '$line' ..." ) if( length( $line ) );
@@ -2442,7 +2559,7 @@ sub processcomments( $$$ ) { # {{{
 		( my $uend = $end ) =~ s/\\//g;
 
 		unless( ( 1 == $state -> { 'depth' } ) and ( $line =~ m/$end/ ) ) {
-			pushfragment( $state, 'comment', $line, 'mid-comment' );
+			pushfragment( $state, 'comment', decompressquotes( $line, $masterstate ), 'mid-comment' );
 
 			return( undef );
 		}
@@ -2514,7 +2631,7 @@ sub processcomments( $$$ ) { # {{{
 			if( 0 == $state -> { 'depth' } ) {
 				$end =~ s/\\//g;
 
-				pushfragment( $state, 'comment', ( defined( $pre ) ? $pre : '' ) . $end, 'ending' );
+				pushfragment( $state, 'comment', decompressquotes( ( defined( $pre ) ? $pre : '' ) . $end, $masterstate ), 'ending' );
 
 				pdebug( "  C Pushing resultant comments array ..." );
 				pushstate( $data, $state );
@@ -2547,7 +2664,7 @@ sub processcomments( $$$ ) { # {{{
 
 	pdebug( "  C End processing text for comments." );
 
-	return( $line );
+	return( decompressquotes( $line, $masterstate ) );
 } # processcomments # }}}
 
 sub processline( $$;$ ) { # {{{
@@ -2627,7 +2744,7 @@ sub processline( $$;$ ) { # {{{
 	# 'foreach' block below to be skipped, meaning that the statement
 	# termianted by the delimiter on a line by itself is never processed.
 	# Rather than duplicate a chunk of code for this case, we cheat and add
-	# a second delimiter - an entirely save operation - which causes
+	# a second delimiter - an entirely safe operation - which causes
 	# 'foreach' to process the intervening space character!
 	if( $line =~ m/^\s*$delim\s*$/ ) {
 		pdebug( "  S Expanding trailing delimiter '$delim'..." );
@@ -2803,14 +2920,14 @@ sub dbopen( $$$$;$$ ) { # {{{
 	}
 
 	return( $error );
-} # dbclose # }}}
+} # dbopen # }}}
 
 sub dbclose( ;$$ ) { # {{{
 	my( $dbh, $message ) = @_;
 
 	$message = "Complete" unless( defined( $message ) and length( $message ) );
 
-	if( defined( $dbh ) ) {
+	if( defined( $dbh ) and $dbh ) {
 		print( "\n=> $message - disconnecting from database ...\n" );
 		$dbh -> disconnect;
 	}
@@ -5569,6 +5686,8 @@ sub main( @ ) { # {{{
 				if( not( defined( $sth ) and $sth ) ) {
 					warn( "Unable to create statement handle to execute '$st': " . $dbh -> errstr() . "\n" );
 				} else {
+					my $foundoldstatementtype = FALSE;
+
 					while( my $ref = $sth -> fetchrow_arrayref() ) {
 						my $field = @{ $ref }[ 0 ];
 						my $type = @{ $ref }[ 1 ];
@@ -5576,7 +5695,6 @@ sub main( @ ) { # {{{
 						# XXX: Hard-coded table structure :(
 						if( ( $field eq 'started' ) and ( $type =~ m/timestamp/i ) ) {
 							if( lc( $type ) eq 'timestamp' ) {
-
 								# XXX: Hard-coded SQL
 								#
 								if ( dosql( $dbh, "ALTER TABLE `$tname` MODIFY `started` TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP" ) ) {
@@ -5584,6 +5702,14 @@ sub main( @ ) { # {{{
 								} else {
 									print( "*> MySQL compatibility option on table `$tname` could not be removed\n" );
 								}
+							}
+						} elsif( ( $field eq 'statement' ) and ( $type =~ m/varchar/i ) ) {
+							# XXX: Hard-coded SQL
+							#
+							if ( dosql( $dbh, "ALTER TABLE `$tname` MODIFY `statement` LONGTEXT CHARACTER SET 'UTF8' NOT NULL" ) ) {
+								print( "=> Statement length limitations on table `$tname` removed\n" );
+							} else {
+								print( "*> Statement length limitations on table `$tname` could not be removed\n" );
 							}
 						}
 					}
