@@ -2910,11 +2910,30 @@ sub dbopen( $$$$;$$ ) { # {{{
 			my $mode = getsqlvalue( $$dbh, 'SELECT @@SESSION.sql_mode' );
 			if( $mode !~ m/^.*,?(((STRICT_ALL_TABLES|STRICT_TRANS_TABLES),.*(STRICT_ALL_TABLES|STRICT_TRANS_TABLES))|TRADITIONAL),?.*$/i ) {
 				$mode .= ( defined( $mode ) and length ( $mode ) ? ',' : '' ) . "TRADITIONAL";
-				dosql( $$dbh, "SET SESSION sql_mode = 'TRADITIONAL'" );
+				dosql( $$dbh, "SET SESSION sql_mode = '$mode'" );
 			}
 			$mode = getsqlvalue( $$dbh, 'SELECT @@SESSION.innodb_strict_mode' );
 			if( not( defined( $mode ) ) or ( $mode eq 0 ) ) {
 				dosql( $$dbh, "SET SESSION innodb_strict_mode = ON" );
+			}
+		} else {
+			# We actually probably do need to deal with this
+			# eventuality - what happens if strict mode is already
+			# set?
+
+			my $mode = getsqlvalue( $$dbh, 'SELECT @@SESSION.sql_mode' );
+			# Clear all modes, but only if a strict setting is
+			# detected.
+			#
+			# XXX: It would be better to filter this list with more
+			#      granularity...
+			#
+			if( $mode =~ m/^.*,?(((STRICT_ALL_TABLES|STRICT_TRANS_TABLES),.*(STRICT_ALL_TABLES|STRICT_TRANS_TABLES))|TRADITIONAL),?.*$/i ) {
+				dosql( $$dbh, "SET SESSION sql_mode = ''" );
+			}
+			$mode = getsqlvalue( $$dbh, 'SELECT @@SESSION.innodb_strict_mode' );
+			if( $mode eq 1 ) {
+				dosql( $$dbh, "SET SESSION innodb_strict_mode = OFF" );
 			}
 		}
 	}
