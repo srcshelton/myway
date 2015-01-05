@@ -311,9 +311,18 @@ sub parse( $$;$ ) {
 		$query      = shift @subqueries;
 	}
 	elsif ( $type eq 'create' && $query =~ m/\s+SELECT/ ) {
+		# XXX: create PROCEDURE may contain SELECT sub-queries, but
+		#      it cannot be assumed that they will continue to the end
+		#      of the line.  Delimiter-parsing in this instance is not
+		#      trivial, as the active delimiter may differ from ';',
+		#      which may also appear (without delimiting) in a quoted
+		#      string...
 		MKDEBUG && _d('CREATE..SELECT');
-		($subqueries[0]->{query}) = $query =~ m/\s+(SELECT\s+.+)/;
-		$query =~ s/\s+SELECT\s+.+//;
+		#($subqueries[0]->{query}) = $query =~ m/\s+(SELECT\s+.+)/;
+		#$query =~ s/\s+SELECT\s+.+//;
+		# XXX: Let's give is a try anyway...
+		($subqueries[0]->{query}) = $query =~ m/\s+(SELECT\s+[^;]+)/;
+		$query =~ s/\s+SELECT\s+[^;]+//;
 	}
 
 	# Parse raw text parts from query.  The parse_TYPE subs only do half
@@ -389,11 +398,47 @@ sub parse_create( $$ ) { # {{{
 	$name =~ s/['"]//g;
 	$name =~ s/\(\s*\)$//;
 	$name =~ s/[;(]$//;
-	return {
+	my $struct = {
 		object  => lc $obj,
 		name    => $name,
 		unknown => undef,
 	};
+
+	if( lc( $obj ) eq 'procedure' ) {
+		$query =~ s/\sBEGIN\s/ BEGIN; /gi;
+		$query =~ s/\sEND( IF)\s/ END$1; /gi;
+		$query =~ s/\sTHEN\s/ THEN; /gi;
+		MKDEBUG && _d('Filtered query:', $query);
+		my @subqueries = split( /;/, ';' . $query . ';' );
+		for( my $n = 0 ; $n < scalar( @subqueries ) ; $n++ ) {
+			my $subquery = $subqueries[ $n ];
+			if( 0 == $n ) {
+				$subquery = '';
+			} elsif( 1 == $n ) {
+				$subquery =~ s/^.*?BEGIN//;
+				MKDEBUG && _d('Filtered initial sub-query:', $subquery);
+			} elsif( scalar( @subqueries ) - 1 == $n ) {
+				$subquery =~ s/END.*?$//;
+				MKDEBUG && _d('Filtered final sub-query:', $subquery);
+			}
+			$subquery =~ s/^\s+//;
+			$subquery =~ s/\s+$//;
+			if( length( $subquery ) ) {
+				MKDEBUG && _d('Parsing CREATE PROCEDURE sub-query:', $subquery);
+				my $subquery_struct;
+				eval {
+					$subquery_struct = $self->parse($subquery);
+				};
+				if( $@ ) {
+					$subquery_struct = { unknown => $subquery };
+				}
+				push @{$struct->{subqueries}}, $subquery_struct;
+			}
+		}
+	}
+
+	MKDEBUG && _d('Create struct:', Dumper($struct));
+	return $struct;
 } # parse_create # }}}
 
 sub parse_delete( $$ ) { # {{{
@@ -795,13 +840,13 @@ sub parse_columns( $$ ) { # {{{
 		# ... so explicit_alias is missing, and $2 is in $3.
 		#
 		if ($cols =~ m/\G\s*$column_ident\s*(?>,|\Z)/gcxo) {
-#warn "DEBUG: " .
-#	( defined( $1 ) ? "\$1(db_tbl_col) is '$1'" : '' ) .
-#	( defined( $2 ) ? ", \$2(as) is '$2'" : '' ) .
-#	( defined( $3 ) ? ", \$3(alias) is '$3'" : '' ) .
-#	( defined( $4 ) ? ", \$4(unused) is '$4'" : '' ) .
-#	( defined( $5 ) ? ", \$4(unused) is '$5'" : '' ) .
-#	".";
+warn "SQL DEBUG: " .
+	( defined( $1 ) ? "\$1(db_tbl_col) is '$1'" : '' ) .
+	( defined( $2 ) ? ", \$2(unused) is '$2'" : '' ) .
+	( defined( $3 ) ? ", \$3(as) is '$3'" : '' ) .
+	( defined( $4 ) ? ", \$4(alias) is '$4'" : '' ) .
+	( defined( $5 ) ? ", \$4(unused) is '$5'" : '' ) .
+	".";
 			#my ($db_tbl_col, $as, $alias) = ($1, $2, $3); # XXX
 			my ($db_tbl_col, $as, $alias) = ($1, $3, $4); # XXX
 			my $ident_struct = $self->parse_identifier('column', $db_tbl_col);
@@ -813,18 +858,42 @@ sub parse_columns( $$ ) { # {{{
 			};
 			push @cols, $col_struct;
 		}
+		# Furthermore, if the LHS of a SELECT statement is actually a
+		# function-call rather than an alias at all, then we need to
+		# handle that differently (but only if the other approaches
+		# have failed to match)...
+		# Update: Moved to position 2
+		elsif ($cols =~ m/\G\s*$function_ident\s*(?>,|\Z)/gcxo) {
+			my ($select_expr) = $1;
+warn "SQL DEBUG: " .
+	( defined( $1 ) ? "\$1(db_tbl_col) is '$1'" : '' ) .
+	( defined( $2 ) ? ", \$2(as) is '$2'" : '' ) .
+	( defined( $3 ) ? ", \$3(alias) is '$3'" : '' ) .
+	( defined( $4 ) ? ", \$4(unused) is '$4'" : '' ) .
+	( defined( $5 ) ? ", \$4(unused) is '$5'" : '' ) .
+	".";
+			# There's no obvious way to represent this in the
+			# current structure, which is predecated upon having a
+			# concrete identifier as a root element.  Having said
+			# this, the expression is still represented in
+			# { 'clauses' } -> { 'columns' } (although not as an
+			# alias/col/tbl hash) so perhaps this is okay...
+			MKDEBUG && _d("Cannot fully parse expression \"$select_expr\"");
+			my $col_struct = { expr => $select_expr, (), () };
+			push @cols, $col_struct;
+		}
 		# This can occur when, for example, the LHS of a SELECT
 		# statement's alias definition is an expression rather
 		# than a simple column-reference...
 		elsif ($cols =~ m/\G\s*(.+?)$ident_alias\s*(?>,|\Z)/gcxo) {
 			my ($select_expr, $as, $alias) = ($1, $2, $3); # XXX
-#warn "DEBUG: " .
-#	( defined( $1 ) ? "\$1(db_tbl_col) is '$1'" : '' ) .
-#	( defined( $2 ) ? ", \$2(as) is '$2'" : '' ) .
-#	( defined( $3 ) ? ", \$3(alias) is '$3'" : '' ) .
-#	( defined( $4 ) ? ", \$4(unused) is '$4'" : '' ) .
-#	( defined( $5 ) ? ", \$4(unused) is '$5'" : '' ) .
-#	".";
+warn "SQL DEBUG: " .
+	( defined( $1 ) ? "\$1(db_tbl_col) is '$1'" : '' ) .
+	( defined( $2 ) ? ", \$2(as) is '$2'" : '' ) .
+	( defined( $3 ) ? ", \$3(alias) is '$3'" : '' ) .
+	( defined( $4 ) ? ", \$4(unused) is '$4'" : '' ) .
+	( defined( $5 ) ? ", \$4(unused) is '$5'" : '' ) .
+	".";
 			$alias =~ s/`//g if $alias;
 			# There's no obvious way to represent this in the
 			# current structure, which is predecated upon having a
@@ -832,7 +901,7 @@ sub parse_columns( $$ ) { # {{{
 			# this, the expression is still represented in
 			# { 'clauses' } -> { 'columns' } (although not as an
 			# alias/col/tbl hash) so perhaps this is okay...
-			MKDEBUG && _d("Cannot fully parse expression \"$select_expr $as $alias\"");
+			MKDEBUG && _d("Cannot fully parse expression \"" . $select_expr . ( defined( $as ) ? ' ' . $as . ' ' : ' ' ) . $alias . "\"");
 			my $col_struct = {
 				expr => $select_expr,
 				($as    ? (explicit_alias => 1)      : ()),
@@ -841,7 +910,7 @@ sub parse_columns( $$ ) { # {{{
 			push @cols, $col_struct;
 		}
 		else {
-			die "Column ident match failed";  # shouldn't happen
+			die "Column ident match on '$cols' failed";  # shouldn't happen
 		}
 	}
 
@@ -1580,7 +1649,7 @@ sub remove_subqueries( $$ ) {
 
 	# Find starting pos of all subqueries.
 	my @start_pos;
-	while ( $query =~ m/(\(SELECT )/gi ) {
+	while ( $query =~ m/(\(SELECT\s+)/gi ) {
 		my $pos = (pos $query) - (length $1);
 		push @start_pos, $pos;
 	}
@@ -1946,7 +2015,7 @@ no if ( $] >= 5.02 ), warnings => 'experimental::autoderef';
 # ... in actual fact, diagnostics causes more problems than it solves.  It does
 # appear to be, in reality, quite silly.
 
-use constant VERSION =>  1.0.5;
+use constant VERSION =>  1.0.6;
 
 use constant TRUE    =>  1;
 use constant FALSE   =>  0;
@@ -2482,7 +2551,7 @@ sub processcomments( $$$ ) { # {{{
 
 				( my $filtered = $pre ) =~ s/\s+//g;
 				if( defined( $filtered ) and length( $filtered ) ) {
-					pdebug( "  C Processing '$pre' ..." );
+					pdebug( "  C Processing text before comment '$pre' ..." );
 					$line = processline( $data, $pre, $masterstate );
 				} else {
 					pdebug( "  C Empty line, save for comment" );
@@ -2527,7 +2596,7 @@ sub processcomments( $$$ ) { # {{{
 					pushentry( $data, $state, 'comment', decompressquotes( $comment, $masterstate ), 'One-line' );
 				}
 
-				pdebug( "  C Processing '$line' ..." ) if( length( $line ) );
+				pdebug( "  C Processing line before comment '$line' ..." ) if( length( $line ) );
 
 				#$line = processline( $data, $line, $masterstate ) if( length( $line ) );
 				( my $filtered = $line ) =~ s/\s+//g;
@@ -2596,7 +2665,7 @@ sub processcomments( $$$ ) { # {{{
 			my( $pre, $post ) = split( /$start/, $line );
 			pdebug( "  C Sections are '$pre' & '$post'" );
 			if( length( $pre ) ) {
-				pdebug( "  C Processing '$pre' ..." );
+				pdebug( "  C Processing text before nested comment '$pre' ..." );
 
 				$line = processline( $data, $pre, $masterstate );
 			} else {
@@ -2604,7 +2673,7 @@ sub processcomments( $$$ ) { # {{{
 
 				undef( $line );
 			}
-			pdebug( "  C Processing '$post' ..." ) if( length( $post ) );
+			pdebug( "  C Processing text after nested comment '$post' ..." ) if( length( $post ) );
 
 			processline( $data, $post, $masterstate ) if( length( $post ) );
 
@@ -2641,7 +2710,7 @@ sub processcomments( $$$ ) { # {{{
 			}
 
 			if( length( $post ) ) {
-				pdebug( "  C Processing '$post' ..." );
+				pdebug( "  C Processing text after comment '$post' ..." );
 				$line = processline( $data, $post, $masterstate );
 			} else {
 				pdebug( "  C Empty line" );
@@ -2681,7 +2750,11 @@ sub processline( $$;$ ) { # {{{
 		$state -> { 'statements' } = initstate();
 	}
 
-	return( undef ) unless( defined( $line ) );
+	return( undef ) unless( defined( $line ) and length( $line ) );
+	if( $line =~ m/^\s*$/ ) {
+		pdebug( "  S Skipping blank line '$line' ..." );
+		return( undef );
+	}
 
 	# Previously, we were looking for lines where the entirity of the line
 	# was a hint in order to handle the text as a hint rather than as a
@@ -2689,7 +2762,7 @@ sub processline( $$;$ ) { # {{{
 	# within a statement also, so we'll just have to return any hint-like
 	# data as-is.  Hopefully this will be safe...
 	if( $line =~ m#(^|\s+)/\*![0-9]{5} .+ \*/(\s+|;\s*$)# ) {
-		pdebug( "  * Not processing text with hint '$line' ..." );
+		pdebug( "  * Not processing text with hint '$line' for comments ..." );
 	} else {
 		pdebug( "  * Start processing text '$line' ..." );
 
@@ -2754,6 +2827,11 @@ sub processline( $$;$ ) { # {{{
 	foreach my $item ( split( /\Q$delim\E/, $line ) ) {
 
 		#pdebug( "  S Split item '$item' from line '$line'..." );
+
+		if( $line =~ m/^\s*$/ ) {
+			pdebug( "  S Skipping blank segment '$line' ..." );
+			return( undef );
+		}
 
 		# perl didn't like '\s' here...
 		my $term = "\Q$item\E[[:space:]]*\Q$delim\E";
@@ -2837,7 +2915,7 @@ sub processline( $$;$ ) { # {{{
 			if( 0 == $state -> { 'statements' } -> { 'depth' } ) {
 				$state -> { 'statements' } -> { 'type' } = 'statement';
 			}
-			pushfragment( $state -> { 'statements' }, 'statement', $line, 'SQL fragment' );
+			pushfragment( $state -> { 'statements' }, 'statement', $line, 'SQL statement' );
 			return( undef );
 		}
 	}
@@ -3728,18 +3806,24 @@ sub applyschema( $$$$;$ ) { # {{{
 	my @dumptables = ();
 
 	if( 'procedure' eq $mode ) {
-		$procedureversion = $1 if( dirname( $file ) =~ m/^(?:.*?)(_v\d+_\d+)$/ );
-		if( defined( $procedureversion ) ) {
-			$procedureversion .= '` ';
-			print( "*> Will adjust Stored Procedure names with version string '$procedureversion'\n" );
-		} else {
-			if( $force ) {
-				warn( "!> Cannot determine Stored Procedure version string - removing versioning\n" );
-			} else {
+		if( defined( $marker ) and length( $marker ) ) {
+			$procedureversion = $1 if( dirname( $file ) =~ m/^(?:.*?)(_v\d+_\d+)$/ );
+			if( defined( $procedureversion ) ) {
+				$procedureversion .= '` ';
 				if( $pretend ) {
-					warn( "!> Cannot determine Stored Procedure version string - would abort unless forced\n" );
+					print( "*> Would adjust Stored Procedure names with version string '$procedureversion'\n" );
 				} else {
-					die( "$fatal Cannot determine Stored Procedure version string from directory '" . dirname( $file ) . "' - aborting\n" );
+					print( "*> Will adjust Stored Procedure names with version string '$procedureversion'\n" );
+				}
+			} else {
+				if( $force ) {
+					warn( "!> Cannot determine Stored Procedure version string - removing versioning\n" );
+				} else {
+					if( $pretend ) {
+						warn( "!> Cannot determine Stored Procedure version string - would abort unless forced\n" );
+					} else {
+						die( "$fatal Cannot determine Stored Procedure version string from directory '" . dirname( $file ) . "' - aborting\n" );
+					}
 				}
 			}
 		}
@@ -3749,7 +3833,7 @@ sub applyschema( $$$$;$ ) { # {{{
 		# the same versions.
 		my $metafile = dirname( $file ) . '/' . $db . '.metadata';
 		die( "Cannot read metadata '$db.metadata' for file '$file'\n" ) unless( -s $metafile );
-		print( "*> Using metadata file '$file'\n" );
+		print( "*> Using metadata file '$metafile'\n" );
 
 		$invalid = $invalid | not( processfile( $metadata, $metafile ) );
 		die( "Metadata failed validation - aborting.\n" ) if( $invalid );
@@ -5496,6 +5580,7 @@ sub main( @ ) { # {{{
 			$path = $pathprefix;
 		}
 
+		$path = '.' unless( defined( $path ) and length( $path ) );
 		$basepath = $path;
 		@files = bsd_glob( $basepath . "/" . $pattern );
 		if( scalar( @files ) ) {
@@ -5561,6 +5646,7 @@ sub main( @ ) { # {{{
 				}
 			}
 			exit( 1 ) unless( $okay );
+			$path = '.' unless( defined( $path ) and length( $path ) );
 			$basepath = $path;
 			@files = @{ $target };
 		} else {
@@ -5570,11 +5656,14 @@ sub main( @ ) { # {{{
 		}
 	}
 
-	if( ( 'procedure' eq $mode ) and not( -d $basepath ) ) {
-		die( "$fatal Directory '$basepath' does not exist\n" );
-	}
-	if( ( 'procedure' eq $mode ) and not( -s $basepath . '/' . $db . '.metadata' ) ) {
-		die( "$fatal Metadata file '" . $db . '.metadata' . "' for database `$db` is not present in directory '$basepath' or cannot be read\n" );
+	if( 'procedure' eq $mode ) {
+		if( not( defined( $basepath ) ) ) {
+			die( "$fatal Base directory for Stored Procedures not defined\n" );
+		} elsif( not -d $basepath ) {
+			die( "$fatal Directory '$basepath' does not exist\n" );
+		} elsif( not( -s $basepath . '/' . $db . '.metadata' ) ) {
+			die( "$fatal Metadata file '" . $db . '.metadata' . "' for database `$db` is not present in directory '$basepath' or cannot be read\n" );
+		}
 	}
 
 	print( "=> Processing " . ( 'procedure' eq $mode ? 'Stored Procedures' : 'files' ) . ":\n" );
