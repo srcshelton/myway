@@ -99,8 +99,13 @@ package SQLParser;
 
 use strict;
 use warnings FATAL => 'all';
+
 use English qw(-no_match_vars);
+
 use constant MKDEBUG => $ENV{MKDEBUG} || 0;
+use constant SQLDEBUG => $ENV{SQLDEBUG} || 0;
+
+use constant DEFDELIM => ';';
 
 # Used by improved parse_values
 use Regexp::Common;
@@ -214,7 +219,7 @@ sub new( $% ) {
 	my ( $class, %args ) = @_;
 	my $self = {
 		  %args
-		,  delimiter => ';'
+		,  delimiter => DEFDELIM
 	};
 	return( bless( $self, $class ) );
 } # new # }}}
@@ -248,7 +253,7 @@ sub parse( $$;$ ) {
 	my ( $self, $query, $delim ) = @_;
 	return unless $query;
 
-	$delim = ';' unless( defined( $delim ) and length( $delim ) );
+	$delim = DEFDELIM unless( defined( $delim ) and length( $delim ) );
 
 	#MKDEBUG && _d('Query:', $query);
 
@@ -409,7 +414,7 @@ sub parse_create( $$ ) { # {{{
 		$query =~ s/\sEND( IF)\s/ END$1; /gi;
 		$query =~ s/\sTHEN\s/ THEN; /gi;
 		MKDEBUG && _d('Filtered query:', $query);
-		my @subqueries = split( /;/, ';' . $query . ';' );
+		my @subqueries = split( /;/, DEFDELIM . $query . DEFDELIM );
 		for( my $n = 0 ; $n < scalar( @subqueries ) ; $n++ ) {
 			my $subquery = $subqueries[ $n ];
 			if( 0 == $n ) {
@@ -467,7 +472,7 @@ sub parse_drop( $$ ) { # {{{
 	my $struct;
 
 	my $delimiter = $self->{delimiter};
-	$delimiter = ';' unless( defined( $delimiter ) and length( $delimiter ) );
+	$delimiter = DEFDELIM unless( defined( $delimiter ) and length( $delimiter ) );
 	( my $terms = $query ) =~ s/\s*\Q$delimiter\E\s*$//;
 	#( my $terms = $query ) =~ s/\s*$delimiter\s*$//;
 	$terms =~ s/IF\s+EXISTS//;
@@ -611,7 +616,7 @@ sub parse_insert( $$ ) { # {{{
 	my $struct = {};
 
 	my $delimiter = $self->{delimiter};
-	$delimiter = ';' unless( defined( $delimiter ) and length( $delimiter ) );
+	$delimiter = DEFDELIM unless( defined( $delimiter ) and length( $delimiter ) );
 	$query =~ s/\s*\Q$delimiter\E\s*$//;
 	#$query =~ s/\s*$delimiter\s*$//;
 
@@ -846,7 +851,7 @@ warn "SQL DEBUG: " .
 	( defined( $3 ) ? ", \$3(as) is '$3'" : '' ) .
 	( defined( $4 ) ? ", \$4(alias) is '$4'" : '' ) .
 	( defined( $5 ) ? ", \$4(unused) is '$5'" : '' ) .
-	".";
+	"." if SQLDEBUG;
 			#my ($db_tbl_col, $as, $alias) = ($1, $2, $3); # XXX
 			my ($db_tbl_col, $as, $alias) = ($1, $3, $4); # XXX
 			my $ident_struct = $self->parse_identifier('column', $db_tbl_col);
@@ -871,7 +876,7 @@ warn "SQL DEBUG: " .
 	( defined( $3 ) ? ", \$3(alias) is '$3'" : '' ) .
 	( defined( $4 ) ? ", \$4(unused) is '$4'" : '' ) .
 	( defined( $5 ) ? ", \$4(unused) is '$5'" : '' ) .
-	".";
+	"." if SQLDEBUG;
 			# There's no obvious way to represent this in the
 			# current structure, which is predecated upon having a
 			# concrete identifier as a root element.  Having said
@@ -893,7 +898,7 @@ warn "SQL DEBUG: " .
 	( defined( $3 ) ? ", \$3(alias) is '$3'" : '' ) .
 	( defined( $4 ) ? ", \$4(unused) is '$4'" : '' ) .
 	( defined( $5 ) ? ", \$4(unused) is '$5'" : '' ) .
-	".";
+	"." if SQLDEBUG;
 			$alias =~ s/`//g if $alias;
 			# There's no obvious way to represent this in the
 			# current structure, which is predecated upon having a
@@ -2015,15 +2020,17 @@ no if ( $] >= 5.02 ), warnings => 'experimental::autoderef';
 # ... in actual fact, diagnostics causes more problems than it solves.  It does
 # appear to be, in reality, quite silly.
 
-use constant VERSION =>  1.0.6;
+use constant VERSION  =>  1.0.6;
 
-use constant TRUE    =>  1;
-use constant FALSE   =>  0;
+use constant TRUE     =>  1;
+use constant FALSE    =>  0;
 
-use constant DEBUG   => ( $ENV{ 'DEBUG' } or FALSE );
+use constant DEBUG    => ( $ENV{ 'DEBUG' } or FALSE );
 
-use constant PORT    =>  3306;
-use constant MARKER  => '`<<VERSION>>';
+use constant DEFDELIM => ';';
+
+use constant PORT     =>  3306;
+use constant MARKER   => '`<<VERSION>>';
 
 # Necessary non-default modules:
 #
@@ -2474,6 +2481,11 @@ sub pushfragment( $$$;$$ ) { # {{{
 
 	my $count = scalar( @{ $state -> { 'entry' } } );
 	pdebug( "  F ... current fragment contains $count " . ( ( 1 == $count ) ? 'line' : 'lines' ) );
+	#pdebug( "  F ... current fragment contains $count " . ( ( 1 == $count ) ? 'line' : 'lines' ) . ':' );
+	#for( my $n = 0 ; $n < $count ; $n++ ) {
+	#	pdebug( '  F ... ' . ( $n + 1 ) . ': ' . @{ $state -> { 'entry' } }[ $n ] );
+	#}
+	#pdebug( '  F ... EOF' );
 
 	return( $count );
 } # pushfragment # }}}
@@ -2514,7 +2526,7 @@ sub processcomments( $$$ ) { # {{{
 				# semi-colon (but also ensure that Hint-like
 				# comments do always have the correct
 				# terminator)...
-				#$match .= ';' if( $match =~ m:^/\*![0-9]{5} (.+) \*/$: );
+				#$match .= DEFDELIM if( $match =~ m:^/\*![0-9]{5} (.+) \*/$: );
 				# This should no longer happen, as hints don't
 				# get passed to this code-path.
 
@@ -2808,7 +2820,7 @@ sub processline( $$;$ ) { # {{{
 		}
 	}
 
-	my $delim = ';';
+	my $delim = DEFDELIM;
 	$delim = $state -> { 'statements' } -> { 'symbol' } if( defined( $state -> { 'statements' } -> { 'symbol' } ) );
 
 	#pdebug( "  S About to split line '$line' into individual items..." );
@@ -4373,6 +4385,7 @@ SQL
 
 	my $schemastart = [ gettimeofday() ];
 
+	my $delim = DEFDELIM;
 	foreach my $entry ( $data -> { 'entries' } ) {
 		foreach my $statement ( @{ $entry } ) {
 			if( 'comment' eq $statement -> { 'type' } ) {
@@ -4620,7 +4633,8 @@ SQL
 # Currently unchanged values: `version`, `description`, `type`, `sqlstarted`, `finished`, `status`.
 										die( "Unable to create tracking statement handle: " . $dbh -> errstr() . "\n" ) unless( defined( $sth ) and $sth );
 										if( $safetyoff ) {
-warn "DEBUG: Inserting entry to `$mywayprocsname` for file '$schmfile'";
+#warn "DEBUG: Inserting entry to `$mywayprocsname` for file '$schmfile'";
+											pdebug( "DEBUG: Inserting entry to `$mywayprocsname` for file '$schmfile'" );
 											executesql( $dbh, $sth, undef,
 												   $uuid
 												,  $user
@@ -4690,6 +4704,10 @@ warn "DEBUG: Inserting entry to `$mywayprocsname` for file '$schmfile'";
 				if( defined( $statement -> { 'tokens' } -> { 'type' } ) and ( $statement -> { 'tokens' } -> { 'type' } ) ) { # {{{
 					my $type = $statement -> { 'tokens' } -> { 'type' };
 					if( $type =~ m/delete|delimiter|grant|insert|replace|select|update/i ) {
+						if( $type =~ m/delimiter/i ) {
+							$delim = $statement -> { 'tokens' } -> { 'delimiter' } if( defined( $statement -> { 'tokens' } -> { 'delimiter' } ) and length( defined( $statement -> { 'tokens' } -> { 'delimiter' } ) ) );
+						}
+
 						if( defined( $laststatementwasddl ) and not( $laststatementwasddl ) ) {
 							# Last statement was not DDL, so we can still
 							# roll-back.
@@ -4763,7 +4781,10 @@ warn "DEBUG: Inserting entry to `$mywayprocsname` for file '$schmfile'";
 					# FIXME: Hack!!
 					$line =~ s/\$\$\s*$//;
 
-					if( not( $line =~ m/DELIMITER\s/i ) ) {
+					# 'DELIMITER' isn't a reserved-word,
+					# but /really/ should be!
+					#if( not( $line =~ m/^\s*DELIMITER\s/i ) ) {
+					if( not( $line =~ m/(?:^\s*|$delim\s+)DELIMITER\s/i ) ) {
 						$sql .= ' ' . $line;
 					}
 				}
