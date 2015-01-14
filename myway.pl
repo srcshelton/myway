@@ -2020,7 +2020,7 @@ no if ( $] >= 5.02 ), warnings => 'experimental::autoderef';
 # ... in actual fact, diagnostics causes more problems than it solves.  It does
 # appear to be, in reality, quite silly.
 
-use constant VERSION  =>  1.0.6;
+use constant VERSION  =>  1.0.8;
 
 use constant TRUE     =>  1;
 use constant FALSE    =>  0;
@@ -2088,8 +2088,9 @@ sub checkentry( $$;$$ );
 sub pushstate( $$ );
 sub pushentry( $$$$$;$ );
 sub pushfragment( $$$;$$ );
-sub processline( $$;$ );
-sub processfile( $$;$$ );
+sub processcomments( $$$;$ );
+sub processline( $$;$$ );
+sub processfile( $$;$$$ );
 sub dbopen( $$$$;$$ );
 sub dbclose( ;$$ );
 sub dbdump( $;$$$$$ );
@@ -2490,8 +2491,8 @@ sub pushfragment( $$$;$$ ) { # {{{
 	return( $count );
 } # pushfragment # }}}
 
-sub processcomments( $$$ ) { # {{{
-	my( $data, $line, $masterstate ) = @_;
+sub processcomments( $$$;$ ) { # {{{
+	my( $data, $line, $masterstate, $strict ) = @_;
 
 	return( undef ) unless( defined( $masterstate -> { 'comments' } ) );
 
@@ -2564,7 +2565,7 @@ sub processcomments( $$$ ) { # {{{
 				( my $filtered = $pre ) =~ s/\s+//g;
 				if( defined( $filtered ) and length( $filtered ) ) {
 					pdebug( "  C Processing text before comment '$pre' ..." );
-					$line = processline( $data, $pre, $masterstate );
+					$line = processline( $data, $pre, $masterstate, $strict );
 				} else {
 					pdebug( "  C Empty line, save for comment" );
 					undef( $line );
@@ -2610,10 +2611,10 @@ sub processcomments( $$$ ) { # {{{
 
 				pdebug( "  C Processing line before comment '$line' ..." ) if( length( $line ) );
 
-				#$line = processline( $data, $line, $masterstate ) if( length( $line ) );
+				#$line = processline( $data, $line, $masterstate, $strict ) if( length( $line ) );
 				( my $filtered = $line ) =~ s/\s+//g;
 				if( defined( $filtered ) and length( $filtered ) ) {
-					return( processline( $data, $line, $masterstate ) );
+					return( processline( $data, $line, $masterstate, $strict ) );
 				} else {
 					return( undef );
 				}
@@ -2679,7 +2680,7 @@ sub processcomments( $$$ ) { # {{{
 			if( length( $pre ) ) {
 				pdebug( "  C Processing text before nested comment '$pre' ..." );
 
-				$line = processline( $data, $pre, $masterstate );
+				$line = processline( $data, $pre, $masterstate, $strict );
 			} else {
 				pdebug( "  C Empty line" );
 
@@ -2687,7 +2688,7 @@ sub processcomments( $$$ ) { # {{{
 			}
 			pdebug( "  C Processing text after nested comment '$post' ..." ) if( length( $post ) );
 
-			processline( $data, $post, $masterstate ) if( length( $post ) );
+			processline( $data, $post, $masterstate, $strict ) if( length( $post ) );
 
 			$state -> { 'depth' } ++;
 
@@ -2723,7 +2724,7 @@ sub processcomments( $$$ ) { # {{{
 
 			if( length( $post ) ) {
 				pdebug( "  C Processing text after comment '$post' ..." );
-				$line = processline( $data, $post, $masterstate );
+				$line = processline( $data, $post, $masterstate, $strict );
 			} else {
 				pdebug( "  C Empty line" );
 				undef( $line );
@@ -2748,8 +2749,8 @@ sub processcomments( $$$ ) { # {{{
 	return( decompressquotes( $line, $masterstate ) );
 } # processcomments # }}}
 
-sub processline( $$;$ ) { # {{{
-	my( $data, $line, $state ) = @_;
+sub processline( $$;$$ ) { # {{{
+	my( $data, $line, $state, $strict ) = @_;
 
 	if( not( defined( $state ) ) ) {
 		$state -> { 'comments' } = initstate();
@@ -2778,7 +2779,7 @@ sub processline( $$;$ ) { # {{{
 	} else {
 		pdebug( "  * Start processing text '$line' ..." );
 
-		$line = processcomments( $data, $line, $state );
+		$line = processcomments( $data, $line, $state, $strict );
 
 		return( $line ) unless( defined( $line ) );
 	}
@@ -2814,7 +2815,7 @@ sub processline( $$;$ ) { # {{{
 		return( undef ) unless( length( $line ) );
 
 		if( length( $line ) ) {
-			return( processline( $data, $line, $state ) );
+			return( processline( $data, $line, $state, $strict ) );
 		} else {
 			return( undef );
 		}
@@ -2884,7 +2885,11 @@ sub processline( $$;$ ) { # {{{
 			my $command = join( ' ', @{ $state -> { 'statements' } -> { 'entry' } } );
 			my $tokens;
 			if( $command =~ m/^use\s+`?(.+?)`?$/i ) {
-				warn( "$warning Not parsing prohibited command '$command'\n" );
+				if( defined( $strict ) and $strict ) {
+					die( "$fatal Not parsing prohibited command '$command'\n" );
+				} else {
+					warn( "$warning Not parsing prohibited command '$command'\n" );
+				}
 
 			} elsif( $command =~ m/^\s*$delim\s*$/ ) {
 				pdebug( "  S Not parsing lone delimiter from '$command', but pushing statements array ..." );
@@ -2895,8 +2900,12 @@ sub processline( $$;$ ) { # {{{
 					$tokens = $sqlparser -> parse( $command, $delim );
 				};
 				if( $@ ) {
-					warn( $@ . "\n" );
-					$state -> { 'statements' } -> { 'tokens' } = undef;
+					if( defined( $strict ) and $strict ) {
+						die( $@ . "\n" );
+					} else {
+						warn( $@ . "\n" );
+						$state -> { 'statements' } -> { 'tokens' } = undef;
+					}
 				} else {
 					$state -> { 'statements' } -> { 'tokens' } = $tokens;
 				}
@@ -2910,7 +2919,7 @@ sub processline( $$;$ ) { # {{{
 			undef( $state -> { 'statements' } -> { 'entry' } );
 
 			if( length( $post ) ) {
-				return( processline( $data, $post, $state ) )
+				return( processline( $data, $post, $state, $strict ) )
 			} else {
 				return( undef );
 			}
@@ -2939,8 +2948,8 @@ sub processline( $$;$ ) { # {{{
 	}
 } # processline # }}}
 
-sub processfile( $$;$$ ) { # {{{
-	my( $data, $file, $marker, $substitution ) = @_;
+sub processfile( $$;$$$ ) { # {{{
+	my( $data, $file, $marker, $substitution, $strict ) = @_;
 
 	return( undef ) unless( defined( $file ) and length( $file ) and -r $file );
 
@@ -2971,7 +2980,7 @@ sub processfile( $$;$$ ) { # {{{
 		# NB: $. contains the last-read line-number
 		pdebug( "$. '$line'" );
 
-		$line = processline( $data, $line, $state );
+		$line = processline( $data, $line, $state, $strict );
 		next LINE unless( length( $line ) );
 
 		pdebug( "Value '$line' leftover after calling processline()" );
@@ -3456,8 +3465,29 @@ sub dosql( $$ ) { # {{{
 		}
 	};
 	if( $@ ) {
-		warn( "\nError when processing SQL statement:\n$st\n$@" );
-		return( FALSE );
+		warn( "\nError when processing SQL statement (" . $dbh -> err() . "):\n$st\n$@" );
+		if( ( ( $st =~ m/^\s*DROP\s/i ) or ( $st =~ m/^\s*ALTER\s(O(N|FF)LINE\s+)?(IGNORE\s+)?TABLE\s.*\sDROP\s/i ) ) and $dbh -> err() eq '1091' ) {
+			# XXX: This simply seems to propagate the error to the
+			#      next prepared statement, which will then fail.
+			#
+			#
+			# If we're trying to DROP an item which doesn't exist,
+			# then arguably the desired state has been reached, so
+			# we shouldn't abort...
+			my $lasterr = $dbh -> err();
+			$dbh -> set_err( undef, undef );
+
+			# XXX: Do we break after the following statement, even
+			#      though the error should have been cleared?
+			if( not( dosql( $dbh, "SELECT '(Encountered error $lasterr)'" ) ) ) {
+				die( "Trivial command following error failed" );
+			}
+
+			return( TRUE );
+			#return( FALSE );
+		} else {
+			return( FALSE );
+		}
 	} else {
 		return( TRUE );
 	}
@@ -3482,7 +3512,8 @@ sub preparesql( $$ ) { # {{{
 	pdebug( 'SQL: Preparing: "' . join( ' ', split( /\s*\n\s*/, $st ) ) . '"' );
 	my $sth = $dbh -> prepare_cached( $st );
 	if( $@ ) {
-		warn( "\nError when processing SQL statement:\n$st\n$@\n" . $dbh -> errstr() . "\n" );
+		my $error = $dbh -> errstr();
+		warn( "\nError when processing SQL statement:\n$st\n$@\n" . ( defined( $error ) and length( $error) ? $error . "\n" : '' ) );
 		return( undef );
 	} else {
 		# N.B.: $sth -> finish() must be called prior to the next SQL
@@ -3847,7 +3878,7 @@ sub applyschema( $$$$;$ ) { # {{{
 		die( "Cannot read metadata '$db.metadata' for file '$file'\n" ) unless( -s $metafile );
 		print( "*> Using metadata file '$metafile'\n" );
 
-		$invalid = $invalid | not( processfile( $metadata, $metafile ) );
+		$invalid = $invalid | not( processfile( $metadata, $metafile, undef, undef, $strict ) );
 		die( "Metadata failed validation - aborting.\n" ) if( $invalid );
 
 		my $okay = TRUE;
@@ -3862,9 +3893,9 @@ sub applyschema( $$$$;$ ) { # {{{
 	}
 
 	if( ( 'procedure' eq $mode ) and defined( $marker ) and length( $marker ) ) {
-		$invalid = $invalid | not( processfile( $data, $file, $marker, $procedureversion ) );
+		$invalid = $invalid | not( processfile( $data, $file, $marker, $procedureversion, $strict ) );
 	} else {
-		$invalid = $invalid | not( processfile( $data, $file ) );
+		$invalid = $invalid | not( processfile( $data, $file, undef, undef, $strict ) );
 	}
 	die( "Data failed validation - aborting.\n" ) if( $invalid );
 
@@ -3873,10 +3904,14 @@ sub applyschema( $$$$;$ ) { # {{{
 	#
 
 	my $output;
-	if( $pretend or ( defined( $verbosity ) and $verbosity > 0 ) ) {
-		$output = \&pwarn;
-	} else {
+	if( $pretend ) {
 		$output = \&pfatal;
+	} else {
+		if( defined( $verbosity ) and $verbosity > 0 ) {
+			$output = \&pwarn;
+		} else {
+			$output = \&pdebug;
+		}
 	}
 
 	my $statements = 0;
@@ -3890,41 +3925,53 @@ sub applyschema( $$$$;$ ) { # {{{
 
 			#print Dumper $entry if( DEBUG );
 
-			if( not( defined( $entry -> { 'tokens' } ) ) ) {
-				if( defined( $entry -> { 'entry' } ) ) {
-					my $text;
-					my $texttype = ' ';
-					if( 'ARRAY' eq ref( $entry -> { 'entry' } ) ) {
-						$text = join( ' ', @{ $entry -> { 'entry' } } );
-						$texttype = 'array ';
-					} else {
-						$text = $entry -> { 'entry' };
-					}
-					$text =~ s/^\s+//g; $text =~ s/\s+/ /g;
-					$text =~ s/([\$\@\%])/\\$1/g;
-					$text = qq($text);
+			if( not( defined( $entry -> { 'entry' } ) ) ) {
+				$output -> ( 'Unable to parse blank entry' );
+				$invalid = TRUE;
+				next;
 
+			} else {
+				my $text;
+				my $texttype = ' ';
+				if( 'ARRAY' eq ref( $entry -> { 'entry' } ) ) {
+					$text = join( ' ', @{ $entry -> { 'entry' } } );
+					$texttype = 'array ';
+				} else {
+					$text = $entry -> { 'entry' };
+				}
+				$text =~ s/^\s+//g; $text =~ s/\s+/ /g;
+				$text =~ s/([\$\@\%])/\\$1/g;
+				$text = qq($text);
+
+				# Ensure that constraints are explicitly named, so that we can deterministically drop them later...
+				if( ( $text =~ m/\sFOREIGN\s+KEY[\s(]/i ) and not( ( $text =~ m/\sCONSTRAINT\s+`[^`]+`\s+FOREIGN\s+KEY[\s(]/i ) or ( $text =~ m/\sDROP\s+FOREIGN\s+KEY\s/i ) ) ) {
+					$output -> ( 'Unwilling to create non-deterministic constraint from "' . $text . '"' );
+					$invalid = TRUE;
+				}
+
+				if( not( defined( $entry -> { 'tokens' } ) ) ) {
 					# FIXME: Filter known edge-cases which the Parser fails to tokenise...
 					if( not( $text =~ m/^((LOCK|UNLOCK|SET|CREATE PROCEDURE|GRANT) |\s*\/\*\!)/i ) ) {
 						$output -> ( 'Unable to parse ' . $texttype . 'entry "' . $text . '"' );
 						$invalid = TRUE;
 					}
-				} else {
-					$output -> ( 'Unable to parse blank entry' );
-					$invalid = TRUE;
+
+					# FIXME: Reinstate this once the Parser has full coverage
+					#$invalid = TRUE;
+					next;
 				}
-				# FIXME: Reinstate this once the Parser has full coverage
-				#$invalid = TRUE;
-				next;
 			}
 
-			my $type = $entry -> { 'tokens' } -> { 'type' };
-			my $object = $entry -> { 'tokens' } -> { 'object' };
-			if( ( defined( $type ) and ( 'create' eq lc( $type ) ) ) and ( defined( $object ) and ( 'user' eq lc( $object ) ) ) ) {
-				if( defined( $tmpdir ) and -d $tmpdir ) {
-					$dumpusers = TRUE unless( -e $tmpdir . '/' . 'mysql.users.sql' );
+			if( defined( $entry -> { 'tokens' } -> { 'type' } ) and defined( $entry -> { 'tokens' } -> { 'object' } ) ) {
+				my $type = $entry -> { 'tokens' } -> { 'type' };
+				my $object = $entry -> { 'tokens' } -> { 'object' };
+				if( ( defined( $type ) and ( 'create' eq lc( $type ) ) ) and ( defined( $object ) and ( 'user' eq lc( $object ) ) ) ) {
+					if( defined( $tmpdir ) and -d $tmpdir ) {
+						$dumpusers = TRUE unless( -e $tmpdir . '/' . 'mysql.users.sql' );
+					}
 				}
 			}
+
 			foreach my $key ( keys( $entry -> { 'tokens' } ) ) {
 				if( ref( $entry -> { 'tokens' } -> { $key } ) eq 'ARRAY' ) {
 					foreach my $element ( @{ $entry -> { 'tokens' } -> { $key } } ) {
@@ -3965,10 +4012,14 @@ sub applyschema( $$$$;$ ) { # {{{
 		#return( FALSE );
 	}
 	if( $invalid ) {
-		if( $safetyoff and ( not( defined( $verbosity ) ) or ( 0 == $verbosity ) ) ) {
-			die( "SQL parsing failed - please re-execute with the '--warn' option to display these issues\n" );
-		} else {
+		if( $pretend ) {
 			pwarn( "SQL parsing failed - continuing with valid statements only ..." );
+		} else {
+			if( defined( $verbosity ) and $verbosity > 0 ) {
+				die( "SQL parsing failed\n" );
+			} else {
+				die( "SQL parsing failed - please re-execute with the '--warn' option to display these issues\n" );
+			}
 		}
 	}
 
@@ -4144,7 +4195,7 @@ SQL
 				}
 				if( not( $pretend ) ) {
 					print( "\n*> flyway metadata table `$flywaytablename` has been initialised to version '$schmversion':\n" );
-					formatastable( $dbh, "SELECT * FROM $flywaytablename ORDER BY `version`", '   ' );
+					formatastable( $dbh, "SELECT * FROM $flywaytablename ORDER BY `version` DESC LIMIT 5", '   ' );
 				}
 			}
 			if( not( defined( $file ) ) or defined( $action_init ) ) {
@@ -4829,7 +4880,8 @@ INSERT INTO `$mywayactionsname` (
   , `state`
 ) VALUES ( ?, ?, ?, ?, ?, ?, ? )
 SQL
-						die( "Unable to create tracking statement handle: " . $dbh -> errstr() . "\n" ) unless( defined( $sth ) and $sth );
+						my $error = $dbh -> errstr();
+						die( "Unable to create tracking statement handle" . ( defined( $error ) and length( $error ) ? ": " . $error . "\n" : '' ) ) unless( defined( $sth ) and $sth );
 						if( $safetyoff ) {
 							executesql( $dbh, $sth, undef,
 								   $uuid
@@ -5767,9 +5819,9 @@ sub main( @ ) { # {{{
 	#	);
 	#}
 	@tables = (
-		  { 'name' => 'Flyway', 'table' => $flywaytablename,  'ddl' => $flywayddl,       'action' => "SELECT * FROM $flywaytablename ORDER BY `version`" }
-		, { 'name' => 'myway',  'table' => $mywaytablename,   'ddl' => $mywayddl,        'action' => "SELECT * FROM $mywaytablename ORDER BY `started`" }
-		, { 'name' => 'myway',  'table' => $mywayprocsname,   'ddl' => $mywayprocsddl,   'action' => "SELECT * FROM $mywayprocsname ORDER BY `started`" }
+		  { 'name' => 'Flyway', 'table' => $flywaytablename,  'ddl' => $flywayddl,       'action' => "SELECT * FROM $flywaytablename ORDER BY `version` DESC LIMIT 5" }
+		, { 'name' => 'myway',  'table' => $mywaytablename,   'ddl' => $mywayddl,        'action' => "SELECT * FROM $mywaytablename ORDER BY `started` DESC LIMIT 5" }
+		, { 'name' => 'myway',  'table' => $mywayprocsname,   'ddl' => $mywayprocsddl,   'action' => "SELECT * FROM $mywayprocsname ORDER BY `started` DESC LIMIT 5" }
 		, { 'name' => 'myway',  'table' => $mywayactionsname, 'ddl' => $mywayactionsddl, 'action' => "SELECT COUNT(*) FROM $mywayactionsname" }
 	);
 	foreach my $table ( @tables ) {
@@ -5803,6 +5855,55 @@ sub main( @ ) { # {{{
 					pwarn( "Table `$table` does not exist, but will be created on a full run" );
 				} else {
 					die( "Essential meta-data table `$table` is missing - cannot continue\n" );
+				}
+			}
+
+			# Older myway.pl releases lacked a `sqlstarted`
+			# attribute on metadata tables, and so could not
+			# differentiate between when backups commenced and when
+			# we actually started executing a SQL statement - let's fix this ;)
+			#
+			if( $tname eq $mywaytablename ) {
+				my $st = "DESCRIBE `$tname`";
+				my $sth = executesql( $dbh, undef, $st );
+				if( not( defined( $sth ) and $sth ) ) {
+					warn( "Unable to create statement handle to execute '$st': " . $dbh -> errstr() . "\n" );
+				} else {
+					my $foundexecutionstarted = FALSE;
+
+					while( my $ref = $sth -> fetchrow_arrayref() ) {
+						my $field = @{ $ref }[ 0 ];
+						my $type = @{ $ref }[ 1 ];
+
+						# XXX: Hard-coded table structure :(
+						if( $field eq 'sqlstarted' ) {
+							$foundexecutionstarted = TRUE;
+						}
+					}
+
+					if( not( $foundexecutionstarted ) ) {
+						# XXX: Hard-coded SQL
+						#
+						eval {
+							if ( dosql( $dbh, "ALTER TABLE `$tname` ADD COLUMN `sqlstarted` TIMESTAMP NULL DEFAULT NULL AFTER `started`" ) ) {
+								print( "=> Additional timing column for table `$tname` added\n" );
+							} else {
+								print( "*> Additional timing column for table `$tname` could not be added\n" );
+							}
+						};
+					}
+
+					## XXX: Try to fix-up strict-mode's NO_ZERO_DATE requirement...
+					#eval {
+					#	#if ( dosql( $dbh, "UPDATE IGNORE `$tname` SET `sqlstarted` = NULL WHERE DATE(`sqlstarted`) = DATE('0000-00-00 00:00:00')" ) ) {
+					#	if ( dosql( $dbh, "UPDATE `$tname` SET `sqlstarted` = DATE('1970-01-01 00:00:01') WHERE DATE(`sqlstarted`) = DATE('0000-00-00 00:00:00') OR `sqlstarted` = NULL" ) ) {
+					#		print( "=> Invalid timing values in table `$tname` removed\n" );
+					#	} else {
+					#		print( "*> Invalid timing values in table `$tname` could not be removed\n" );
+					#	}
+					#};
+
+					$sth -> finish();
 				}
 			}
 
@@ -5841,45 +5942,6 @@ sub main( @ ) { # {{{
 								print( "*> Statement length limitations on table `$tname` could not be removed\n" );
 							}
 						}
-					}
-
-					$sth -> finish();
-				}
-			}
-
-			# Older myway.pl releases lacked a `sqlstarted`
-			# attribute on metadata tables, and so could not
-			# differentiate between when backups commenced and when
-			# we actually started executing a SQL statement - let's fix this ;)
-			#
-			if( $tname eq $mywaytablename ) {
-				my $st = "DESCRIBE `$tname`";
-				my $sth = executesql( $dbh, undef, $st );
-				if( not( defined( $sth ) and $sth ) ) {
-					warn( "Unable to create statement handle to execute '$st': " . $dbh -> errstr() . "\n" );
-				} else {
-					my $foundexecutionstarted = FALSE;
-
-					while( my $ref = $sth -> fetchrow_arrayref() ) {
-						my $field = @{ $ref }[ 0 ];
-						my $type = @{ $ref }[ 1 ];
-
-						# XXX: Hard-coded table structure :(
-						if( $field eq 'sqlstarted' ) {
-							$foundexecutionstarted = TRUE;
-						}
-					}
-
-					if( not( $foundexecutionstarted ) ) {
-						# XXX: Hard-coded SQL
-						#
-						eval {
-							if ( dosql( $dbh, "ALTER TABLE `$tname` ADD COLUMN `sqlstarted` TIMESTAMP NULL DEFAULT NULL AFTER `started`" ) ) {
-								print( "=> Additional timing column for table `$tname` added\n" );
-							} else {
-								print( "*> Additional timing column for table `$tname` could not be added\n" );
-							}
-						};
 					}
 
 					$sth -> finish();
