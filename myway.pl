@@ -2884,7 +2884,7 @@ sub processline( $$;$$ ) { # {{{
 			my $sqlparser = SQLParser -> new();
 			my $command = join( ' ', @{ $state -> { 'statements' } -> { 'entry' } } );
 			my $tokens;
-			if( $command =~ m/^use\s+`?(.+?)`?$/i ) {
+			if( $command =~ m/^USE\s+`?(.+?)`?$/i ) {
 				if( defined( $strict ) and $strict ) {
 					die( "$fatal Not parsing prohibited command '$command'\n" );
 				} else {
@@ -3966,7 +3966,8 @@ sub applyschema( $$$$;$ ) { # {{{
 					# FIXME: Filter known edge-cases which the Parser fails to tokenise...
 					if( not( $text =~ m/^((LOCK|UNLOCK|SET|CREATE PROCEDURE|GRANT) |\s*\/\*\!)/i ) ) {
 						$output -> ( 'Unable to parse ' . $texttype . 'entry "' . $text . '"' );
-						$invalid = TRUE;
+						# FIXME: Don't abort simply because we hit something we can't parse...
+						#$invalid = TRUE;
 					}
 
 					# FIXME: Reinstate this once the Parser has full coverage
