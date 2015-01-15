@@ -3952,6 +3952,10 @@ sub applyschema( $$$$;$ ) { # {{{
 					pwarn( "index_name " . ( defined( $1 ) ? $1 : '' ) . " specified in place of CONSTRAINT symbol - this is likely a bug:\n\n$text\n", 1 );
 				}
 
+				if( $text =~ m/[`' (]([^`' (]+_ibfk_[0-9]+)[) '`]/ ) {
+					pwarn( "Auto-generated constraint name `$1` used as deterministic CONSTRAINT symbol - this usage is deprecated:\n\n$text\n", 1 );
+				}
+
 				# Ensure that constraints are explicitly named, so that we can deterministically drop them later...
 				if( ( $text =~ m/\sFOREIGN\s+KEY[\s(]/i ) and not( ( $text =~ m/\sCONSTRAINT\s+`[^`]+`\s+FOREIGN\s+KEY[\s(]/i ) or ( $text =~ m/\sDROP\s+FOREIGN\s+KEY\s/i ) ) ) {
 					$output -> ( "Unwilling to create non-deterministic constraint from:\n\n$text\n" );
