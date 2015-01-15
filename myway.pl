@@ -3484,7 +3484,7 @@ sub dosql( $$ ) { # {{{
 			}
 
 			return( TRUE );
-			#return( FALSE );
+
 		} else {
 			return( FALSE );
 		}
@@ -3943,9 +3943,18 @@ sub applyschema( $$$$;$ ) { # {{{
 				$text =~ s/([\$\@\%])/\\$1/g;
 				$text = qq($text);
 
+				# MySQL uses indices internally to represent constraints, and so has odd syntax for the creation
+				# of FOREIGN KEY constraints which allows the index which equates to the constraint to be specified
+				# and, although this will generally operate equivalently to naming the constraint itself, there is
+				# a semantic difference here.  At the same time, it is still valid (although unlikely to be be what
+				# was intended) to specify an index name (only) and so we can only issue a warning when this occurs.
+				if( $text =~ m/\sADD\s+(?:CONSTRAINT\s+)?FOREIGN\s+KEY\s*([^(][^()`,\s]+`?)[()`,\s]/i ) {
+					pwarn( "index_name " . ( defined( $1 ) ? $1 : '' ) . " specified in place of CONSTRAINT symbol - this is likely a bug:\n\n$text\n", 1 );
+				}
+
 				# Ensure that constraints are explicitly named, so that we can deterministically drop them later...
 				if( ( $text =~ m/\sFOREIGN\s+KEY[\s(]/i ) and not( ( $text =~ m/\sCONSTRAINT\s+`[^`]+`\s+FOREIGN\s+KEY[\s(]/i ) or ( $text =~ m/\sDROP\s+FOREIGN\s+KEY\s/i ) ) ) {
-					$output -> ( 'Unwilling to create non-deterministic constraint from "' . $text . '"' );
+					$output -> ( "Unwilling to create non-deterministic constraint from:\n\n$text\n" );
 					$invalid = TRUE;
 				}
 
@@ -3958,6 +3967,7 @@ sub applyschema( $$$$;$ ) { # {{{
 
 					# FIXME: Reinstate this once the Parser has full coverage
 					#$invalid = TRUE;
+
 					next;
 				}
 			}
