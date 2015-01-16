@@ -3957,7 +3957,7 @@ sub applyschema( $$$$;$ ) { # {{{
 				}
 
 				# Ensure that constraints are explicitly named, so that we can deterministically drop them later...
-				if( ( $text =~ m/\sFOREIGN\s+KEY[\s(]/i ) and not( ( $text =~ m/\sCONSTRAINT\s+`[^`]+`\s+FOREIGN\s+KEY[\s(]/i ) or ( $text =~ m/\sDROP\s+FOREIGN\s+KEY\s/i ) ) ) {
+				if( ( $text =~ m/\sFOREIGN\s+KEY[\s(]/i ) and not( ( $text =~ m/\sCONSTRAINT\s+`[^`]+`\s+FOREIGN\s+KEY[\s(]/i ) or ( $text =~ m/DROP\s+FOREIGN\s+KEY\s/i ) ) ) {
 					$output -> ( "Unwilling to create non-deterministic constraint from:\n\n$text\n" );
 					$invalid = TRUE;
 				}
