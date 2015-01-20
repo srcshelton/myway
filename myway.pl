@@ -129,6 +129,8 @@ sub parse_select( $$ );
 sub parse_update( $$ );
 
 sub parse_add( $$ );
+sub parse_change( $$ );
+sub parse_character_set( $$ );
 sub parse_columns( $$ );
 sub parse_from( $$ ); # Alias of parse_into, parse_tables
 sub parse_group_by( $$ );
@@ -136,6 +138,7 @@ sub parse_having( $$ );
 sub parse_identifier( $$$ );
 sub parse_identifiers( $$ );
 sub parse_limit( $$ );
+sub parse_modify( $$ );
 sub parse_order_by( $$ );
 sub parse_set( $$ );
 sub parse_table_reference( $$ );
@@ -366,11 +369,14 @@ sub parse_alter( $$ ) { # {{{
 	my $keywords = qr/(ONLINE|OFFLINE|IGNORE)/i;
 	my ( $type, @query ) = split( /\s+/, $query );
 	$query = join( ' ', @query );
+
 	if( $type =~ m/TABLE/i ) {
 		$query =~ s/^\s*TABLE\s+//i;
-		my $clauses  = qr/(ADD)/i;
 
+		#my $clauses = qr/(ADD(?:\s+(?:COLUMN|INDEX|KEY|CONSTRAINT|(?:CONSTRAINT\s+)?(?:(?:PRIMARY|FOREIGN)\s+KEY|UNIQUE\s+(?:INDEX|KEY))|(?:FULLTEXT|SPATIAL)\s+(?:INDEX|KEY)))?|(?:ALTER|CHANGE|MODIFY)(?:\s+COLUMN)?|DROP(?:\s+(?:COLUMN|INDEX|(?:(?:PRIMARY|FOREIGN)\s+)?KEY))?|(?:DIS|EN)ABLE\s+KEYS|RENAME\s+(?:TO|AS)?|ORDER\s+BY|CONVERT\s+TO\s+CHARACTER\s+SET|(?:DEFAULT\s+)?CHARACTER\s+SET(?:\s+=)?|(?:DISCARD|IMPORT)\s+TABLESPACE|(?:ADD|DROP|COALESCE|REORGANISE|ANALYSE|CHECK|OPTIMIZE|REBUILD|REPAIR)\s+PARTITION|PARTITION\s+BY|REMOVE\s+PARTITIONING)/i;
+		my $clauses = qr/(ADD|(?:ALTER|CHANGE|MODIFY)|DROP|(?:DIS|EN)ABLE\s+KEYS|RENAME|ORDER\s+BY|CONVERT\s+TO\s+CHARACTER\s+SET|(?:DEFAULT\s+)?CHARACTER\s+SET|(?:DISCARD|IMPORT)\s+TABLESPACE|(?:ADD|DROP|COALESCE|REORGANISE|ANALYSE|CHECK|OPTIMIZE|REBUILD|REPAIR)\s+PARTITION|PARTITION\s+BY|REMOVE\s+PARTITIONING)/i;
 		return $self->_parse_query($query, $keywords, 'tables', $clauses);
+
 	}
 } # parse_alter # }}}
 
@@ -810,7 +816,7 @@ sub parse_update( $$ ) { # {{{
 	my ( $self, $query ) = @_;
 
 	my $keywords = qr/(LOW_PRIORITY|IGNORE)/i;
-	my $clauses  = qr/(SET|WHERE|ORDER BY|LIMIT)/i;
+	my $clauses  = qr/(SET|WHERE|ORDER\s+BY|LIMIT)/i;
 
 	return $self->_parse_query($query, $keywords, 'tables', $clauses);
 } # parse_update # }}}
@@ -829,6 +835,18 @@ sub parse_add( $$ ) {
 
 	return $idents;
 } # parse_add # }}}
+
+sub parse_change( $$ ) { # {{{
+	my ( $self, $change ) = @_;
+	# TODO
+	return $change;
+} # parse_change # }}}
+
+sub parse_character_set( $$ ) { # {{{
+	my ( $self, $character_set ) = @_;
+	# TODO
+	return $character_set;
+} # parse_character_set # }}}
 
 sub parse_columns( $$ ) { # {{{
 	my ( $self, $cols ) = @_;
@@ -1216,6 +1234,12 @@ sub parse_limit( $$ ) {
 	return $struct;
 } # parse_limit # }}}
 
+sub parse_modify( $$ ) { # {{{
+	my ( $self, $modify ) = @_;
+	# TODO
+	return $modify;
+} # parse_modify # }}}
+
 # Sub: parse_order_by # {{{
 # [ORDER BY {col_name | expr | position} [ASC | DESC], ...]
 sub parse_order_by( $$ ) {
@@ -1500,7 +1524,7 @@ sub parse_where( $$ ) {
 				$val = lc $pred;
 			}
 			else {
-				die "Failed to parse WHERE condition: $pred";
+				die "Failed to parse predicate \"$pred\" from WHERE condition \"$where\"";
 			}
 		}
 
@@ -1652,9 +1676,16 @@ sub remove_functions( $$ ) { # {{{
 sub remove_subqueries( $$ ) {
 	my ( $self, $query ) = @_;
 
+	# FIXME: This function broadly does the correct thing (including
+	#        the handling of SQL statements with multiple nested subqueries
+	#        which aren't nested within each other) - but still appears to
+	#        leave un-expanded __SQ{x}__ tokens in the resultant struct :(
+	# FIXME: The last subquery seems to have the remainder of the query
+	#        appended to it :(
+
 	# Find starting pos of all subqueries.
 	my @start_pos;
-	while ( $query =~ m/(\(SELECT\s+)/gi ) {
+	while ( $query =~ m/(\(\s*SELECT\s+)/gi ) {
 		my $pos = (pos $query) - (length $1);
 		push @start_pos, $pos;
 	}
@@ -1666,7 +1697,7 @@ sub remove_subqueries( $$ ) {
 	# (select max(id) from t where col in(1,2,3) and foo='(bar)').
 	@start_pos = reverse @start_pos;
 	my @end_pos;
-	for my $i ( 0..$#start_pos ) {
+	for my $i ( 0 .. $#start_pos ) {
 		my $closed = 0;
 		pos $query = $start_pos[$i];
 		while ( $query =~ m/([\(\)])/cg ) {
@@ -1681,39 +1712,75 @@ sub remove_subqueries( $$ ) {
 	my @subqueries;
 	my $len_adj = 0;
 	my $n    = 0;
-	for my $i ( 0..$#start_pos ) {
+	for my $i ( 0 .. $#start_pos ) {
 		MKDEBUG && _d('Query:', $query);
-		my $offset = $start_pos[$i];
-		my $len    = $end_pos[$i] - $start_pos[$i] - $len_adj;
-		MKDEBUG && _d("Subquery $n start", $start_pos[$i],
-				'orig end', $end_pos[$i], 'adj', $len_adj, 'adj end',
-				$offset + $len, 'len', $len);
 
+		my $outerfound = 0;
 		my $struct   = {};
 		my $token    = '__SQ' . $n . '__';
-		my $subquery = substr($query, $offset, $len, $token);
-		MKDEBUG && _d("Subquery $n:", $subquery);
 
 		# Adjust len for next outer subquery.  This is required because the
 		# subqueries' start/end pos are found relative to one another, so
 		# when a subquery is replaced with its shorter __SQn__ token the end
 		# pos for the other subqueries decreases.  The token is shorter than
 		# any valid subquery so the end pos should only decrease.
-		my $outer_start = $start_pos[$i + 1];
-		my $outer_end   = $end_pos[$i + 1];
-		if (    $outer_start && ($outer_start < $start_pos[$i])
-			  && $outer_end   && ($outer_end   > $end_pos[$i]) ) {
-			MKDEBUG && _d("Subquery $n nested in next subquery");
-			$len_adj += $len - length $token;
-			$struct->{nested} = $i + 1;
+		for my $j ( $i .. ( $#start_pos - 1 ) ) {
+			next if( $outerfound );
+
+			my $outer_start = $start_pos[$j + 1];
+			my $outer_end   = $end_pos[$j + 1];
+
+			if (    $outer_start && ($outer_start < $start_pos[$i])
+				  && $outer_end   && ($outer_end   > $end_pos[$i]) ) {
+				MKDEBUG && _d("Subquery $n nested within outer subquery " . ( $j + 1 ) );
+
+				$len_adj = 0;
+				for my $k ( 0 .. ( $i - 1 ) ) {
+					my $inner_start = $start_pos[$k];
+					my $inner_end   = $end_pos[$k];
+
+					if (    $inner_start && ($inner_start > $start_pos[$i])
+						  && $inner_end   && ($inner_end   < $end_pos[$i]) ) {
+						my $inner_len = $inner_end - $inner_start;
+						MKDEBUG && _d("Subquery $n contains nested subquery $k of length $inner_len");
+						$len_adj += $inner_len - length $token;
+					}
+				}
+
+				$struct->{nested} = $i + 1;
+				$outerfound = 1;
+			}
+			MKDEBUG && _d("Nested subquery $n has total adjustment $len_adj");
 		}
-		else {
+		if( not( $outerfound ) ) {
 			MKDEBUG && _d("Subquery $n not nested");
+
 			$len_adj = 0;
+			#for my $k ( 0 .. ( $i - 1 ) ) {
+			#	my $inner_start = $start_pos[$k];
+			#	my $inner_end   = $end_pos[$k];
+			#
+			#	if (    $inner_start && ($inner_start > $start_pos[$i])
+			#		  && $inner_end   && ($inner_end   < $end_pos[$i]) ) {
+			#		my $inner_len = $inner_end - $inner_start;
+			#		MKDEBUG && _d("Subquery $n contains nested subquery $k of length $inner_len");
+			#		$len_adj += $inner_len - length $token;
+			#	}
+			#}
+			#MKDEBUG && _d("Top-level subquery $n has total adjustment $len_adj");
+
 			if ( $subqueries[-1] && $subqueries[-1]->{nested} ) {
 				MKDEBUG && _d("Outermost subquery");
 			}
 		}
+
+		my $len    = $end_pos[$i] - $start_pos[$i] - $len_adj;
+		MKDEBUG && _d("Subquery $n start " . $start_pos[$i] .
+				', orig end ' . $end_pos[$i] . ', adj ' .
+				$len_adj . ', adj end ' . ( $start_pos[$i] + $len ) .
+				', len ' . $len . '.' );
+		my $subquery = substr($query, $start_pos[$i], $len, $token);
+		MKDEBUG && _d("Subquery $n:", $subquery);
 
 		# Get subquery context: scalar, list or identifier.
 		if ( $query =~ m/(?:=|>|<|>=|<=|<>|!=|<=>)\s*$token/ ) {
@@ -2901,7 +2968,12 @@ sub processline( $$;$$ ) { # {{{
 				};
 				if( $@ ) {
 					if( defined( $strict ) and $strict ) {
-						die( $@ . "\n" );
+						if( $@ =~ m/Cannot parse .* queries/ ) {
+							warn( $@ . "\n" );
+							$state -> { 'statements' } -> { 'tokens' } = undef;
+						} else {
+							die( $@ . "\n" );
+						}
 					} else {
 						warn( $@ . "\n" );
 						$state -> { 'statements' } -> { 'tokens' } = undef;
@@ -3005,12 +3077,31 @@ sub dbopen( $$$$;$$ ) { # {{{
 	if( defined( $$dbh ) ) {
 		$$dbh -> { 'InactiveDestroy' } = 1;
 
+		my $mode = getsqlvalue( $$dbh, 'SELECT @@SESSION.sql_mode' );
+		pdebug( "Initial sql_mode is '$mode'" );
+
 		if( $strict ) {
-			my $mode = getsqlvalue( $$dbh, 'SELECT @@SESSION.sql_mode' );
+			# If we're not in strict-mode (by the loosest possible
+			# definition) then enable it...
+			#
 			if( $mode !~ m/^.*,?(((STRICT_ALL_TABLES|STRICT_TRANS_TABLES),.*(STRICT_ALL_TABLES|STRICT_TRANS_TABLES))|TRADITIONAL),?.*$/i ) {
 				$mode .= ( defined( $mode ) and length ( $mode ) ? ',' : '' ) . "TRADITIONAL";
 				dosql( $$dbh, "SET SESSION sql_mode = '$mode'" );
 			}
+
+			# Now that we we have an (expanded) sql_mode set, remove
+			# the problematic NO_ZERO_DATE option...
+			#
+			$mode = getsqlvalue( $$dbh, 'SELECT @@SESSION.sql_mode' );
+			( my $newmode = $mode ) =~ s/,?NO_ZERO_DATE,?/,/i;
+			$newmode =~ s/,?TRADITIONAL,?/,/i;
+			$newmode =~ s/^,//;
+			$newmode =~ s/,$//;
+			dosql( $$dbh, "SET SESSION sql_mode = '$newmode'" ) unless( $mode eq $newmode );
+
+			# Also set InnoDB strict mode - which, thankfully, is
+			# somewhat less complex...
+			#
 			$mode = getsqlvalue( $$dbh, 'SELECT @@SESSION.innodb_strict_mode' );
 			if( not( defined( $mode ) ) or ( $mode eq 0 ) ) {
 				dosql( $$dbh, "SET SESSION innodb_strict_mode = ON" );
@@ -3020,7 +3111,6 @@ sub dbopen( $$$$;$$ ) { # {{{
 			# eventuality - what happens if strict mode is already
 			# set?
 
-			my $mode = getsqlvalue( $$dbh, 'SELECT @@SESSION.sql_mode' );
 			# Clear all modes, but only if a strict setting is
 			# detected.
 			#
@@ -3034,6 +3124,11 @@ sub dbopen( $$$$;$$ ) { # {{{
 			if( $mode eq 1 ) {
 				dosql( $$dbh, "SET SESSION innodb_strict_mode = OFF" );
 			}
+		}
+
+		if( DEBUG or ( $verbosity > 2 ) ) {
+			my $mode = getsqlvalue( $$dbh, 'SELECT @@SESSION.sql_mode' );
+			pdebug( "Updated sql_mode is '$mode'" );
 		}
 	}
 
@@ -3952,7 +4047,7 @@ sub applyschema( $$$$;$ ) { # {{{
 					pwarn( "index_name " . ( defined( $1 ) ? $1 : '' ) . " specified in place of CONSTRAINT symbol - this is likely a bug:\n\n$text\n", 1 );
 				}
 
-				if( $text =~ m/[`' (]([^`' (]+_ibfk_[0-9]+)[) '`]/ ) {
+				if( ( $text =~ m/[`' (]([^`' (]+_ibfk_[0-9]+)[) '`]/ ) and not( $text =~ m/DROP\s+FOREIGN\s+KEY\s+`[^`]+_ibfk_[0-9]+`/i ) ) {
 					pwarn( "Auto-generated constraint name `$1` used as deterministic CONSTRAINT symbol - this usage is deprecated:\n\n$text\n", 1 );
 				}
 
