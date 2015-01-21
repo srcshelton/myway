@@ -510,13 +510,20 @@ sub parse_drop( $$ ) { # {{{
 	} elsif( uc( $type ) eq 'INDEX' ) {
 		# Handle 'ON tbl_name' plus optional 'ALGORITHM [=] {DEFAULT|INPLACE|COPY} | LOCK [=] {DEFAULT|NONE|SHARED|EXCLUSIVE} ...'
 		my $name = shift( @objects );
-		if( not( 'ON' eq shift( @objects ) ) ) {
+
+		# XXX: Statements of the form:
+		#          ALTER TABLE `foo` DROP INDEX `bar`
+		#      ... will now invoke this code-path, so DROP without ON
+		#      is valid iff we're part of an ALTER query. Unfortunately
+		#      there's no way to tell whether this is the case at this.
+		#
+		if( scalar( @objects ) and not( 'ON' eq shift( @objects ) ) ) {
 			die "DROP " . uc( $type ) . " without ON: $query";
 		}
 
 		my $tbl = shift( @objects );
 		$struct->{name} = $self->parse_identifier('column', $name);
-		$struct->{tbl} = $self->parse_identifier('table', $tbl);
+		$struct->{tbl} = $self->parse_identifier('table', $tbl) if( defined( $tbl ) );
 
 		while( scalar( @objects ) ) {
 			my $term = shift( @objects );
