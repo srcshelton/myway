@@ -1448,6 +1448,7 @@ sub parse_where( $$ ) {
 			|(?:IS(?:\sNOT\s)?)
 			|(?:(?:\sNOT\s)?BETWEEN)
 			|(?:(?:NOT\s)?IN)
+			|(?:(?:NOT\s)?EXISTS)
 		)
 	/xi;
 	my $op_pat = qr/
