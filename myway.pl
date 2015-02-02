@@ -668,12 +668,12 @@ sub parse_insert( $$ ) { # {{{
 	} elsif( $string =~ m/^\s*([^\s(]+?)[\s(]/ and defined( $1 ) and length( $1 ) ) {
 		$tbl = $1;
 		MKDEBUG && _d('Found table name', $tbl);
-		$string =~ s/^\s*\Q$tbl\E\s+//;
+		$string =~ s/^\s*\Q$tbl\E\s*//;
 	} else {
 		die "INSERT/REPLACE without table: $query";
 	}
 	$struct->{clauses}->{into} = $tbl;
-	MKDEBUG && _d('Clause: into', $tbl);
+	MKDEBUG && _d('Clause: into', $tbl, ', string', $string);
 
 	if( $string =~ m/^\s*(\(.*\))\s+(?:VALUES?|SET|SELECT)\s*/ ) {
 		my @input = split( //, $1 );
