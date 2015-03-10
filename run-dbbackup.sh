@@ -90,10 +90,12 @@ function main() {
 	#      starting week number (in the year) for a given month, and then
 	#      subtract this from the week number for each date.
 
-	local -i thisweek=$(( $( date +"%Y%m%d" -d "@$(( ts - ( 7 * 24 * 60 * 60 ) ))" ) ))
-	local -i thismonth=$(( $( date +"%Y%m%d" -d "@$(( ts - ( 30 * 24 * 60 * 60 ) ))" ) ))
-	local -i thisyear=$(( $( date +"%Y%m%d" -d "@$(( ts - ( 365 * 24 * 60 * 60 ) ))" ) ))
-	local -i startingweek=$(( $( date +"%W" -d "@$(( ts - ( 7 * 24 * 60 * 60 ) ))" ) ))
+	# bash's $(( ... )) syntax doesn't like values beginning with '0' - I
+	# guess it assumes they're octal...
+	local -i thisweek=$(( $( date +"%Y%m%d" -d "@$(( ts - ( 7 * 24 * 60 * 60 ) ))" | sed 's/^0\+//' ) ))
+	local -i thismonth=$(( $( date +"%Y%m%d" -d "@$(( ts - ( 30 * 24 * 60 * 60 ) ))" | sed 's/^0\+//' ) ))
+	local -i thisyear=$(( $( date +"%Y%m%d" -d "@$(( ts - ( 365 * 24 * 60 * 60 ) ))" | sed 's/^0\+//' ) ))
+	local -i startingweek=$(( $( date +"%W" -d "@$(( ts - ( 7 * 24 * 60 * 60 ) ))" | sed 's/^0\+//' ) ))
 	local -ai week month
 	local -a keep delete
 	local -i stamp number
