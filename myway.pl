@@ -168,7 +168,7 @@ my $constant_ident   = qr/'[^']*'/;
 my $unquoted_ident = qr/
 	\@{0,2}         # optional @ or @@ for variables
 	\w+             # the ident name
-	(?:\([^\)]*\))? # optional function params
+	(?:\s*\([^\)]*\))? # optional function params
 /x;
 
 my $ident_alias = qr/
@@ -178,12 +178,12 @@ my $ident_alias = qr/
 /xi;
 
 my $function_ident = qr/
-	\b
+	\s*
 	(
-		\w+      # function name
-		\(       # opening parenthesis
-		[^\)]+   # function args, if any
-		\)       # closing parenthesis
+		(?:\b\w+|`\w+`)\s*    # function name
+		\(                    # opening parenthesis
+		[^\)]*                # function args, if any
+		\)                    # closing parenthesis
 	)
 /x;
 
@@ -870,7 +870,7 @@ sub parse_columns( $$ ) { # {{{
 		# ... so explicit_alias is missing, and $2 is in $3.
 		#
 		if ($cols =~ m/\G\s*$column_ident\s*(?>,|\Z)/gcxo) {
-warn "SQL DEBUG: " .
+warn "SQL DEBUG: (1) " .
 	( defined( $1 ) ? "\$1(db_tbl_col) is '$1'" : '' ) .
 	( defined( $2 ) ? ", \$2(unused) is '$2'" : '' ) .
 	( defined( $3 ) ? ", \$3(as) is '$3'" : '' ) .
@@ -895,7 +895,7 @@ warn "SQL DEBUG: " .
 		# Update: Moved to position 2
 		elsif ($cols =~ m/\G\s*$function_ident\s*(?>,|\Z)/gcxo) {
 			my ($select_expr) = $1;
-warn "SQL DEBUG: " .
+warn "SQL DEBUG: (2) " .
 	( defined( $1 ) ? "\$1(db_tbl_col) is '$1'" : '' ) .
 	( defined( $2 ) ? ", \$2(as) is '$2'" : '' ) .
 	( defined( $3 ) ? ", \$3(alias) is '$3'" : '' ) .
@@ -917,7 +917,7 @@ warn "SQL DEBUG: " .
 		# than a simple column-reference...
 		elsif ($cols =~ m/\G\s*(.+?)$ident_alias\s*(?>,|\Z)/gcxo) {
 			my ($select_expr, $as, $alias) = ($1, $2, $3); # XXX
-warn "SQL DEBUG: " .
+warn "SQL DEBUG: (3) " .
 	( defined( $1 ) ? "\$1(db_tbl_col) is '$1'" : '' ) .
 	( defined( $2 ) ? ", \$2(as) is '$2'" : '' ) .
 	( defined( $3 ) ? ", \$3(alias) is '$3'" : '' ) .
@@ -3068,6 +3068,20 @@ sub processfile( $$;$$$ ) { # {{{
 
 	close( $handle );
 
+	# It's invalid to leave a dangling statement without a terminating
+	# delimiter... but mistakes happen.  Let's try to catch this instance.
+	my $count = scalar( @{ $state -> { 'statements'} -> { 'entry' } } ) if( defined( $state -> { 'statements' } -> { 'entry' } ) );
+	if( $count ) {
+		pwarn( $count . " lines of data are hanging without a delimiter!" );
+
+		my $delim = DEFDELIM;
+		$delim = $state -> { 'statements' } -> { 'symbol' } if( defined( $state -> { 'statements' } -> { 'symbol' } ) );
+		pwarn( "Attempting to auto-correct by inserting '" . $delim . "' character ..." );
+
+		processline( $data, $delim, $state, $strict );
+	}
+
+	# FIXME: We haven't ever actually changed this value since it was defined...
 	return( $validated );
 } # processfile # }}}
 
@@ -4219,8 +4233,8 @@ sub applyschema( $$$$;$ ) { # {{{
 						}
 					}
 				}
-			}
-			if( not( defined( $init ) ) or ( 0 == $init ) ) {
+
+			} elsif( not( defined( $init ) ) or ( 0 == $init ) ) {
 				$versionrank = getsqlvalue( $dbh, "SELECT MAX(`version_rank`) FROM `$flywaytablename`" );
 				if( defined( $versionrank ) and $versionrank =~ m/^\d+$/ and $versionrank >= 0 ) {
 					$versionrank++;
@@ -4335,20 +4349,28 @@ SQL
 			#            ^^^         ^^^         ^^^    ^^^
 			#
 			my $version = getsqlvalue( $dbh, "SELECT `version` FROM `$flywaytablename`  WHERE `success` = '1' AND `type` = 'INIT' ORDER BY `version` DESC LIMIT 1" );
-			if( $schmfile =~ m/^V(.*?)__/ ) {
-				my $match = $1;
-				my @sortedversions = sort { versioncmp( $a, $b ) } ( $version, $match );
-				my $latest = pop( @sortedversions );
-				my $previous = pop( @sortedversions );
+			if( not( defined( $version ) and length( $version ) ) ) {
 				if( not( $force ) ) {
-					if( ( $match eq $latest ) and ( $latest eq $previous ) ) {
-						print( "=> Skipping base initialiser file '$schmfile' ...\n" );
-						dbclose( $dbh );
-						return( TRUE );
-					} elsif( $match eq $previous ) {
-						print( "=> Skipping pre-initialiser file '$schmfile' ...\n" );
-						dbclose( $dbh );
-						return( TRUE );
+					die( "Database has not been initialised with this tool - please re-run with '--init' and the appropriate schema-file version number.\n" );
+				} else {
+					warn( "!> Database has not been initialised with this tool - will force-apply file '$schmfile' ...\n" );
+				}
+			} else {
+				if( $schmfile =~ m/^V(.*?)__/ ) {
+					my $match = $1;
+					my @sortedversions = sort { versioncmp( $a, $b ) } ( $version, $match );
+					my $latest = pop( @sortedversions );
+					my $previous = pop( @sortedversions );
+					if( not( $force ) ) {
+						if( ( $match eq $latest ) and ( $latest eq $previous ) ) {
+							print( "=> Skipping base initialiser file '$schmfile' ...\n" );
+							dbclose( $dbh );
+							return( TRUE );
+						} elsif( $match eq $previous ) {
+							print( "=> Skipping pre-initialisation file '$schmfile' ...\n" );
+							dbclose( $dbh );
+							return( TRUE );
+						}
 					}
 				}
 			}
@@ -4440,27 +4462,50 @@ SQL
 	# TODO: Backup Stored Procedures also?
 	if( $statements and not( ( 'procedure' eq $mode ) or $unsafe ) ) {
 		if( $dumpusers ) {
+
+			# I can't imagine that this will change any time soon,
+			# but I guess it's not impossible that at some future
+			# time `maria` is the system database... ?
+			my $systemdb = 'mysql';
+
 			if( $pretend ) {
 				print( "\nS> User alterations detected - would back-up MySQL `users` tables.\n" );
 			} else {
 				#if( not( /^mysql$/ ~~ @{ $availabledatabases } ) )
-				if( not( qr/^mysql$/ |M| \@{ $availabledatabases } ) ) {
-					warn( "`mysql` database does not appear to exist.  Detected databases were:\n" );
+				if( not( qr/^$systemdb$/ |M| \@{ $availabledatabases } ) ) {
+					warn( "`$systemdb` database does not appear to exist.  Detected databases were:\n" );
 					foreach my $database ( @{ $availabledatabases } ) {
 						warn( "\t$database\n" );
 					}
 					die( "Aborting\n" );
 				}
 
-				my @usertables = [ 'columns_priv', 'procs_priv', 'proxies_priv', 'tables_priv', 'user' ];
+				#
+				# Populate list of system tables, for user-backup purposes
+				#
+
+				my $availablesystemtables;
+
+				print( "\n=> Connecting to database `$systemdb` ...\n" );
+				my $systemdsn = "DBI:mysql:database=$systemdb;host=$host;port=$port";
+				my $systemdbh;
+				my $systemerror = dbopen( \$systemdbh, $systemdsn, $user, $pass, $strict );
+				die( $systemerror ."\n" ) if $systemerror;
+
+				$availablesystemtables = getsqlvalues( $systemdbh, "SHOW TABLES" );
+				warn( "Unable to retrieve list of tables for database `$systemdb`" . ( defined( $systemdbh -> errstr() ) ? ': ' . $systemdbh -> errstr() : '' ) . "\n" ) unless( scalar( $availablesystemtables ) );
+
+				dbclose( $systemdbh );
+
+				my @usertables = ( 'columns_priv', 'procs_priv', 'proxies_priv', 'tables_priv', 'user' );
 				my @backuptables;
 				my $showtables = FALSE;
 				foreach my $table ( @usertables ) {
-					#if( not( /^$table$/ ~~ @{ $availabletables } ) )
-					if( qr/^$table$/ |M| \@{ $availabletables } ) {
+					#if( not( /^$table$/ ~~ @{ $availablesystemtables } ) )
+					if( qr/^$table$/ |M| \@{ $availablesystemtables } ) {
 						push( @backuptables, $table );
 					} else {
-						warn( "`$table` table does not appear to exist in `mysql` database.\n" );
+						warn( "`$table` table does not appear to exist in `$systemdb` database.\n" );
 						$showtables = TRUE;
 					}
 				}
@@ -4478,9 +4523,9 @@ SQL
 					  'user'	=> $user
 					, 'password'	=> $pass
 					, 'host'	=> $host
-					, 'database'	=> 'mysql'
+					, 'database'	=> $systemdb
 				};
-				dbdump( $auth, @backuptables, $tmpdir, "mysql.userpriv.$uuid.sql" ) or die( "Database backup failed - aborting\n" );
+				dbdump( $auth, \@backuptables, $tmpdir, "mysql.userpriv.$uuid.sql" ) or die( "Database backup failed - aborting\n" );
 
 				print( "\n=> MySQL table backups completed\n" );
 			}
@@ -4586,7 +4631,7 @@ SQL
 						$schmprevious = undef if( defined( $schmprevious ) and ( $schmprevious =~ m#(?:na|n/a)#i ) );
 						print( "*> Read dubious prior version '$schmprevious'\n" ) unless( not( defined( $schmprevious ) ) or ( $schmprevious =~ m/[\d.]+/ ) );
 						print( "*> Read dubious target version '$schmtarget'\n" ) unless( not( defined( $schmtarget ) ) or ( $schmtarget =~ m/[\d.]+/ ) );
-						if( ( $schmfile =~ m/^(?:V(?:.*?)__)*V(.*?)__/ ) and not( $1 =~ m/^$schmtarget(?:\.\d)?$/ ) ) {
+						if( ( $schmfile =~ m/^(?:V(?:.*?)__)*V(.*?)__/ ) and not( $1 =~ m/^$schmtarget(?:\.\d+)?$/ ) ) {
 							warn( "!> $warning File-name version '$1' differs from metadata version '$schmtarget' from file '$schmfile'\n" );
 						}
 
@@ -4609,9 +4654,11 @@ SQL
 								} else {
 									warn( "!> No target version defined in metadata comments - not validating target installation chain\n" );
 								}
+
 							#} elsif( not( /^$flywaytablename$/ ~~ @{ $availabletables } ) )
 							} elsif( defined( $tablename ) and not( qr/^$tablename$/ |M| \@{ $availabletables } ) ) {
 								warn( "!> metadata table `$tablename` does not exist - not validating target installation chain\n" );
+
 							} else {
 								# N.B. Logic change - previously, we were simply checking that the target version
 								#      hasn't been applied to the database.  Now, we're checking that nothing
@@ -4626,7 +4673,6 @@ SQL
 								my $okay = TRUE;
 								my $fresh = TRUE;
 
-								#if( not( 'procedure' eq $mode ) ) {
 								#if( /^$schmtarget$/ ~~ $installedversions )
 								if( qr/^$schmtarget$/ |M| $installedversions ) {
 									if( not( $first ) and ( 'procedure' eq $mode ) ) {
@@ -4653,26 +4699,38 @@ SQL
 										$fresh = FALSE;
 									}
 								}
-								#}
+
+								my( $codeversion, $changeversion, $stepversion, $hotfixversion ) = ( $schmfile =~ m/^V([[:xdigit:]]+)\.([0-9]+)\.([0-9]+)\.([0-9]+)__/ );
+
 								my @sortedversions = sort { versioncmp( $a, $b ) } ( @{ $installedversions }, $schmtarget );
 								my $latest = pop( @sortedversions );
 								if( not( $latest eq $schmtarget ) ) {
-									if( $pretend ) {
-										if( $force ) {
-											warn( "!> Existing " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " version '$latest' is greater than target '$schmtarget', and has already been applied to this database - would forcibly re-apply ...\n" );
+									if( not( 'procedure' eq $mode ) and defined( $hotfixversion ) and not( $hotfixversion =~ m/0+/ ) ) {
+										if( $pretend ) {
+											warn( "!> Hot-fix Schema version '$schmtarget' would be applied onto existing Schema version '$latest' ...\n" );
 										} else {
-											warn( "!> Existing " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " version '$latest' is greater than target '$schmtarget', and has already been applied to this database - would skip ...\n" );
+											warn( "!> Hot-fix Schema version '$schmtarget' will be applied onto existing Schema version '$latest' ...\n" );
 										}
+										print( "*> Schema version '$schmtarget' is a fresh install\n" );
+										$okay = TRUE;
 									} else {
-										if( $force ) {
-											warn( "!> Existing " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " version '$latest' is greater than target '$schmtarget', and has already been applied to this database - forcibly applying ...\n" );
+										if( $pretend ) {
+											if( $force ) {
+												warn( "!> Existing " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " version '$latest' is greater than target '$schmtarget', and has already been applied to this database - would forcibly re-apply ...\n" );
+											} else {
+												warn( "!> Existing " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " version '$latest' is greater than target '$schmtarget', and has already been applied to this database - would skip ...\n" );
+											}
 										} else {
-											warn( "!> Existing " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " version '$latest' is greater than target '$schmtarget', and has already been applied to this database - skipping ...\n" );
-											return( TRUE );
+											if( $force ) {
+												warn( "!> Existing " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " version '$latest' is greater than target '$schmtarget', and has already been applied to this database - forcibly applying ...\n" );
+											} else {
+												warn( "!> Existing " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " version '$latest' is greater than target '$schmtarget', and has already been applied to this database - skipping ...\n" );
+												return( TRUE );
+											}
 										}
+										$greaterversionpresent = TRUE;
+										$okay = FALSE;
 									}
-									$greaterversionpresent = TRUE;
-									$okay = FALSE;
 								} elsif( $fresh ) { # and ( $first )
 									print( "*> " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " version '$schmtarget' is a fresh install\n" );
 								} elsif( $first ) {
@@ -4735,8 +4793,6 @@ SQL
 												if( $force ) {
 													warn( "!> Prior schema version '$schmprevious' has not been applied to this database - forcibly applying ...\n" );
 												} else {
-warn( " > DEBUG: \$installedversions:\n" );
-print Data::Dumper -> Dump( [ $installedversions ], [ qw( *versions ) ] );
 													die( "Prior schema version '$schmprevious' (required by '$schmfile') has not been applied to this database - aborting.\n" );
 												}
 											}
