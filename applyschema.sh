@@ -44,8 +44,9 @@ function lock() {
 function main() {
 	local myway="$( std::requires --path "${SCRIPT}" )"
 
-	local truthy="^(on|y(?:es)?|true|1)$"
-	local falsy="^(off|n(?:o)?|false|0)$"
+	local truthy="^(on|y(es)?|true|1)$"
+	local falsy="^(off|n(o)?|false|0)$"
+	local silentfilter='^((Useless|Use of|Cannot parse|!>) |\s*$)'
 
 	local filename
 	local lockfile="/var/lock/${NAME}.lock"
@@ -53,8 +54,19 @@ function main() {
 	# Ensure that 'fuser' will work...
 	(( EUID )) && die "This script must be run with super-user privileges"
 
+	local -i novsort=0
+	if ! sort -V <<<"" >/dev/null 2>&1; then
+		warn "Version sort unavailable - Stored Procedure load-order" \
+		     "cannot be guaranteed."
+		warn "Press ctrl+c now to abort ..."
+		sleep 5
+		warn "Proceeding ..."
+		novsort=1
+	fi
+
 	local arg schema db dblist
-	local -i dryrun=0 silent=0
+	local -i dryrun=0 quiet=0 silent=0
+	local -a extra
 	while [[ -n "${1:-}" ]]; do
 		arg="${1}"
 		case "${arg}" in
@@ -97,12 +109,22 @@ function main() {
 			--dry-run|--verify|-v)
 				dryrun=1
 				;;
+			--quiet|-q)
+				quiet=1
+				;;
 			--silent|-s)
 				silent=1
 				;;
 			--help|-h)
 				export std_USAGE="[--config <file>] [--schema <path>] [--only <database>[,...]] [--dry-run] [--silent] | [--locate <database>]"
 				std::usage
+				;;
+			--)
+				shift
+				while [[ -n "${1:-}" ]]; do
+					extra=( "${1}" )
+					shift
+				done
 				;;
 			*)
 				die "Unknown argument '${arg}'"
@@ -277,35 +299,50 @@ function main() {
 
 		fi
 		if [[ -n "${actualpath:-}" ]]; then
-			extraparams=( --scripts "${actualpath}/*.sql" )
+			extraparams=( --scripts "${actualpath}/"*.sql )
 		else
-			extraparams=( --scripts "${path}/schema/${db}/*.sql" )
+			extraparams=( --scripts "${path}/schema/${db}/"*.sql )
+		fi
+		if (( ${#extra[@]} )); then
+			extraparams+=( "${extra[@]}" )
 		fi
 
 		(( silent )) || info "Launching '${SCRIPT}' to perform database migration for database '${db}' ..."
-		debug "About to execute SQL: ${myway} ${params[@]} ${extraparams[@]}"
+		debug "About to apply schema: '${myway} ${params[@]} ${extraparams[@]}'"
 		if (( ! dryrun )); then
 			if (( silent )); then
-				${myway} "${params[@]}" "${extraparams[@]}" init >/dev/null
-				${myway} "${params[@]}" "${extraparams[@]}" >/dev/null
+				${myway} "${params[@]}" "${extraparams[@]}" --init >/dev/null 2>&1
+				${myway} "${params[@]}" "${extraparams[@]}" >/dev/null 2>&1
+			elif (( quiet )); then
+				${myway} "${params[@]}" "${extraparams[@]}" --init 2>&1 >/dev/null | grep -Ev --line-buffered "${silentfilter}"
+				${myway} "${params[@]}" "${extraparams[@]}" 2>&1 >/dev/null | grep -Ev --line-buffered "${silentfilter}"
 			else
-				${myway} "${params[@]}" "${extraparams[@]}" init
+				${myway} "${params[@]}" "${extraparams[@]}" --init
 				${myway} "${params[@]}" "${extraparams[@]}"
 			fi
 		fi
 		if grep -Eq "${truthy}" <<<"${procedures:-}"; then
 			params+=( --mode procedure )
 			if [[ -n "${procedures_marker:-}" ]]; then
-				params+=( --substitiute --marker "${procedures_marker}" )
+				params+=( --substitute --marker "${procedures_marker}" )
 			else
-				params+=( --substitiute )
+				params+=( --substitute )
 			fi
-			find "${path}"/procedures/ -mindepth 1 -maxdepth 1 -type d -name "${db}*" 2>/dev/null | while read path; do
+			local -a reorder=( sort -V )
+			if (( novsort )); then
+				reorder=( tac )
+			fi
+			find "${path}"/procedures/ -mindepth 1 -maxdepth 1 -type d -name "${db}_*" 2>/dev/null | "${reorder[@]}" | while read -r path; do
 				extraparams=( --scripts "${path}" )
-				debug "About to execute SP: ${myway} ${params[@]} ${extraparams[@]}"
+				if (( ${#extra[@]} )); then
+					extraparams+=( "${extra[@]}" )
+				fi
+				debug "About to apply Stored Procedures: ${myway} ${params[@]} ${extraparams[@]} ${extra[@]:-}"
 				if (( ! dryrun )); then
 					if (( silent )); then
-						${myway} "${params[@]}" "${extraparams[@]}" >/dev/null
+						${myway} "${params[@]}" "${extraparams[@]}" >/dev/null 2>&1
+					elif (( quiet )); then
+						${myway} "${params[@]}" "${extraparams[@]}" 2>&1 >/dev/null | grep -Ev --line-buffered "${silentfilter}"
 					else
 						${myway} "${params[@]}" "${extraparams[@]}"
 					fi
@@ -327,6 +364,8 @@ function main() {
 
 	return ${rc}
 } # main
+
+export LC_ALL="C"
 
 std::requires perl "${SCRIPT}"
 
