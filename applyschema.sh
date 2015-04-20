@@ -337,7 +337,7 @@ function main() {
 				if (( ${#extra[@]} )); then
 					extraparams+=( "${extra[@]}" )
 				fi
-				debug "About to apply Stored Procedures: ${myway} ${params[@]} ${extraparams[@]} ${extra[@]:-}"
+				debug "About to apply Stored Procedures: ${myway} ${params[@]} ${extraparams[@]}"
 				if (( ! dryrun )); then
 					if (( silent )); then
 						${myway} "${params[@]}" "${extraparams[@]}" >/dev/null 2>&1
