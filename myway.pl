@@ -1807,6 +1807,7 @@ sub remove_subqueries( $$ ) {
 		my $struct   = {};
 		my $token    = '__SQ' . $n . '__';
 
+MKDEBUG && _d("SQ: Using token '$token'");
 		# Adjust len for next outer subquery.  This is required because the
 		# subqueries' start/end pos are found relative to one another, so
 		# when a subquery is replaced with its shorter __SQn__ token the end
@@ -1814,9 +1815,11 @@ sub remove_subqueries( $$ ) {
 		# any valid subquery so the end pos should only decrease.
 		for my $j ( $i .. ( $#start_pos - 1 ) ) {
 			next if( $outerfound );
+MKDEBUG && _d("SQ: Iteration '$j' ($i to " . ( $#start_pos - 1 ) . ")");
 
 			my $outer_start = $start_pos[$j + 1];
 			my $outer_end   = $end_pos[$j + 1];
+MKDEBUG && _d("SQ: Outer start $outer_start, Outer end $outer_end");
 
 			if (    $outer_start && ($outer_start < $start_pos[$i])
 				  && $outer_end   && ($outer_end   > $end_pos[$i]) ) {
@@ -1824,8 +1827,10 @@ sub remove_subqueries( $$ ) {
 
 				$len_adj = 0;
 				for my $k ( 0 .. ( $i - 1 ) ) {
+MKDEBUG && _d("SQ: Iteration '$k' (0 to " . ( $i - 1 ) . ")");
 					my $inner_start = $start_pos[$k];
 					my $inner_end   = $end_pos[$k];
+MKDEBUG && _d("SQ: Inner start $inner_start, Inner end $inner_end");
 
 					if (    $inner_start && ($inner_start > $start_pos[$i])
 						  && $inner_end   && ($inner_end   < $end_pos[$i]) ) {
@@ -1861,6 +1866,9 @@ sub remove_subqueries( $$ ) {
 				MKDEBUG && _d("Outermost subquery");
 			}
 		}
+MKDEBUG && _d('SQ: start_pos:', Dumper(\@start_pos));
+MKDEBUG && _d('SQ: end_pos:', Dumper(\@end_pos));
+MKDEBUG && _d('SQ: subqueries:', Dumper(\@subqueries));
 
 		my $len    = $end_pos[$i] - $start_pos[$i] - $len_adj;
 		MKDEBUG && _d("Subquery $n start " . $start_pos[$i] .
@@ -2212,7 +2220,7 @@ no if ( $] >= 5.02 ), warnings => 'experimental::autoderef';
 # ... in actual fact, diagnostics causes more problems than it solves.  It does
 # appear to be, in reality, quite silly.
 
-use constant VERSION  =>  1.0.10;
+use constant VERSION  =>  1.0.12;
 
 use constant TRUE     =>  1;
 use constant FALSE    =>  0;
@@ -2458,7 +2466,8 @@ sub initstate() { # {{{
 	my @str = ();
 
 	my %state = (
-		  'symbol'	=>       undef	# Used to hold the closing characters of a multi-line comment or statement delimiter
+		  'file'	=>	 undef	# Current filename, for logging purposes
+		, 'symbol'	=>       undef	# Used to hold the closing characters of a multi-line comment or statement delimiter
 		, 'depth'	=>       0	# Comment nesting depth
 		, 'line'	=>	 0	# Line of input on which current entry starts
 		, 'type'	=>	 undef	# Entry type: comment, statement, or fragment
@@ -2501,7 +2510,7 @@ sub compressquotes( $$ ) { # {{{
 	#     mime-type: text/*
 	#
 	# ... is actually the start of a comment.  At least we can ensure that
-	# apparent quotes a balanced before we consider them...
+	# apparent quotes are balanced before we consider them...
 	#
 	my $filteredline = $line;
 	my $strchanged = FALSE;
@@ -2744,7 +2753,7 @@ sub processcomments( $$$;$ ) { # {{{
 			my $regex = $start . '.*$';
 
 			eval { qr/$regex/ };
-			die( "$fatal Invalid regex '$regex': $@\n" ) if( $@ );
+			die( "$fatal Invalid regex '$regex'" . ( ( defined( $state -> { 'file' } ) and length( $state -> { 'file' } ) ) ? " in file '" . $state -> { 'file' } . "'" : '' ) . ": $@\n" ) if( $@ );
 
 			pdebug( "  C Checking for multi-line initial token '$regex' ..." );
 
@@ -2819,7 +2828,7 @@ sub processcomments( $$$;$ ) { # {{{
 
 
 	} else { # ( 0 != $state -> { 'depth' } )
-		die( "$fatal Logic error" ) unless( defined( $state -> { 'symbol' } ) );
+		die( "$fatal Logic error" . ( ( defined( $state -> { 'file' } ) and length( $state -> { 'file' } ) ) ? " in file '" . $state -> { 'file' } . "'" : '' ) ) unless( defined( $state -> { 'symbol' } ) );
 
 		pdebug( "  C In a comment, depth " . $state -> { 'depth' } . " ..." );
 
@@ -3079,9 +3088,9 @@ sub processline( $$;$$ ) { # {{{
 			my $tokens;
 			if( $command =~ m/^USE\s+`?(.+?)`?$/i ) {
 				if( defined( $strict ) and $strict ) {
-					die( "$fatal Not parsing prohibited command '$command'\n" );
+					die( "$fatal Not parsing prohibited command '$command'" . ( ( defined( $state -> { 'file' } ) and length( $state -> { 'file' } ) ) ? " from file '" . $state -> { 'file' } . "'" : '' ) . "\n" );
 				} else {
-					warn( "$warning Not parsing prohibited command '$command'\n" );
+					warn( "$warning Not parsing prohibited command '$command'" . ( ( defined( $state -> { 'file' } ) and length( $state -> { 'file' } ) ) ? " from file '" . $state -> { 'file' } . "'" : '' ) . "\n" );
 				}
 
 			} elsif( $command =~ m/^\s*$delim\s*$/ ) {
@@ -3089,23 +3098,99 @@ sub processline( $$;$$ ) { # {{{
 				pushstate( $data, $state -> { 'statements' } );
 
 			} else {
+				# We only parse SQL to determine affected
+				# tables, so we can make this easier by
+				# removing all quoted strings, so that the
+				# easily-confused parser is less likely to
+				# become flummoxed.
+				my @replacements;
+
+				# Handle escaped quotes, which confuse parsing.
+				( my $filteredcommand = $command ) =~ s/''/__MW_LITERAL_QUOTE__/g;
+
+				foreach my $match ( ( $filteredcommand =~ m/$RE{ quoted }/g ) ) {
+					# $RE{quoted} also captures back-ticks,
+					# which we need to maintain...
+					next if( $match =~ m/^\`.*\`$/ );
+
+					# Keep external quotes...
+					$match =~ s/^['"]//;
+					$match =~ s/['"]$//;
+
+					# As we're maintaining external
+					# quoting, tokens consisting entirely
+					# of whitespace - and especially quoted
+					# single spaces - can cause issues...
+					next if( $match =~ m/^\s*$/ );
+
+					my $index = scalar( @replacements );
+					$filteredcommand =~ s/\Q$match\E/__MW_TOK_${index}__/;
+					push( @replacements, $match );
+					pdebug( "  S Replacing \`$match\` with \`__MW_TOK_${index}__\` to give \`$filteredcommand\`" );
+				}
+
 				eval {
-					$tokens = $sqlparser -> parse( $command, $delim );
+					$tokens = $sqlparser -> parse( $filteredcommand, $delim );
 				};
 				if( $@ ) {
+					( my $errortext = $@ ) =~ s/\.$//;
+					chomp( $errortext );
+
 					if( defined( $strict ) and $strict ) {
-						if( $@ =~ m/Cannot parse .* queries/ ) {
-							warn( $@ . "\n" );
+						if( $errortext =~ m/Cannot parse .* queries/ ) {
+							warn( $errortext . ( ( defined( $state -> { 'file' } ) and length( $state -> { 'file' } ) ) ? " in file '" . $state -> { 'file' } . "'" : '' ) . "\n" );
 							$state -> { 'statements' } -> { 'tokens' } = undef;
 						} else {
-							die( $@ . "\n" );
+							die( "\n" . $errortext . ( ( defined( $state -> { 'file' } ) and length( $state -> { 'file' } ) ) ? " in file '" . $state -> { 'file' } . "'" : '' ) . "\n" );
 						}
 					} else {
-						warn( $@ . "\n" );
+						warn( $errortext . ( ( defined( $state -> { 'file' } ) and length( $state -> { 'file' } ) ) ? " in file '" . $state -> { 'file' } . "'" : '' ) . "\n" );
 						$state -> { 'statements' } -> { 'tokens' } = undef;
 					}
 				} else {
+					sub walk( $$;$ );
+					sub walk( $$;$ ) { # {{{
+						my ( $element, $block, $vars ) = @_;
+
+						my $type = ref( $element );
+
+						if( 'HASH' eq $type ) {
+							walk( $_, $block, $vars ) for( values( %$element ) );
+						} elsif( 'ARRAY' eq $type ) {
+							walk( $_, $block, $vars ) for( @$element );
+						} elsif( ( 'SCALAR' eq $type ) or ( '' eq $type ) ) {
+							$block -> ( \$_[ 0 ], $vars );
+						} else {
+							die "Unknown type '$type'";
+						}
+					} # walk # }}}
+					walk( $tokens, sub {
+						my ( $strref, $varref ) = @_;
+
+						return if( not( length( ${ $strref } ) and ( ${ $strref } =~ m/__MW_TOK_/ ) ) );
+						#warn "WWW: strref is '$strref', refers to '" . ${ $strref } . "'";
+
+						my @str = @{ $varref };
+						#warn "WWW: walk read " . scalar( @str ) . " parameters";
+						return if( not( scalar( @str ) ) );
+
+						for( my $index = ( scalar( @str ) - 1 ) ; $index >= 0 ; $index-- ) {
+							my $match = $str[ $index ];
+							#warn "WWW: walk read original string '$match'";
+
+							if( defined( $match ) and length( $match ) ) {
+								my $original = ${ $strref };
+								if( ${ $strref } =~ s/__MW_TOK_${index}__/$match/ ) {
+									pdebug( "  S Replaced \`__MW_TOK_${index}__\` in \`$original\` with \`$match\` to give \`${ $strref }\`" );
+								} elsif( ${ $strref } =~ s/__MW_LITERAL_QUOTE__/''/ ) {
+									pdebug( "  S Replaced \`__MW_LITERAL_QUOTE__\` in \`$original\` with \`''\` to give \`${ $strref }\`" );
+								}
+							}
+						}
+					}, \@replacements );
+
 					$state -> { 'statements' } -> { 'tokens' } = $tokens;
+					print Data::Dumper -> Dump( [ $tokens ], [ qw( *tokens ) ] ) if DEBUG;
 				}
 
 				pdebug( "  S Pushing resultant statements array ..." );
@@ -3155,6 +3240,8 @@ sub processfile( $$;$$$ ) { # {{{
 
 	my $state = initstate();
 	my $validated = TRUE;
+
+	$state -> { 'file' } = $file;
 
 	pdebug( "processfile() invoked on file '$file'" );
 
