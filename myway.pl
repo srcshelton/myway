@@ -214,6 +214,7 @@ my $column_ident = qr/(?:
 )/xo;
 
 my %ignore_function = (
+	NOT   => 1,
 	IN    => 1,
 	INDEX => 1,
 	KEY   => 1,
