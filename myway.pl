@@ -2264,7 +2264,8 @@ use Sort::Versions;
 use Time::HiRes qw( gettimeofday tv_interval );
 
 use Data::Dumper;
-use Devel::StackTrace;
+#use Devel::StackTrace; # Core with Perl 5.20, apparently not present on Ubuntu
+                        # 14.04 LTS release.
 
 # Modules not currently used in latest code:
 #use Clone qw( clone );
@@ -2618,8 +2619,8 @@ sub pushentry( $$$$$;$ ) { # {{{
 
 	if( $entry =~ m/__MW_(STR|L?TOK|LITERAL_QUOTE_)_/ ) {
 		warn "\nUnexpended token detected in `$entry`\n";
-		my $trace = Devel::StackTrace -> new;
-		print $trace -> as_string;
+		#my $trace = Devel::StackTrace -> new;
+		#print $trace -> as_string;
 		die "Tokenisation failed\n";
 	}
 
@@ -2682,8 +2683,8 @@ sub pushfragment( $$$;$$ ) { # {{{
 
 	if( $entry =~ m/__MW_(STR|L?TOK|LITERAL_QUOTE_)_/ ) {
 		warn "\nUnexpended token detected in `$entry`\n";
-		my $trace = Devel::StackTrace -> new;
-		print $trace -> as_string;
+		#my $trace = Devel::StackTrace -> new;
+		#print $trace -> as_string;
 		die "Tokenisation failed\n";
 	}
 
@@ -3939,8 +3940,8 @@ sub dosql( $$ ) { # {{{
 
 	if( $st =~ m/__MW_(STR|L?TOK|LITERAL_QUOTE_)_/ ) {
 		warn "\nUnexpended token detected in `$st`\n";
-		my $trace = Devel::StackTrace -> new;
-		print $trace -> as_string;
+		#my $trace = Devel::StackTrace -> new;
+		#print $trace -> as_string;
 		return( FALSE );
 	}
 
