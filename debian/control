@@ -1,0 +1,12 @@
+Source: db-tools
+Section: unknown
+Priority: optional
+Maintainer: Stuart Shelton <stuart.shelton@hpe.com>
+Build-Depends: debhelper (>= 8.0.0)
+Standards-Version: 3.9.4
+Homepage:
+
+Package: db-tools
+Architecture: any
+Depends: ${misc:Depends}
+Description: Tools for MySQL/MariaDB
