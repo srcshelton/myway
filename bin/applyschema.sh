@@ -393,7 +393,7 @@ function main() {
 				procedurepath="${path}"/schema/"${db}"/procedures
 			fi
 
-			find "${procedurepath}" -mindepth 1 -maxdepth 1 -type d -name "${db}_*" 2>/dev/null | "${reorder[@]}" | while read -r path; do
+			find "${procedurepath}" -mindepth 1 -maxdepth 1 -type d -name "${db}" 2>/dev/null | "${reorder[@]}" | while read -r path; do
 				extraparams=()
 				extraparams+=( --scripts "${path}" )
 				#if (( ${#extra[@]} )); then
