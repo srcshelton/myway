@@ -50,7 +50,7 @@ if 0;
 #
 # }}}
 
-# Copyright 2014 Stuart Shelton, Autonomy Systems Ltd.
+# Copyright 2014-2016 Stuart Shelton, Autonomy Systems Ltd.
 # Portions of this program are copyright 2010-2012 Percona Inc.
 #
 # Feedback and improvements are welcome.
@@ -2263,6 +2263,10 @@ use Regexp::Common;
 use Sort::Versions;
 use Time::HiRes qw( gettimeofday tv_interval );
 
+eval {
+	use DBD::ODBC;
+};
+
 use Data::Dumper;
 #use Devel::StackTrace; # Core with Perl 5.20, apparently not present on Ubuntu
                         # 14.04 LTS release.
@@ -2335,6 +2339,24 @@ CREATE TABLE IF NOT EXISTS `$flywaytablename` (
   ,         KEY `schema_version_s_idx`  (`success`)
 ) ENGINE='InnoDB' DEFAULT CHARSET='UTF8';
 DDL
+our $verticaflywayddl  = <<DDL;
+CREATE TABLE IF NOT EXISTS __SCHEMA__"$flywaytablename" (
+    "version_rank"	INT		                          NOT NULL
+  , "installed_rank"	INT		                          NOT NULL
+  , "version"		VARCHAR(50)	                          NOT NULL
+  , "description"	VARCHAR(200)	                          NOT NULL
+  , "type"		VARCHAR(20)	                          NOT NULL
+  , "script"		VARCHAR(1000)	                          NOT NULL
+  , "checksum"		INT		DEFAULT NULL
+  , "installed_by"	VARCHAR(100)	                          NOT NULL
+  , "installed_on"	TIMESTAMP	DEFAULT CURRENT_TIMESTAMP NOT NULL
+  , "execution_time"	INT		                          NOT NULL
+  , "success"		BOOLEAN		                          NOT NULL
+  , PRIMARY KEY                         ("version")
+)
+ORDER BY "version", "version_rank", "installed_rank", "success",
+SEGMENTED BY HASH( "version" ) ALL NODES;
+DDL
 
 # Note that field-lengths in myway* tables are not arbitrary, but instead are
 # sized to hold the maximum permissible value for the field-type, according to
@@ -2362,6 +2384,25 @@ CREATE TABLE IF NOT EXISTS `$mywaytablename` (
   , PRIMARY KEY (`id`)
 ) ENGINE='InnoDB' DEFAULT CHARSET='ASCII';
 DDL
+our $verticamywayddl  = <<DDL;
+CREATE TABLE IF NOT EXISTS __SCHEMA__"$mywaytablename" (
+    "id"		CHAR(36)	                          NOT NULL
+  , "dbuser"		CHAR(16)	                          NOT NULL
+  , "dbhost"		CHAR(64)	                          NOT NULL
+  , "osuser"		CHAR(32)	                          NOT NULL
+  , "host"		CHAR(64)	                          NOT NULL
+  , "sha1sum"		CHAR(40)	                          NOT NULL
+  , "path"		VARCHAR(4096)	CHARACTER SET "UTF8"      NOT NULL
+  , "filename"		VARCHAR(255)	CHARACTER SET "UTF8"      NOT NULL
+  , "started"		TIMESTAMP
+  , "sqlstarted"	TIMESTAMP	DEFAULT NULL                  NULL
+  , "finished"		TIMESTAMP	DEFAULT NULL                  NULL
+  , "status"		TINYINT		UNSIGNED
+  , PRIMARY KEY ("id")
+)
+ORDER BY "started",
+SEGMENTED BY HASH( "id" ) ALL NODES;
+DDL
 
 # Previously, `statement` was of type VARCHAR(16384) - but SQL statements may
 # be as many bytes as specified by the 'max_allowed_packet' variable, which
@@ -2387,6 +2428,21 @@ CREATE TABLE IF NOT EXISTS `$mywayactionsname` (
     ON DELETE CASCADE
 ) ENGINE='InnoDB' DEFAULT CHARSET='ASCII';
 DDL
+our $verticamywayactionsddl  = <<DDL;
+CREATE TABLE IF NOT EXISTS __SCHEMA__"$mywayactionsname" (
+    "schema_id"		CHAR(36)	                          NOT NULL
+  , "started"		TIMESTAMP(6)	DEFAULT CURRENT_TIMESTAMP NOT NULL
+  , "event"		VARCHAR(256)	                          NOT NULL
+  , "statement"		LONGTEXT	CHARACTER SET 'UTF8'      NOT NULL
+  , "line"		BIGINT		UNSIGNED
+  , "time"		DECIMAL(13,3)
+  , "state"		CHAR(5)
+  , CONSTRAINT   "${mywayactionsname}_schema_id_${mywaytablename}_id"
+    FOREIGN KEY ("schema_id") REFERENCES "$mywaytablename" ("id")
+)
+ORDER BY "schema_id",
+SEGMENTED BY HASH( "schema_id" ) ALL NODES;
+DDL
 
 our $mywayprocsname = 'myway_stored_procedures';
 our $mywayprocsddl  = <<DDL;
@@ -2408,6 +2464,28 @@ CREATE TABLE IF NOT EXISTS `$mywayprocsname` (
   , `status`		TINYINT		UNSIGNED
   , PRIMARY KEY (`id`)
 ) ENGINE='InnoDB' DEFAULT CHARSET='ASCII';
+DDL
+our $verticamywayprocsddl  = <<DDL;
+CREATE TABLE IF NOT EXISTS __SCHEMA__"$mywayprocsname" (
+    "id"		CHAR(36)	                          NOT NULL
+  , "dbuser"		CHAR(16)	                          NOT NULL
+  , "dbhost"		CHAR(64)	                          NOT NULL
+  , "osuser"		CHAR(32)	                          NOT NULL
+  , "host"		CHAR(64)	                          NOT NULL
+  , "sha1sum"		CHAR(40)	                          NOT NULL
+  , "path"		VARCHAR(4096)	CHARACTER SET 'UTF8'      NOT NULL
+  , "filename"		VARCHAR(255)	CHARACTER SET 'UTF8'      NOT NULL
+  , "version"		VARCHAR(50)	CHARACTER SET 'UTF8'
+  , "description"	VARCHAR(200)	CHARACTER SET 'UTF8'
+  , "type"		VARCHAR(20)	CHARACTER SET 'UTF8'
+  , "started"		TIMESTAMP
+  , "sqlstarted"	TIMESTAMP	DEFAULT NULL                  NULL
+  , "finished"		TIMESTAMP	DEFAULT NULL                  NULL
+  , "status"		TINYINT		UNSIGNED
+  , PRIMARY KEY ("id")
+)
+ORDER BY "started",
+SEGMENTED BY HASH( "id" ) ALL NODES;
 DDL
 
 sub pdebug( $;$ ) { # {{{
@@ -3488,6 +3566,19 @@ sub dbopen( $$$$;$$ ) { # {{{
 	my $error = undef;
 	$options = { RaiseError => 1, PrintError => 0 } unless( $options );
 
+	# Ugh, now that we have Vertica support we need to parse certain values
+	# out of the provided DSN :(
+	if( not( defined ( $user ) ) ) {
+		if( $dsn =~ m/(?:uid|user(?:name)?)=([^;]+)(;|$)/i ) {
+			$user = $1;
+		}
+	}
+	if( not( defined ( $password ) ) ) {
+		if( $dsn =~ m/(?:pass(?:word)?)=([^;]+)(;|$)/i ) {
+			$password = $1;
+		}
+	}
+
 	#disable diagnostics;
 	$$dbh = DBI -> connect( $dsn, $user, $password, $options )
 		or $error = "Cannot create connection to DSN '$dsn': $DBI::errstr";
@@ -3496,58 +3587,60 @@ sub dbopen( $$$$;$$ ) { # {{{
 	if( defined( $$dbh ) ) {
 		$$dbh -> { 'InactiveDestroy' } = 1;
 
-		my $mode = getsqlvalue( $$dbh, 'SELECT @@SESSION.sql_mode' );
-		pdebug( "Initial sql_mode is '$mode'" );
-
-		if( $strict ) {
-			# If we're not in strict-mode (by the loosest possible
-			# definition) then enable it...
-			#
-			if( $mode !~ m/^.*,?(((STRICT_ALL_TABLES|STRICT_TRANS_TABLES),.*(STRICT_ALL_TABLES|STRICT_TRANS_TABLES))|TRADITIONAL),?.*$/i ) {
-				$mode .= ( defined( $mode ) and length ( $mode ) ? ',' : '' ) . "TRADITIONAL";
-				dosql( $$dbh, "SET SESSION sql_mode = '$mode'" );
-			}
-
-			# Now that we we have an (expanded) sql_mode set, remove
-			# the problematic NO_ZERO_DATE option...
-			#
-			$mode = getsqlvalue( $$dbh, 'SELECT @@SESSION.sql_mode' );
-			( my $newmode = $mode ) =~ s/,?NO_ZERO_DATE,?/,/i;
-			$newmode =~ s/,?TRADITIONAL,?/,/i;
-			$newmode =~ s/^,//;
-			$newmode =~ s/,$//;
-			dosql( $$dbh, "SET SESSION sql_mode = '$newmode'" ) unless( $mode eq $newmode );
-
-			# Also set InnoDB strict mode - which, thankfully, is
-			# somewhat less complex...
-			#
-			$mode = getsqlvalue( $$dbh, 'SELECT @@SESSION.innodb_strict_mode' );
-			if( not( defined( $mode ) ) or ( $mode eq 0 ) ) {
-				dosql( $$dbh, "SET SESSION innodb_strict_mode = ON" );
-			}
-		} else {
-			# We actually probably do need to deal with this
-			# eventuality - what happens if strict mode is already
-			# set?
-
-			# Clear all modes, but only if a strict setting is
-			# detected.
-			#
-			# XXX: It would be better to filter this list with more
-			#      granularity...
-			#
-			if( $mode =~ m/^.*,?(((STRICT_ALL_TABLES|STRICT_TRANS_TABLES),.*(STRICT_ALL_TABLES|STRICT_TRANS_TABLES))|TRADITIONAL),?.*$/i ) {
-				dosql( $$dbh, "SET SESSION sql_mode = ''" );
-			}
-			$mode = getsqlvalue( $$dbh, 'SELECT @@SESSION.innodb_strict_mode' );
-			if( $mode eq 1 ) {
-				dosql( $$dbh, "SET SESSION innodb_strict_mode = OFF" );
-			}
-		}
-
-		if( DEBUG or ( $verbosity > 2 ) ) {
+		if( $dbh -> { Driver } -> { Name } =~ m/mysql/i ) {
 			my $mode = getsqlvalue( $$dbh, 'SELECT @@SESSION.sql_mode' );
-			pdebug( "Updated sql_mode is '$mode'" );
+			pdebug( "Initial sql_mode is '$mode'" );
+
+			if( $strict ) {
+				# If we're not in strict-mode (by the loosest possible
+				# definition) then enable it...
+				#
+				if( $mode !~ m/^.*,?(((STRICT_ALL_TABLES|STRICT_TRANS_TABLES),.*(STRICT_ALL_TABLES|STRICT_TRANS_TABLES))|TRADITIONAL),?.*$/i ) {
+					$mode .= ( defined( $mode ) and length ( $mode ) ? ',' : '' ) . "TRADITIONAL";
+					dosql( $$dbh, "SET SESSION sql_mode = '$mode'" );
+				}
+
+				# Now that we we have an (expanded) sql_mode set, remove
+				# the problematic NO_ZERO_DATE option...
+				#
+				$mode = getsqlvalue( $$dbh, 'SELECT @@SESSION.sql_mode' );
+				( my $newmode = $mode ) =~ s/,?NO_ZERO_DATE,?/,/i;
+				$newmode =~ s/,?TRADITIONAL,?/,/i;
+				$newmode =~ s/^,//;
+				$newmode =~ s/,$//;
+				dosql( $$dbh, "SET SESSION sql_mode = '$newmode'" ) unless( $mode eq $newmode );
+
+				# Also set InnoDB strict mode - which, thankfully, is
+				# somewhat less complex...
+				#
+				$mode = getsqlvalue( $$dbh, 'SELECT @@SESSION.innodb_strict_mode' );
+				if( not( defined( $mode ) ) or ( $mode eq 0 ) ) {
+					dosql( $$dbh, "SET SESSION innodb_strict_mode = ON" );
+				}
+			} else {
+				# We actually probably do need to deal with this
+				# eventuality - what happens if strict mode is already
+				# set?
+
+				# Clear all modes, but only if a strict setting is
+				# detected.
+				#
+				# XXX: It would be better to filter this list with more
+				#      granularity...
+				#
+				if( $mode =~ m/^.*,?(((STRICT_ALL_TABLES|STRICT_TRANS_TABLES),.*(STRICT_ALL_TABLES|STRICT_TRANS_TABLES))|TRADITIONAL),?.*$/i ) {
+					dosql( $$dbh, "SET SESSION sql_mode = ''" );
+				}
+				$mode = getsqlvalue( $$dbh, 'SELECT @@SESSION.innodb_strict_mode' );
+				if( $mode eq 1 ) {
+					dosql( $$dbh, "SET SESSION innodb_strict_mode = OFF" );
+				}
+			}
+
+			if( DEBUG or ( $verbosity > 2 ) ) {
+				my $mode = getsqlvalue( $$dbh, 'SELECT @@SESSION.sql_mode' );
+				pdebug( "Updated sql_mode is '$mode'" );
+			}
 		}
 	}
 
@@ -3969,6 +4062,16 @@ sub dosql( $$ ) { # {{{
 		return( FALSE );
 	}
 
+	# Apparently '17' (SQL_DBMS_NAME) canonically returns the database
+	# instance vendor...
+	if( $dbh -> get_info( 17 ) =~ m/vertica/i ) {
+		# Can't we all just agree to get along??
+		$st =~ s/`/\"/g;
+	}
+
+	# Please note that the following debug statement uses double-quotes as
+	# the one standard form of deliniating data which standard SQL doesn't
+	# use (or, at least, mandate) - Vertica kinda ruins this... :(
 	pdebug( "SQL: Sending to database: \"$st\"" );
 	eval {
 		my $result = $dbh -> do( $st );
@@ -4299,11 +4402,14 @@ sub applyschema( $$$$;$ ) { # {{{
 	$unsafe    = $variables -> { 'unsafe' }    if( exists( $variables -> { 'unsafe' } ) );
 
 	my( $user, $pass, $host, $port, $db );
-	$user = $auth -> { 'user' }       if( exists( $auth -> { 'user' } ) );
-	$pass = $auth -> { 'password' }   if( exists( $auth -> { 'password' } ) );
-	$host = $auth -> { 'host' }       if( exists( $auth -> { 'host' } ) );
-	$port = $auth -> { 'port' }       if( exists( $auth -> { 'port' } ) );
-	$db   = $auth -> { 'database'   } if( exists( $auth -> { 'database' } ) );
+	$user = $auth -> { 'user' }     if( exists( $auth -> { 'user' } ) );
+	$pass = $auth -> { 'password' } if( exists( $auth -> { 'password' } ) );
+	$host = $auth -> { 'host' }     if( exists( $auth -> { 'host' } ) );
+	$port = $auth -> { 'port' }     if( exists( $auth -> { 'port' } ) );
+	$db   = $auth -> { 'database' } if( exists( $auth -> { 'database' } ) );
+
+	my( $engine );
+	$engine = $auth -> { 'engine' } if( exists( $auth -> { 'engine' } ) );
 
 	#
 	# Perform additional validation
@@ -4392,7 +4498,7 @@ sub applyschema( $$$$;$ ) { # {{{
 			foreach my $statement ( @{ $entry } ) {
 				if( 'comment' eq $statement -> { 'type' } ) {
 					if( defined( $marker ) and length( $marker ) ) {
-						if( 'ARRAY' eq ref( $statement -> { 'entry' } ) ) { # {{{
+						if( 'ARRAY' eq ref( $statement -> { 'entry' } ) ) {
 							foreach my $line ( @{ $statement -> { 'entry' } } ) {
 								chomp( $line );
 								if( $line =~ m/Target\s+version:\s+([^\s]+)\s*/i ) {
@@ -4510,10 +4616,12 @@ sub applyschema( $$$$;$ ) { # {{{
 
 				if( not( defined( $entry -> { 'tokens' } ) ) ) {
 					# FIXME: Filter known edge-cases which the Parser fails to tokenise...
-					if( not( $text =~ m/^((LOCK|UNLOCK|SET|CREATE\s+PROCEDURE|GRANT|TRUNCATE)\s+|\s*\/\*\!)/i ) ) {
-						$output -> ( 'Unable to parse ' . $texttype . 'entry "' . $text . '"' );
-						# FIXME: Don't abort simply because we hit something we can't parse...
-						#$invalid = TRUE;
+					if( 'vertica' eq $engine ) {
+						if( not( $text =~ m/^((LOCK|UNLOCK|SET|CREATE\s+PROCEDURE|GRANT|TRUNCATE)\s+|\s*\/\*\!)/i ) ) {
+							$output -> ( 'Unable to parse ' . $texttype . 'entry "' . $text . '"' );
+							# FIXME: Don't abort simply because we hit something we can't parse...
+							#$invalid = TRUE;
+						}
 					}
 
 					# FIXME: Reinstate this once the Parser has full coverage
@@ -4523,12 +4631,14 @@ sub applyschema( $$$$;$ ) { # {{{
 				}
 			}
 
-			if( defined( $entry -> { 'tokens' } -> { 'type' } ) and defined( $entry -> { 'tokens' } -> { 'object' } ) ) {
-				my $type = $entry -> { 'tokens' } -> { 'type' };
-				my $object = $entry -> { 'tokens' } -> { 'object' };
-				if( ( defined( $type ) and ( 'create' eq lc( $type ) ) ) and ( defined( $object ) and ( 'user' eq lc( $object ) ) ) ) {
-					if( defined( $tmpdir ) and -d $tmpdir ) {
-						$dumpusers = TRUE unless( -e $tmpdir . '/' . 'mysql.users.sql' );
+			if( not( 'vertica' eq $engine ) ) {
+				if( defined( $entry -> { 'tokens' } -> { 'type' } ) and defined( $entry -> { 'tokens' } -> { 'object' } ) ) {
+					my $type = $entry -> { 'tokens' } -> { 'type' };
+					my $object = $entry -> { 'tokens' } -> { 'object' };
+					if( ( defined( $type ) and ( 'create' eq lc( $type ) ) ) and ( defined( $object ) and ( 'user' eq lc( $object ) ) ) ) {
+						if( defined( $tmpdir ) and -d $tmpdir ) {
+							$dumpusers = TRUE unless( -e $tmpdir . '/' . 'mysql.users.sql' );
+						}
 					}
 				}
 			}
@@ -4758,7 +4868,7 @@ SQL
 				}
 				if( not( $pretend or $quiet or $silent ) ) {
 					print( "\n*> flyway metadata table `$flywaytablename` has been initialised to version '$schmversion':\n" );
-					formatastable( $dbh, "SELECT * FROM $flywaytablename ORDER BY `version` DESC LIMIT 5", '   ' );
+					formatastable( $dbh, "SELECT * FROM `$flywaytablename` ORDER BY `version` DESC LIMIT 5", '   ' );
 				}
 			}
 			if( not( defined( $file ) ) or defined( $action_init ) ) {
@@ -4779,7 +4889,7 @@ SQL
 			# Cases: {0, 0.3}; {0.1, 0.3}; {0.3, 0.3}; {0.3, 0.5}.
 			#            ^^^         ^^^         ^^^    ^^^
 			#
-			my $version = getsqlvalue( $dbh, "SELECT `version` FROM `$flywaytablename`  WHERE `success` = '1' AND `type` = 'INIT' ORDER BY `version` DESC LIMIT 1" );
+			my $version = getsqlvalue( $dbh, "SELECT `version` FROM `$flywaytablename` WHERE `success` = '1' AND `type` = 'INIT' ORDER BY `version` DESC LIMIT 1" );
 			if( not( defined( $version ) and length( $version ) ) ) {
 				if( not( $force ) ) {
 					die( "Database has not been initialised with this tool - please re-run with '--init' and the appropriate schema-file version number.\n" );
@@ -5675,6 +5785,8 @@ sub main( @ ) { # {{{
 
 	my $port = PORT;
 	my $marker = MARKER;
+	my $odbcok = grep( /ODBC/i, DBI -> available_drivers );
+	my $engine;
 
 	#
 	# Populate command-line arguments # {{{
@@ -5687,7 +5799,7 @@ sub main( @ ) { # {{{
 	my( $compat, $relaxed, $strict );
 	my( $lock, $keeplock );
 	my( $force, $clear, $compress, $small, $split );
-	my( $user, $pass, $host, $db );
+	my( $syntax, $odbcdsn, $user, $pass, $host, $db, $vschm );
 	my( $pretend, $safetyoff, $debug, $silent, $quiet, $notice, $verbose, $warn );
 	my $ok = TRUE;
 	my $getoptout = undef;
@@ -5730,10 +5842,13 @@ sub main( @ ) { # {{{
 	,   'mysql-compat!'				=> \$compat
 	,   'mysql-relaxed|relaxed!'			=> \$relaxed
 
+	, 'y|syntax=s'					=> \$syntax
+	,   'dsn|odbc:s'				=> \$odbcdsn
 	, 'u|user|username=s'				=> \$user
 	, 'p|pass|passwd|password=s'			=> \$pass
 	, 'h|host=s'					=> \$host
 	, 'd|db|database=s'				=> \$db
+	,   'vertica-schema=s'				=> \$vschm
 
 	,   'dry-run!'					=> \$pretend
 	,   'debug!'					=> \$debug
@@ -5753,15 +5868,20 @@ sub main( @ ) { # {{{
 	}
 
 	$ok = FALSE if( ( defined( $file ) and $file ) and ( @paths and scalar( @paths ) ) );
-	$ok = FALSE unless( defined( $user ) and $user );
-	$ok = FALSE unless( defined( $pass ) and $pass );
+	if( defined( $odbcdsn ) and $odbcdsn ) {
+		$ok = FALSE unless( $odbcok );
+	} else {
+		$ok = FALSE unless( defined( $user ) and $user );
+		$ok = FALSE unless( defined( $pass ) and $pass );
 
-	$host = 'localhost' unless( defined( $host ) and $host );
+		$host = 'localhost' unless( defined( $host ) and $host );
+	}
+
 
 	if( defined( $mode ) and length( $mode ) ) {
-		if( $mode =~ m/^\s*schema|schemata\s*$/ ) {
+		if( $mode =~ m/^\s*schema|schemata\s*$/i ) {
 			$mode = 'schema';
-		} elsif( $mode =~ m/^\s*(?:stored\s*)?proc(?:edure)?\s*$/ ) {
+		} elsif( $mode =~ m/^\s*(?:stored\s*)?proc(?:edure)?\s*$/i ) {
 			$mode = 'procedure';
 		} else {
 			warn( "Option '--mode' must have value 'schema' or 'procedure'\n" );
@@ -5771,32 +5891,53 @@ sub main( @ ) { # {{{
 		$mode = 'schema';
 	}
 
-	if( defined( $action_backup ) ) {
-		$ok = FALSE if( defined( $db ) and defined( $lock ) );
-		# TODO: Support backing-up Stored Procedures separately...
-		$ok = FALSE if( 'procedure' eq $mode );
-		$ok = FALSE if( defined( $pretend ) );
-		$ok = FALSE if( defined( $clear ) );
-	} elsif( defined( $action_restore ) ) {
-		$ok = FALSE if( defined( $lock ) or defined( $keeplock ) );
-		$ok = FALSE if( defined( $compress ) );
-		$ok = FALSE if( defined( $small ) );
-		$ok = FALSE if( defined( $split ) );
-		# TODO: Support restoring Stored Procedures only...
-		$ok = FALSE if( 'procedure' eq $mode );
-		$ok = FALSE if( defined( $pretend ) );
-		$ok = FALSE if( defined( $clear ) );
-		$ok = FALSE if( defined( $keepbackups ) );
+	if( defined( $syntax ) and length( $syntax ) ) {
+		if( $syntax =~ m/^\s*vertica\s*$/i ) {
+			$syntax = 'vertica';
+		} elsif( $syntax =~ m/^\s*mysql\s*$/i ) {
+			$syntax = 'mysql';
+		} else {
+			warn( "Option '--syntax' must have value 'mysql' or 'vertica'\n" );
+			exit( 1 );
+		}
 	} else {
-		$ok = FALSE unless( defined( $db ) and $db );
-		$ok = FALSE if( defined( $lock ) or defined( $keeplock ) );
-		$ok = FALSE if( defined( $compress ) );
-		$ok = FALSE if( defined( $small ) );
-		$ok = FALSE if( defined( $split ) );
-#		$ok = FALSE if( defined( $marker ) and not( defined( $dosub ) ) );
-		$ok = FALSE if( defined( $dosub ) and not( 'procedure' eq $mode ) );
-		if( not( defined( $action_init ) ) ) {
-			$ok = FALSE unless( ( defined( $file ) and $file ) or ( @paths and scalar( @paths ) ) );
+		$syntax = 'mysql';
+	}
+
+	if( defined( $vschm ) and length( $vschm ) ) {
+		$ok = FALSE if( not( $syntax eq 'vertica' ) );
+	}
+
+	if( not( defined( $odbcdsn ) and $odbcdsn ) ) {
+		$ok = FALSE unless( $syntax eq 'mysql' );
+
+		if( defined( $action_backup ) ) {
+			$ok = FALSE if( defined( $db ) and defined( $lock ) );
+			# TODO: Support backing-up Stored Procedures separately...
+			$ok = FALSE if( 'procedure' eq $mode );
+			$ok = FALSE if( defined( $pretend ) );
+			$ok = FALSE if( defined( $clear ) );
+		} elsif( defined( $action_restore ) ) {
+			$ok = FALSE if( defined( $lock ) or defined( $keeplock ) );
+			$ok = FALSE if( defined( $compress ) );
+			$ok = FALSE if( defined( $small ) );
+			$ok = FALSE if( defined( $split ) );
+			# TODO: Support restoring Stored Procedures only...
+			$ok = FALSE if( 'procedure' eq $mode );
+			$ok = FALSE if( defined( $pretend ) );
+			$ok = FALSE if( defined( $clear ) );
+			$ok = FALSE if( defined( $keepbackups ) );
+		} else {
+			$ok = FALSE unless( defined( $db ) and $db );
+			$ok = FALSE if( defined( $lock ) or defined( $keeplock ) );
+			$ok = FALSE if( defined( $compress ) );
+			$ok = FALSE if( defined( $small ) );
+			$ok = FALSE if( defined( $split ) );
+#			$ok = FALSE if( defined( $marker ) and not( defined( $dosub ) ) );
+			$ok = FALSE if( defined( $dosub ) and not( 'procedure' eq $mode ) );
+			if( not( defined( $action_init ) ) ) {
+				$ok = FALSE unless( ( defined( $file ) and $file ) or ( @paths and scalar( @paths ) ) );
+			}
 		}
 	}
 
@@ -5889,6 +6030,7 @@ sub main( @ ) { # {{{
 		$ok = FALSE;
 	}
 
+	#undef( $odbcdsn ) unless( defined( $odbcdsn ) and length( $odbcdsn ) );
 	undef( $user ) unless( defined( $user ) and length( $user ) );
 	undef( $pass ) unless( defined( $pass ) and length( $pass ) );
 	undef( $host ) unless( defined( $host ) and length( $host ) );
@@ -5898,47 +6040,84 @@ sub main( @ ) { # {{{
 	undef( $file ) unless( defined( $file ) and length( $file ) );
 	undef( @paths ) unless( @paths and scalar( @paths ) );
 
+	if( defined( $odbcdsn ) ) {
+		$ok = FALSE if( not( $odbcok ) );
+		$ok = FALSE if( $action_backup );
+		$ok = FALSE if( $lock );
+		$ok = FALSE if( $keeplock );
+		$ok = FALSE if( $small );
+		$ok = FALSE if( $compress );
+		$ok = FALSE if( $split );
+		$ok = FALSE if( $action_restore );
+		$ok = FALSE if( $dosub );
+		$ok = FALSE if( $marker );
+		$ok = FALSE if( $unsafe );
+		$ok = FALSE if( $keepbackups );
+		$ok = FALSE if( $compat );
+		$ok = FALSE if( $relaxed );
+		#$ok = FALSE if( $user );
+		$ok = FALSE if( $pass );
+		$ok = FALSE if( $host );
+		#$ok = FALSE if( $db );
+	}
+
 	if( ( defined( $help ) and $help ) or ( 0 == scalar( @ARGV ) ) ) {
 		my $myway = basename( $0 );
 		my $length = length( $myway ) + length( "Usage:  " );
-		#                              2         3         4         5         6         7         8
-		#                           7890123456789012345678901234567890123456789012345678901234567890
-		print(       "Usage: $myway -u <username> -p <password> -h <host> -d <database> ...\n" );
-		print( ( " " x $length ) . "<--backup [directory] [:backup options:]|...\n" );
-		print( ( " " x $length ) . " --restore <file>|--init [version]>|...\n" );
-		print( ( " " x $length ) . "[--migrate|--check] <--scripts <directory>|--file <schema>>...\n" );
-		print( ( " " x $length ) . "[[:mode:]] [--mysql-compat] [--no-backup|--keep-backup] ...\n" );
-		print( ( " " x $length ) . "[--clear-metadata] [--dry-run] [--force] [--debug] [--verbose]\n" );
-		print( "\n" );
-		print( ( " " x $length ) . "backup options:   [--compress [:scheme:]] [--small-dataset]\n" );
-		print( ( " " x $length ) . "                  [--lock [--keep-lock]] [--separate-files]\n" );
-		print( ( " " x $length ) . "scheme:           <gzip|bzip2|xz|lzma>\n" );
-		print( "\n" );
-		print( ( " " x $length ) . "mode:             --mode <schema|procedure>\n" );
-		print( ( " " x $length ) . "                  [--substitute [--marker <marker>]\n" );
-		print( "\n" );
-		print( ( " " x $length ) . "--mysql-compat   - Required for MySQL prior to v5.6.4\n" );
-		print( ( " " x $length ) . "--mysql-relaxed  - Do not operate in STRICT mode\n" );
-		print( "\n" );
-		print( ( " " x $length ) . "--compress       - Compress backups [using <scheme> compression]\n" );
-		print( ( " " x $length ) . "--small-dataset  - Optimise for tables of less than 1GB in size\n" );
-		print( ( " " x $length ) . "--lock           - Lock instance for duration of backup\n" );
-		print( ( " " x $length ) . "--keep-lock      - Keep lock for up to 24 hours following backup\n" );
-		print( "\n" );
-		print( ( " " x $length ) . "--substitute     - Replace the string '" . ( ( defined( $marker ) and length( $marker ) ) ? $marker : MARKER ) . "' with version\n" );
-		print( ( " " x $length ) . "                   number from stored procedure directory name\n" );
-		print( ( " " x $length ) . "--marker         - Use string in place of '" . MARKER . "'\n" );
-		print( "\n" );
-		print( ( " " x $length ) . "--no-backup      - Do not take backups before making changes\n" );
-		print( ( " " x $length ) . "--keep-backup    - Copy backups to a local directory on exit\n" );
-		print( ( " " x $length ) . "--clear-metadata - Remove all {my,fly}way metadata tables\n" );
-		print( ( " " x $length ) . "--force          - Allow a database to be re-initialised or\n" );
-		print( ( " " x $length ) . "                   ignore previous and target versions when\n" );
-		print( ( " " x $length ) . "                   applying schema files\n" );
-		print( "\n" );
-		print( ( " " x $length ) . "--dry-run        - Validate but do not execute schema SQL\n" );
-		print( ( " " x $length ) . "--debug          - Output copious debugging statements\n" );
-		print( ( " " x $length ) . "--verbose        - Provide more detailed status information\n" );
+		#	                              2         3         4         5         6         7         8
+		#	                           7890123456789012345678901234567890123456789012345678901234567890
+		if( $odbcok and ( defined( $odbcdsn ) or ( $syntax eq 'vertica' ) ) ) {
+			print(       "Usage: $myway --dsn \"ODBC DSN\" [--username <user>] [--database <db>] ...\n" );
+			print( ( " " x $length ) . "<--init [version]|[--migrate|--check] ...\n" );
+			print( ( " " x $length ) . "<--scripts <directory>|--file <schema>> [[:syntax:]]\n" );
+			print( ( " " x $length ) . "[--clear-metadata] [--dry-run] [--force] [--debug] [--verbose]\n" );
+			print( "\n" );
+			print( ( " " x $length ) . "syntax:           --syntax <mysql|vertica>\n" );
+			print( "\n" );
+		} elsif( not(defined(  $odbcdsn ) ) ) {
+			print(       "Usage: $myway <--username <user> --password <passwd> --host <node> ...\n" ) if( $odbcok );
+			print( ( " " x $length ) . " --database <db>> | <--dsn <dsn>> [[:syntax:]] ...\n" ) if( $odbcok );
+			print(       "Usage: $myway -u <username> -p <password> -h <host> -d <database> ...\n" ) if( not( $odbcok ) );
+			print( ( " " x $length ) . "<--backup [directory] [:backup options:]|...\n" );
+			print( ( " " x $length ) . " --restore <file>|--init [version]>|...\n" );
+			print( ( " " x $length ) . "[--migrate|--check] <--scripts <directory>|--file <schema>> ...\n" );
+			print( ( " " x $length ) . "[[:mode:]] [--mysql-compat] [--no-backup|--keep-backup] ...\n" );
+			print( ( " " x $length ) . "[--clear-metadata] [--dry-run] [--force] [--debug] [--verbose]\n" );
+			print( "\n" );
+			print( ( " " x $length ) . "backup options:   [--compress [:scheme:]] [--small-dataset]\n" );
+			print( ( " " x $length ) . "                  [--lock [--keep-lock]] [--separate-files]\n" );
+			print( ( " " x $length ) . "scheme:           <gzip|bzip2|xz|lzma>\n" );
+			print( "\n" );
+			print( ( " " x $length ) . "mode:              --mode <schema|procedure>\n" );
+			print( ( " " x $length ) . "                  [--substitute [--marker <marker>]\n" );
+			print( "\n" );
+			print( ( " " x $length ) . "syntax:            --syntax <mysql|vertica>\n" ) if( $odbcok );
+			print( "\n" ) if( $odbcok );
+			print( ( " " x $length ) . "--mysql-compat   - Required for MySQL prior to v5.6.4\n" );
+			print( ( " " x $length ) . "--mysql-relaxed  - Do not operate in STRICT mode\n" );
+			print( "\n" );
+			print( ( " " x $length ) . "--compress       - Compress backups [using <scheme> compression]\n" );
+			print( ( " " x $length ) . "--small-dataset  - Optimise for tables of less than 1GB in size\n" );
+			print( ( " " x $length ) . "--lock           - Lock instance for duration of backup\n" );
+			print( ( " " x $length ) . "--keep-lock      - Keep lock for up to 24 hours following backup\n" );
+			print( "\n" );
+			print( ( " " x $length ) . "--substitute     - Replace the string '" . ( ( defined( $marker ) and length( $marker ) ) ? $marker : MARKER ) . "' with version\n" );
+			print( ( " " x $length ) . "                   number from stored procedure directory name\n" );
+			print( ( " " x $length ) . "--marker         - Use string in place of '" . MARKER . "'\n" );
+			print( "\n" );
+			print( ( " " x $length ) . "--no-backup      - Do not take backups before making changes\n" );
+			print( ( " " x $length ) . "--keep-backup    - Copy backups to a local directory on exit\n" );
+		}
+		{
+			print( ( " " x $length ) . "--clear-metadata - Remove all {my,fly}way metadata tables\n" );
+			print( ( " " x $length ) . "--force          - Allow a database to be re-initialised or\n" );
+			print( ( " " x $length ) . "                   ignore previous and target versions when\n" );
+			print( ( " " x $length ) . "                   applying schema files\n" );
+			print( "\n" );
+			print( ( " " x $length ) . "--dry-run        - Validate but do not execute schema SQL\n" );
+			print( ( " " x $length ) . "--debug          - Output copious debugging statements\n" );
+			print( ( " " x $length ) . "--verbose        - Provide more detailed status information\n" );
+		}
 		exit( 0 );
 	} elsif( not( $ok ) ) {
 		warn( "Mutually-exclusive arguments '--schema' and '--schemata' cannot both be specified\n" ) if( defined( $file ) and @paths );
@@ -5952,13 +6131,44 @@ sub main( @ ) { # {{{
 		warn( "Cannot specify argument '--lock' with option '--database' (locks are global)\n" ) if( $lock and defined( $db ) );
 #		warn( "Cannot specify argument '--marker' without option '--substitute'\n" ) if( $marker and not( $dosub ) );
 		warn( "Cannot specify argument '--substitute' unless option '--mode' is 'procedure'\n" ) if( $dosub and not( 'procedure' eq $mode ) );
-		warn( "Required argument '--user' not specified\n" ) unless( defined( $user ) );
-		warn( "Required argument '--password' not specified\n" ) unless( defined( $pass ) );
-		warn( "Required argument '--host' not specified\n" ) unless( defined( $host ) );
-		warn( "Required argument '--database' not specified\n" ) unless( defined( $db ) );
+		if( defined( $odbcdsn ) and not( $odbcok ) ) {
+			warn( "Argument '--dsn' specified but DBD::ODBC module not available\n" );
+		}
+		if( defined( $odbcdsn ) ) {
+			warn( "Cannot specify argument '--backup' with option '--dsn'\n" ) if( defined( $action_backup ) );
+			warn( "Cannot specify argument '--lock' with option '--dsn'\n" ) if( $lock );
+			warn( "Cannot specify argument '--keep-lock' with option '--dsn'\n" ) if( $keeplock );
+			warn( "Cannot specify argument '--small-dataset' with option '--dsn'\n" ) if( $small );
+			warn( "Cannot specify argument '--compress' with option '--dsn'\n" ) if( defined( $compress ) );
+			warn( "Cannot specify argument '--separate-files' with option '--dsn'\n" ) if( $split );
+			warn( "Cannot specify argument '--restore' with option '--dsn'\n" ) if( defined( $action_restore ) );
+			warn( "Cannot specify argument '--mode' with option '--dsn'\n" ) if( not( $mode eq 'schema' ) );
+			warn( "Cannot specify argument '--substitute' with option '--dsn'\n" ) if( $dosub );
+			warn( "Cannot specify argument '--marker' with option '--dsn'\n" ) if( defined( $marker ) );
+			warn( "Cannot specify argument '--no-backup' with option '--dsn'\n" ) if( $unsafe );
+			warn( "Cannot specify argument '--keep-backup' with option '--dsn'\n" ) if( $keepbackups );
+			warn( "Cannot specify argument '--mysql-compat' with option '--dsn'\n" ) if( $compat );
+			warn( "Cannot specify argument '--mysql-relaxed' with option '--dsn'\n" ) if( $relaxed );
+			#warn( "Cannot specify argument '--user' with option '--dsn'\n" ) if( defined( $user ) );
+			warn( "Cannot specify argument '--password' with option '--dsn'\n" ) if( defined( $pass ) );
+			warn( "Cannot specify argument '--host' with option '--dsn'\n" ) if( defined( $host ) );
+			#warn( "Cannot specify argument '--database' with option '--dsn'\n" ) if( defined( $db ) );
+		} else {
+			warn( "Argument '--syntax' must be 'mysql' unless using ODBC\n" ) unless( $syntax eq 'mysql' );
+			warn( "Cannot specify argument '--vertica-schema' unless option '--syntax=vertica' is specified\n" ) if( defined( $vschm ) );
+			warn( "Required argument '--user' not specified\n" ) unless( defined( $user ) );
+			warn( "Required argument '--password' not specified\n" ) unless( defined( $pass ) );
+			warn( "Required argument '--host' not specified\n" ) unless( defined( $host ) );
+			warn( "Required argument '--database' not specified\n" ) unless( defined( $db ) );
+		}
 		warn( "Required argument '--schema' or '--schemata' not specified\n" ) unless( defined( $file ) or ( @paths ) or defined( $action_backup ) or defined( $action_restore ) );
 		warn( "Command '--restore' takes only a filename as the single argument\n" ) if( defined( $action_restore ) );
 		warn( "... additionally, Getopt failed with '$getoptout'\n" ) if( defined( $getoptout ) );
+		exit( 1 );
+	}
+
+	if( defined( $odbcdsn ) and( not( length( $odbcdsn ) ) ) ) {
+		warn( "Invalid ODBC DSN: '$odbcdsn'\n" );
 		exit( 1 );
 	}
 
@@ -6014,7 +6224,7 @@ sub main( @ ) { # {{{
 			$action_backup = TRUE;
 		}
 
-		my $dsn;
+		my $backupdsn;
 		my $dbh;
 		my $availabledatabases;
 		my $availabletables;
@@ -6062,14 +6272,14 @@ sub main( @ ) { # {{{
 					local $| = 1;
 
 					if( defined( $db ) and length( $db ) ) {
-						$dsn = "DBI:mysql:database=$db;host=$host;port=$port";
+						$backupdsn = "DBI:mysql:database=$db;host=$host;port=$port";
 						print( "\n=> Connecting to database `$db` ...\n" ) unless( $quiet or $silent );
 					} else {
-						$dsn = "DBI:mysql:host=$host;port=$port";
+						$backupdsn = "DBI:mysql:host=$host;port=$port";
 						print( "\n=> Connecting to database instance ...\n" ) unless( $quiet or $silent );
 					}
 
-					my $error = dbopen( \$dbh, $dsn, $user, $pass, $strict );
+					my $error = dbopen( \$dbh, $backupdsn, $user, $pass, $strict );
 					die( $error ."\n" ) if $error;
 
 					if( not ( dosql( $dbh, "FLUSH TABLES WITH READ LOCK" ) ) ) {
@@ -6146,14 +6356,14 @@ sub main( @ ) { # {{{
 		local $| = 1;
 
 		if( defined( $db ) and length( $db ) ) {
-			$dsn = "DBI:mysql:database=$db;host=$host;port=$port";
+			$backupdsn = "DBI:mysql:database=$db;host=$host;port=$port";
 			print( "\n=> Connecting to database `$db` ...\n" ) unless( $quiet or $silent );
 		} else {
-			$dsn = "DBI:mysql:host=$host;port=$port";
+			$backupdsn = "DBI:mysql:host=$host;port=$port";
 			print( "\n=> Connecting to database instance ...\n" ) unless( $quiet or $silent );
 		}
 
-		my $error = dbopen( \$dbh, $dsn, $user, $pass, $strict );
+		my $error = dbopen( \$dbh, $backupdsn, $user, $pass, $strict );
 		die( $error ."\n" ) if $error;
 
 		if( defined( $db ) and length( $db ) ) {
@@ -6300,7 +6510,7 @@ sub main( @ ) { # {{{
 
 	} else {
 		if( not( defined( $file ) and length( $file ) ) ) {
-			die( "File name required\n" ) unless( defined( $action_init ) );
+			die( "$fatal File name required\n" ) unless( defined( $action_init ) );
 		} else {
 			die( "$fatal Cannot read from file '$file'\n" ) unless( defined( $file ) and -r $file );
 		}
@@ -6324,7 +6534,10 @@ sub main( @ ) { # {{{
 			#}
 			my $okay = TRUE;
 			my $index = -1; # Will be incremented before use...
+			my @newtarget = @{ $target };
 			PROCFILE: foreach my $singlefile ( @{ $target } ) {
+				$index ++;
+
 				#my $singlepath = realpath( $singlefile );
 				#if( not( -d $singlepath ) ) {
 					#$singlepath = dirname( $singlepath );
@@ -6339,17 +6552,20 @@ sub main( @ ) { # {{{
 					$okay = FALSE;
 					warn( "$fatal Directory path for file '$singlefile' does not fall within detected common directory '$path'\n" );
 				}
-				$index ++;
+
 				if( basename( $singlefile ) =~ m/\.metadata$/ ) {
 					pdebug( "Excluding metadata file '$singlefile' ..." );
-					splice( $target, $index, 1 );
+					splice( @newtarget, $index, 1 );
+					$index--;
+
 					next PROCFILE;
 				}
 			}
+			die( "$fatal No files found matching argument '@{ $target }'\n" ) unless( scalar( @newtarget ) );
 			exit( 1 ) unless( $okay );
 			$path = '.' unless( defined( $path ) and length( $path ) );
 			$basepath = $path;
-			@files = @{ $target };
+			@files = @newtarget;
 		} else {
 			#@files = i3_keysort { ( my $version = $_ ) =~ s/^V([\d.])+__.*$/$1/; return( split( /\./, $version ) ); } @{ $target };
 			#my @sortedfiles = sort { ( $a =~ /^V([\d.]+)__/ )[ 0 ] <=> ( $b =~ /^V([\d.]+)__/ )[ 0 ] } @{ $target };
@@ -6408,12 +6624,16 @@ sub main( @ ) { # {{{
 
 	if( defined( $action_init ) and $safetyoff ) {
 		print( "\n=> '--init' specified, ensuring that database `$db` exists ...\n" ) unless( $quiet or $silent );
-		my $dsn = "DBI:mysql:host=$host;port=$port";
+		my $dsn = ( defined( $odbcdsn ) ? $odbcdsn : "DBI:mysql:host=$host;port=$port" );
 		my $dbh;
 		my $error = dbopen( \$dbh, $dsn, $user, $pass, $strict, { RaiseError => 0, PrintError => 0 } );
 		die( $fatal . ' ' . $error . "\n" . ' ' x length( $fatal ) . " Is the database instance running?\n" ) if $error;
 
-		dosql( $dbh, "CREATE DATABASE IF NOT EXISTS `$db`" ) or die( "Failed to create database: " . $dbh -> errstr() . "\n" );
+		if( $syntax eq 'mysql' ) {
+			dosql( $dbh, "CREATE DATABASE IF NOT EXISTS `$db`" ) or die( "Failed to create database: " . $dbh -> errstr() . "\n" );
+		} elsif( $syntax eq 'vertica' ) {
+			dosql( $dbh, "CREATE SCHEMA IF NOT EXISTS \"$db\"" ) or die( "Failed to create database: " . $dbh -> errstr() . "\n" );
+		}
 
 		print( "\n=> Disconnecting from database.\n" ) unless( $quiet or $silent );
 		$dbh -> disconnect;
@@ -6422,53 +6642,72 @@ sub main( @ ) { # {{{
 	# }}}
 
 	#
-	# Open mysql database connection to ensure metadata tables exist # {{{
+	# Open database connection to determine engine type and to ensure metadata tables exist # {{{
 	#
 
 	print( "\n=> Connecting to database `$db` ...\n" ) unless( $quiet or $silent );
-	my $dsn = "DBI:mysql:database=$db;host=$host;port=$port";
+	my $dsn = ( defined( $odbcdsn ) ? $odbcdsn : "DBI:mysql:database=$db;host=$host;port=$port" );
 	my $dbh;
 	my $error = dbopen( \$dbh, $dsn, $user, $pass, $strict, { RaiseError => 0, PrintError => 0 } );
 	die( $fatal . ' ' . $error . "\n" . ' ' x length( $fatal ) . "(Databases will be auto-created on --init when not in dry-run mode)\n" ) if $error;
+	# Apparently '17' (SQL_DBMS_NAME) canonically returns the database
+	# instance vendor...
+	$engine = lc( $dbh -> get_info( 17 ) );
 
 	#
 	# Create {fl,m}yway metadata tables
 	#
 
+	# Under MySQL, the database is implicit and you have to 'USE' a
+	# different database to perform DDL alterations.
+	# Vertica strongly suggests always specifying the database (instance)
+	# and schema (database) when deleting a table... although the (auto-
+	# generated?) documentation also suggests specfying the column also,
+	# which is hopefully simply an oversight...
 	if( $clear ) { # and $safetyoff
 		if( 'procedure' eq $mode ) {
-			dosql( $dbh, "DROP TABLE `$mywayprocsname`" );
+			dosql( $dbh, "DROP TABLE IF EXISTS " . ( ( 'vertica' eq $engine ) ? "\"$db\"." : '' ) . "`$mywayprocsname`" );
 		} else {
-			dosql( $dbh, "DROP TABLE `$flywaytablename`" );
-			dosql( $dbh, "DROP TABLE `$mywayactionsname`" );
-			dosql( $dbh, "DROP TABLE `$mywaytablename`" );
+			dosql( $dbh, "DROP TABLE IF EXISTS " . ( ( 'vertica' eq $engine ) ? "\"$db\"." : '' ) . "`$flywaytablename`" );
+			dosql( $dbh, "DROP TABLE IF EXISTS " . ( ( 'vertica' eq $engine ) ? "\"$db\"." : '' ) . "`$mywayactionsname`" );
+			dosql( $dbh, "DROP TABLE IF EXISTS " . ( ( 'vertica' eq $engine ) ? "\"$db\"." : '' ) . "`$mywaytablename`" );
 		}
 	}
 
 	my @tables;
 	#if( 'procedure' eq $mode ) {
 	#	@tables = (
-	#		  { 'name' => 'myway',  'table' => $mywayprocsname,   'ddl' => $mywayprocsddl,   'action' => "SELECT * FROM $mywayprocsname ORDER BY `started`" }
+	#		  { 'name' => 'myway',  'table' => $mywayprocsname,   'ddl' => $mywayprocsddl,   'action' => "SELECT * FROM `$mywayprocsname` ORDER BY `started`" }
 	#	);
 	#} else {
 	#	@tables = (
-	#		  { 'name' => 'Flyway', 'table' => $flywaytablename,  'ddl' => $flywayddl,       'action' => "SELECT * FROM $flywaytablename ORDER BY `version`" }
-	#		, { 'name' => 'myway',  'table' => $mywaytablename,   'ddl' => $mywayddl,        'action' => "SELECT * FROM $mywaytablename ORDER BY `started`" }
-	#		, { 'name' => 'myway',  'table' => $mywayactionsname, 'ddl' => $mywayactionsddl, 'action' => "SELECT COUNT(*) FROM $mywayactionsname" }
+	#		  { 'name' => 'Flyway', 'table' => $flywaytablename,  'ddl' => $flywayddl,       'action' => "SELECT * FROM `$flywaytablename` ORDER BY `version`" }
+	#		, { 'name' => 'myway',  'table' => $mywaytablename,   'ddl' => $mywayddl,        'action' => "SELECT * FROM `$mywaytablename` ORDER BY `started`" }
+	#		, { 'name' => 'myway',  'table' => $mywayactionsname, 'ddl' => $mywayactionsddl, 'action' => "SELECT COUNT(*) FROM `$mywayactionsname`" }
 	#	);
 	#}
-	@tables = (
-		  { 'name' => 'Flyway', 'table' => $flywaytablename,  'ddl' => $flywayddl,       'action' => "SELECT * FROM $flywaytablename ORDER BY `version` DESC LIMIT 5" }
-		, { 'name' => 'myway',  'table' => $mywaytablename,   'ddl' => $mywayddl,        'action' => "SELECT * FROM $mywaytablename ORDER BY `started` DESC LIMIT 5" }
-		, { 'name' => 'myway',  'table' => $mywayprocsname,   'ddl' => $mywayprocsddl,   'action' => "SELECT * FROM $mywayprocsname ORDER BY `started` DESC LIMIT 5" }
-		, { 'name' => 'myway',  'table' => $mywayactionsname, 'ddl' => $mywayactionsddl, 'action' => "SELECT COUNT(*) FROM $mywayactionsname" }
-	);
+	if( 'vertica' eq $engine ) {
+		@tables = (
+			  { 'name' => 'Flyway', 'table' => $flywaytablename,  'ddl' => $verticaflywayddl,       'action' => "SELECT * FROM `$flywaytablename` ORDER BY `version` DESC LIMIT 5" }
+			, { 'name' => 'myway',  'table' => $mywaytablename,   'ddl' => $verticamywayddl,        'action' => "SELECT * FROM `$mywaytablename` ORDER BY `started` DESC LIMIT 5" }
+			, { 'name' => 'myway',  'table' => $mywayprocsname,   'ddl' => $verticamywayprocsddl,   'action' => "SELECT * FROM `$mywayprocsname` ORDER BY `started` DESC LIMIT 5" }
+			, { 'name' => 'myway',  'table' => $mywayactionsname, 'ddl' => $verticamywayactionsddl, 'action' => "SELECT COUNT(*) FROM `$mywayactionsname`" }
+		);
+	} else {
+		@tables = (
+			  { 'name' => 'Flyway', 'table' => $flywaytablename,  'ddl' => $flywayddl,       'action' => "SELECT * FROM `$flywaytablename` ORDER BY `version` DESC LIMIT 5" }
+			, { 'name' => 'myway',  'table' => $mywaytablename,   'ddl' => $mywayddl,        'action' => "SELECT * FROM `$mywaytablename` ORDER BY `started` DESC LIMIT 5" }
+			, { 'name' => 'myway',  'table' => $mywayprocsname,   'ddl' => $mywayprocsddl,   'action' => "SELECT * FROM `$mywayprocsname` ORDER BY `started` DESC LIMIT 5" }
+			, { 'name' => 'myway',  'table' => $mywayactionsname, 'ddl' => $mywayactionsddl, 'action' => "SELECT COUNT(*) FROM `$mywayactionsname`" }
+		);
+	}
 	foreach my $table ( @tables ) {
 		my $name   = $table -> { 'name'   };
 		my $tname  = $table -> { 'table'  };
 		my $ddl    = $table -> { 'ddl'    };
 		my $action = $table -> { 'action' };
 
+		# $compat can only be set if we're deploying to MySQL...
 		if( $compat and $ddl =~ m/\stimestamp\([0-6]\)\s/i ) {
 			print( "\n*> Removing micro-second precision from definition for <mysql-5.6.4 compatibility ...\n" );
 			$ddl =~ s/(\stimestamp)\([0-6]\)(\s)/$1$2/gi;
@@ -6478,6 +6717,13 @@ sub main( @ ) { # {{{
 			print( "\nS> Would ensure that $name `$tname` table exists.\n" );
 		} else {
 			print( "\n=> Ensuring that $name `$tname` table exists ...\n" ) unless( $quiet or $silent);
+			if( 'vertica' eq $engine ) {
+				if( defined( $db ) ) {
+					$ddl =~ s/__SCHEMA__/$db./g;
+				} else {
+					$ddl =~ s/__SCHEMA__//g;
+				}
+			}
 			dosql( $dbh, $ddl ) or die( "Table creation failed\n" );
 
 			if( $quiet or $silent ) {
@@ -6485,7 +6731,7 @@ sub main( @ ) { # {{{
 					if( defined( $action ) and length( $action ) ) {
 						dosql( $dbh, $action );
 					} else {
-						dosql( $dbh, "DESCRIBE `$tname`" );
+						dosql( $dbh, "DESCRIBE `$tname`" ) unless( 'vertica' eq $engine );
 					}
 				};
 				if( $@ ) {
@@ -6500,7 +6746,7 @@ sub main( @ ) { # {{{
 					if( defined( $action ) and length( $action ) ) {
 						formatastable( $dbh, $action, '   ' );
 					} else {
-						formatastable( $dbh, "DESCRIBE `$tname`", '   ' );
+						formatastable( $dbh, "DESCRIBE `$tname`", '   ' ) unless( 'vertica' eq $engine );
 						#formatastable( $dbh, "SELECT * FROM `$tname`", '   ' );
 					}
 					print( "\n" );
@@ -6514,93 +6760,97 @@ sub main( @ ) { # {{{
 				}
 			}
 
-			# Older myway.pl releases lacked a `sqlstarted`
-			# attribute on metadata tables, and so could not
-			# differentiate between when backups commenced and when
-			# we actually started executing a SQL statement - let's fix this ;)
+			# This all only applies to MySQL...
 			#
-			if( $tname eq $mywaytablename ) {
-				my $st = "DESCRIBE `$tname`";
-				my $sth = executesql( $dbh, undef, $st );
-				if( not( defined( $sth ) and $sth ) ) {
-					warn( "Unable to create statement handle to execute '$st': " . $dbh -> errstr() . "\n" );
-				} else {
-					my $foundexecutionstarted = FALSE;
+			if( defined( $odbcdsn ) or not( 'vertica' eq $engine ) ) {
+				# Older myway.pl releases lacked a `sqlstarted`
+				# attribute on metadata tables, and so could not
+				# differentiate between when backups commenced and when
+				# we actually started executing a SQL statement - let's fix this ;)
+				#
+				if( $tname eq $mywaytablename ) {
+					my $st = "DESCRIBE `$tname`";
+					my $sth = executesql( $dbh, undef, $st );
+					if( not( defined( $sth ) and $sth ) ) {
+						warn( "Unable to create statement handle to execute '$st': " . $dbh -> errstr() . "\n" );
+					} else {
+						my $foundexecutionstarted = FALSE;
 
-					while( my $ref = $sth -> fetchrow_arrayref() ) {
-						my $field = @{ $ref }[ 0 ];
-						my $type = @{ $ref }[ 1 ];
+						while( my $ref = $sth -> fetchrow_arrayref() ) {
+							my $field = @{ $ref }[ 0 ];
+							my $type = @{ $ref }[ 1 ];
 
-						# XXX: Hard-coded table structure :(
-						if( $field eq 'sqlstarted' ) {
-							$foundexecutionstarted = TRUE;
+							# XXX: Hard-coded table structure :(
+							if( $field eq 'sqlstarted' ) {
+								$foundexecutionstarted = TRUE;
+							}
 						}
-					}
 
-					if( not( $foundexecutionstarted ) ) {
-						# XXX: Hard-coded SQL
-						#
-						eval {
-							if ( dosql( $dbh, "ALTER TABLE `$tname` ADD COLUMN `sqlstarted` TIMESTAMP NULL DEFAULT NULL AFTER `started`" ) ) {
-								print( "=> Additional timing column for table `$tname` added\n" );
-							} else {
-								print( "*> Additional timing column for table `$tname` could not be added\n" );
-							}
-						};
-					}
-
-					## XXX: Try to fix-up strict-mode's NO_ZERO_DATE requirement...
-					#eval {
-					#	#if ( dosql( $dbh, "UPDATE IGNORE `$tname` SET `sqlstarted` = NULL WHERE DATE(`sqlstarted`) = DATE('0000-00-00 00:00:00')" ) ) {
-					#	if ( dosql( $dbh, "UPDATE `$tname` SET `sqlstarted` = DATE('1970-01-01 00:00:01') WHERE DATE(`sqlstarted`) = DATE('0000-00-00 00:00:00') OR `sqlstarted` = NULL" ) ) {
-					#		print( "=> Invalid timing values in table `$tname` removed\n" );
-					#	} else {
-					#		print( "*> Invalid timing values in table `$tname` could not be removed\n" );
-					#	}
-					#};
-
-					$sth -> finish();
-				}
-			}
-
-			# If we've dropped into MySQL compatibility mode
-			# previously (as above) then revert the change now...
-			#
-			if( ( $tname eq $mywayactionsname ) and not( $compat ) ) {
-				my $st = "DESCRIBE `$tname`";
-				my $sth = executesql( $dbh, undef, $st );
-				if( not( defined( $sth ) and $sth ) ) {
-					warn( "Unable to create statement handle to execute '$st': " . $dbh -> errstr() . "\n" );
-				} else {
-					my $foundoldstatementtype = FALSE;
-
-					while( my $ref = $sth -> fetchrow_arrayref() ) {
-						my $field = @{ $ref }[ 0 ];
-						my $type = @{ $ref }[ 1 ];
-
-						# XXX: Hard-coded table structure :(
-						if( ( $field eq 'started' ) and ( $type =~ m/timestamp/i ) ) {
-							if( lc( $type ) eq 'timestamp' ) {
-								# XXX: Hard-coded SQL
-								#
-								if ( dosql( $dbh, "ALTER TABLE `$tname` MODIFY `started` TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP" ) ) {
-									print( "=> MySQL compatibility option on table `$tname` removed\n" );
-								} else {
-									print( "*> MySQL compatibility option on table `$tname` could not be removed\n" );
-								}
-							}
-						} elsif( ( $field eq 'statement' ) and ( $type =~ m/varchar/i ) ) {
+						if( not( $foundexecutionstarted ) ) {
 							# XXX: Hard-coded SQL
 							#
-							if ( dosql( $dbh, "ALTER TABLE `$tname` MODIFY `statement` LONGTEXT CHARACTER SET 'UTF8' NOT NULL" ) ) {
-								print( "=> Statement length limitations on table `$tname` removed\n" );
-							} else {
-								print( "*> Statement length limitations on table `$tname` could not be removed\n" );
+							eval {
+								if ( dosql( $dbh, "ALTER TABLE `$tname` ADD COLUMN `sqlstarted` TIMESTAMP NULL DEFAULT NULL AFTER `started`" ) ) {
+									print( "=> Additional timing column for table `$tname` added\n" );
+								} else {
+									print( "*> Additional timing column for table `$tname` could not be added\n" );
+								}
+							};
+						}
+
+						## XXX: Try to fix-up strict-mode's NO_ZERO_DATE requirement...
+						#eval {
+						#	#if ( dosql( $dbh, "UPDATE IGNORE `$tname` SET `sqlstarted` = NULL WHERE DATE(`sqlstarted`) = DATE('0000-00-00 00:00:00')" ) ) {
+						#	if ( dosql( $dbh, "UPDATE `$tname` SET `sqlstarted` = DATE('1970-01-01 00:00:01') WHERE DATE(`sqlstarted`) = DATE('0000-00-00 00:00:00') OR `sqlstarted` = NULL" ) ) {
+						#		print( "=> Invalid timing values in table `$tname` removed\n" );
+						#	} else {
+						#		print( "*> Invalid timing values in table `$tname` could not be removed\n" );
+						#	}
+						#};
+
+						$sth -> finish();
+					}
+				}
+
+				# If we've dropped into MySQL compatibility mode
+				# previously (as above) then revert the change now...
+				#
+				if( ( $tname eq $mywayactionsname ) and not( $compat ) ) {
+					my $st = "DESCRIBE `$tname`";
+					my $sth = executesql( $dbh, undef, $st );
+					if( not( defined( $sth ) and $sth ) ) {
+						warn( "Unable to create statement handle to execute '$st': " . $dbh -> errstr() . "\n" );
+					} else {
+						my $foundoldstatementtype = FALSE;
+
+						while( my $ref = $sth -> fetchrow_arrayref() ) {
+							my $field = @{ $ref }[ 0 ];
+							my $type = @{ $ref }[ 1 ];
+
+							# XXX: Hard-coded table structure :(
+							if( ( $field eq 'started' ) and ( $type =~ m/timestamp/i ) ) {
+								if( lc( $type ) eq 'timestamp' ) {
+									# XXX: Hard-coded SQL
+									#
+									if ( dosql( $dbh, "ALTER TABLE `$tname` MODIFY `started` TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP" ) ) {
+										print( "=> MySQL compatibility option on table `$tname` removed\n" );
+									} else {
+										print( "*> MySQL compatibility option on table `$tname` could not be removed\n" );
+									}
+								}
+							} elsif( ( $field eq 'statement' ) and ( $type =~ m/varchar/i ) ) {
+								# XXX: Hard-coded SQL
+								#
+								if ( dosql( $dbh, "ALTER TABLE `$tname` MODIFY `statement` LONGTEXT CHARACTER SET 'UTF8' NOT NULL" ) ) {
+									print( "=> Statement length limitations on table `$tname` removed\n" );
+								} else {
+									print( "*> Statement length limitations on table `$tname` could not be removed\n" );
+								}
 							}
 						}
-					}
 
-					$sth -> finish();
+						$sth -> finish();
+					}
 				}
 			}
 		}
@@ -6636,6 +6886,7 @@ sub main( @ ) { # {{{
 	$variables -> { 'strict' }    = $strict;
 	$variables -> { 'tmpdir' }    = $tmpdir;
 	$variables -> { 'unsafe' }    = $unsafe;
+	$variables -> { 'engine' }    = $engine;
 
 	my $version = undef;
 
