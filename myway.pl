@@ -2238,6 +2238,7 @@ use constant MARKER   => '`<<VERSION>>';
 # * DBI::Format ( DBI::Shell, Text::Reform, IO::Tee )
 # * File::Touch ()
 # * File::Which ()
+# * Data::GUID (Sub::Exporter, Params::Util, Data::OptList, Sub::Install, Data::UUID) - Only needed for Vertica
 # * match::smart ()
 # * Regexp::Common ()
 # * Sort::Versions ()
@@ -2265,6 +2266,9 @@ use Time::HiRes qw( gettimeofday tv_interval );
 
 eval {
 	use DBD::ODBC;
+	if( ! $@ ) {
+		use Data::GUID;
+	}
 };
 
 use Data::Dumper;
@@ -3568,20 +3572,20 @@ sub dbopen( $$$$;$$ ) { # {{{
 
 	# Ugh, now that we have Vertica support we need to parse certain values
 	# out of the provided DSN :(
-	if( not( defined ( $user ) ) ) {
+	if( not( defined ( $user ) ) or ( '' eq $user ) ) {
 		if( $dsn =~ m/(?:uid|user(?:name)?)=([^;]+)(;|$)/i ) {
 			$user = $1;
 		}
 	}
-	if( not( defined ( $password ) ) ) {
-		if( $dsn =~ m/(?:pass(?:word)?)=([^;]+)(;|$)/i ) {
+	if( not( defined ( $password ) ) or ( '' eq $password ) ) {
+		if( $dsn =~ m/(?:pwd|pass(?:word)?)=([^;]+)(;|$)/i ) {
 			$password = $1;
 		}
 	}
 
 	#disable diagnostics;
 	$$dbh = DBI -> connect( $dsn, $user, $password, $options )
-		or $error = "Cannot create connection to DSN '$dsn': $DBI::errstr";
+		or $error = "Cannot create connection with DSN '$dsn': $DBI::errstr";
 	#enable diagnostics;
 
 	if( defined( $$dbh ) ) {
@@ -4401,15 +4405,16 @@ sub applyschema( $$$$;$ ) { # {{{
 	$tmpdir    = $variables -> { 'tmpdir' }    if( exists( $variables -> { 'tmpdir' } ) );
 	$unsafe    = $variables -> { 'unsafe' }    if( exists( $variables -> { 'unsafe' } ) );
 
+	my( $dsn, $engine );
+	$dsn    = $auth -> { 'dsn' }    if( exists( $variables -> { 'dsn' } ) );
+	$engine = $auth -> { 'engine' } if( exists( $variables -> { 'engine' } ) );
+
 	my( $user, $pass, $host, $port, $db );
 	$user = $auth -> { 'user' }     if( exists( $auth -> { 'user' } ) );
 	$pass = $auth -> { 'password' } if( exists( $auth -> { 'password' } ) );
 	$host = $auth -> { 'host' }     if( exists( $auth -> { 'host' } ) );
 	$port = $auth -> { 'port' }     if( exists( $auth -> { 'port' } ) );
 	$db   = $auth -> { 'database' } if( exists( $auth -> { 'database' } ) );
-
-	my( $engine );
-	$engine = $auth -> { 'engine' } if( exists( $auth -> { 'engine' } ) );
 
 	#
 	# Perform additional validation
@@ -4616,7 +4621,7 @@ sub applyschema( $$$$;$ ) { # {{{
 
 				if( not( defined( $entry -> { 'tokens' } ) ) ) {
 					# FIXME: Filter known edge-cases which the Parser fails to tokenise...
-					if( 'vertica' eq $engine ) {
+					if( 'mysql' eq $engine ) {
 						if( not( $text =~ m/^((LOCK|UNLOCK|SET|CREATE\s+PROCEDURE|GRANT|TRUNCATE)\s+|\s*\/\*\!)/i ) ) {
 							$output -> ( 'Unable to parse ' . $texttype . 'entry "' . $text . '"' );
 							# FIXME: Don't abort simply because we hit something we can't parse...
@@ -4631,7 +4636,7 @@ sub applyschema( $$$$;$ ) { # {{{
 				}
 			}
 
-			if( not( 'vertica' eq $engine ) ) {
+			if( 'mysql' eq $engine ) {
 				if( defined( $entry -> { 'tokens' } -> { 'type' } ) and defined( $entry -> { 'tokens' } -> { 'object' } ) ) {
 					my $type = $entry -> { 'tokens' } -> { 'type' };
 					my $object = $entry -> { 'tokens' } -> { 'object' };
@@ -4707,19 +4712,36 @@ sub applyschema( $$$$;$ ) { # {{{
 	#
 
 	print( "\n=> Connecting to database `$db` ...\n" ) unless( $quiet or $silent );
-	my $dsn = "DBI:mysql:database=$db;host=$host;port=$port";
+	$dsn = "DBI:mysql:database=$db;host=$host;port=$port" unless( defined( $dsn ) );
 	my $dbh;
 	my $error = dbopen( \$dbh, $dsn, $user, $pass, $strict );
 	die( $error ."\n" ) if $error;
 
-	$uuid = getsqlvalue( $dbh, "SELECT UUID()" );
+	if( 'vertica' eq $engine ) {
+		# Vertica has no UUID-generation capability...
+		eval {
+			my $guid = Data::GUID -> new;
+			$uuid = $guid -> as_string;
+		};
+		if( $@ ) {
+			$uuid = getsqlvalue( $dbh, "SELECT HASH( SYSDATE() )" );
+		}
+	} else {
+		$uuid = getsqlvalue( $dbh, "SELECT UUID()" );
+	}
 
 	# This shouldn't have changed before, but it does no harm to check...
 	#
-	$availabledatabases = getsqlvalues( $dbh, "SHOW DATABASES" );
-	die( 'Unable to retrieve list of available databases' . ( defined( $dbh -> errstr() ) ? ': ' . $dbh -> errstr() : '' ) . "\n" ) unless( scalar( $availabledatabases ) );
+	if( 'mysql' eq $engine ) {
+		$availabledatabases = getsqlvalues( $dbh, "SHOW DATABASES" );
+		die( 'Unable to retrieve list of available databases' . ( defined( $dbh -> errstr() ) ? ': ' . $dbh -> errstr() : '' ) . "\n" ) unless( scalar( $availabledatabases ) );
+	}
 
-	$availabletables = getsqlvalues( $dbh, "SHOW TABLES" );
+	if( 'vertica' eq $engine ) {
+		$availabletables = getsqlvalues( $dbh, "SELECT `table_name` FROM `tables` WHERE `table_schema` = '$db'" );
+	} elsif( 'mysql' eq $engine ) {
+		$availabletables = getsqlvalues( $dbh, "SHOW TABLES" );
+	}
 	warn( "Unable to retrieve list of tables for database `$db`" . ( defined( $dbh -> errstr() ) ? ': ' . $dbh -> errstr() : '' ) . "\n" ) unless( scalar( $availabletables ) );
 
 	#
@@ -4757,7 +4779,7 @@ sub applyschema( $$$$;$ ) { # {{{
 					#        versions correctly, and so perform the operation manually ourselves.
 					#        This should at least be made consistent...
 					#
-					my $version = getsqlvalue( $dbh, "SELECT `version` FROM `$flywaytablename`  WHERE `success` = '1' ORDER BY `version` DESC LIMIT 1" );
+					my $version = getsqlvalue( $dbh, "SELECT `version` FROM `$flywaytablename` WHERE `success` = '1' ORDER BY `version` DESC LIMIT 1" );
 					print( "\n*> flyway metadata table `$flywaytablename` is already initialised to version '$version'.\n" );
 					if( $force ) {
 						if( $pretend ) {
@@ -5574,7 +5596,11 @@ SQL
 
 						if( $realsql =~ m/^\s*LOCK\s+TABLES/ ) {
 							$realsql =~ s/;\s*$//;
-							$realsql .= ", $mywayactionsname WRITE";
+							if( 'vertica' eq $engine ) {
+								$realsql .= ", $mywayactionsname";
+							} elsif( 'mysql' eq $engine ) {
+								$realsql .= ", $mywayactionsname WRITE";
+							}
 						}
 
 						# This is a bit of a hack...
@@ -5689,7 +5715,7 @@ INSERT INTO `$flywaytablename` (
 SQL
 				die( "Unable to create tracking statement handle: " . $dbh -> errstr() . "\n" ) unless( defined( $sth ) and $sth );
 				if( $safetyoff ) {
-					dosql( $dbh, "UNLOCK TABLES" );
+					dosql( $dbh, "UNLOCK TABLES" ) unless( 'vertica' eq $engine );
 					executesql( $dbh, $sth, undef,
 						  $versionrank
 						, $installedrank
@@ -5732,7 +5758,7 @@ WHERE `version` = ?
 SQL
 				die( "Unable to create updated tracking statement handle: " . $dbh -> errstr() . "\n" ) unless( defined( $sth ) and $sth );
 				if( $safetyoff ) {
-					dosql( $dbh, "UNLOCK TABLES" );
+					dosql( $dbh, "UNLOCK TABLES" ) unless( 'vertica' eq $engine );
 					executesql( $dbh, $sth, undef,
 						  $versionrank
 						, $installedrank
@@ -5760,7 +5786,7 @@ SQL
 # `finished` and `status` were UPDATEd just prior...
 			die( "Unable to create tracking statement handle: " . $dbh -> errstr() . "\n" ) unless( defined( $sth ) and $sth );
 			if( $safetyoff ) {
-				dosql( $dbh, "UNLOCK TABLES" );
+				dosql( $dbh, "UNLOCK TABLES" ) unless( 'vertica' eq $engine );
 				executesql( $dbh, $sth, undef,
 					  $schmversion
 					, $desc
@@ -6055,7 +6081,7 @@ sub main( @ ) { # {{{
 		$ok = FALSE if( $keepbackups );
 		$ok = FALSE if( $compat );
 		$ok = FALSE if( $relaxed );
-		#$ok = FALSE if( $user );
+		$ok = FALSE if( $user );
 		$ok = FALSE if( $pass );
 		$ok = FALSE if( $host );
 		#$ok = FALSE if( $db );
@@ -6067,12 +6093,14 @@ sub main( @ ) { # {{{
 		#	                              2         3         4         5         6         7         8
 		#	                           7890123456789012345678901234567890123456789012345678901234567890
 		if( $odbcok and ( defined( $odbcdsn ) or ( $syntax eq 'vertica' ) ) ) {
-			print(       "Usage: $myway --dsn \"ODBC DSN\" [--username <user>] [--database <db>] ...\n" );
+			print(       "Usage: $myway --dsn \"ODBC DSN\" [--database <schema>] ...\n" );
 			print( ( " " x $length ) . "<--init [version]|[--migrate|--check] ...\n" );
 			print( ( " " x $length ) . "<--scripts <directory>|--file <schema>> [[:syntax:]]\n" );
 			print( ( " " x $length ) . "[--clear-metadata] [--dry-run] [--force] [--debug] [--verbose]\n" );
 			print( "\n" );
-			print( ( " " x $length ) . "syntax:           --syntax <mysql|vertica>\n" );
+			print( ( " " x $length ) . "syntax:            --syntax <mysql|vertica>\n" );
+			print( "\n" );
+			print( ( " " x $length ) . "ODBC DSN example:  Driver=libverticaodbc.so;Database=db;ServerName=localhost;Port=5433;UserName=x;Password=y\n" );
 			print( "\n" );
 		} elsif( not(defined(  $odbcdsn ) ) ) {
 			print(       "Usage: $myway <--username <user> --password <passwd> --host <node> ...\n" ) if( $odbcok );
@@ -6149,7 +6177,7 @@ sub main( @ ) { # {{{
 			warn( "Cannot specify argument '--keep-backup' with option '--dsn'\n" ) if( $keepbackups );
 			warn( "Cannot specify argument '--mysql-compat' with option '--dsn'\n" ) if( $compat );
 			warn( "Cannot specify argument '--mysql-relaxed' with option '--dsn'\n" ) if( $relaxed );
-			#warn( "Cannot specify argument '--user' with option '--dsn'\n" ) if( defined( $user ) );
+			warn( "Cannot specify argument '--user' with option '--dsn'\n" ) if( defined( $user ) );
 			warn( "Cannot specify argument '--password' with option '--dsn'\n" ) if( defined( $pass ) );
 			warn( "Cannot specify argument '--host' with option '--dsn'\n" ) if( defined( $host ) );
 			#warn( "Cannot specify argument '--database' with option '--dsn'\n" ) if( defined( $db ) );
@@ -6186,6 +6214,11 @@ sub main( @ ) { # {{{
 		warn( "Ignoring --description option '$desc' when invoked with --schemata\n" ) if( defined( $desc ) );
 		warn( "Ignoring --description option '$desc' when invoked in Stored Procedure mode\n" ) if( defined( $mode ) and defined( $desc ) );
 		$desc = undef;
+	}
+
+	if( defined( $odbcdsn ) ) {
+		$user = '';
+		$pass = '';
 	}
 
 	$verbose = 1 if( defined( $warn ) and $warn );
@@ -6624,7 +6657,7 @@ sub main( @ ) { # {{{
 
 	if( defined( $action_init ) and $safetyoff ) {
 		print( "\n=> '--init' specified, ensuring that database `$db` exists ...\n" ) unless( $quiet or $silent );
-		my $dsn = ( defined( $odbcdsn ) ? $odbcdsn : "DBI:mysql:host=$host;port=$port" );
+		my $dsn = ( defined( $odbcdsn ) ? 'DBI:ODBC:' . $odbcdsn : "DBI:mysql:host=$host;port=$port" );
 		my $dbh;
 		my $error = dbopen( \$dbh, $dsn, $user, $pass, $strict, { RaiseError => 0, PrintError => 0 } );
 		die( $fatal . ' ' . $error . "\n" . ' ' x length( $fatal ) . " Is the database instance running?\n" ) if $error;
@@ -6646,13 +6679,20 @@ sub main( @ ) { # {{{
 	#
 
 	print( "\n=> Connecting to database `$db` ...\n" ) unless( $quiet or $silent );
-	my $dsn = ( defined( $odbcdsn ) ? $odbcdsn : "DBI:mysql:database=$db;host=$host;port=$port" );
+	my $dsn = ( defined( $odbcdsn ) ? 'DBI:ODBC:' . $odbcdsn : "DBI:mysql:database=$db;host=$host;port=$port" );
 	my $dbh;
 	my $error = dbopen( \$dbh, $dsn, $user, $pass, $strict, { RaiseError => 0, PrintError => 0 } );
 	die( $fatal . ' ' . $error . "\n" . ' ' x length( $fatal ) . "(Databases will be auto-created on --init when not in dry-run mode)\n" ) if $error;
 	# Apparently '17' (SQL_DBMS_NAME) canonically returns the database
 	# instance vendor...
 	$engine = lc( $dbh -> get_info( 17 ) );
+	if( 'vertica' eq $engine ) {
+		print( "-> Successfully connected to Vertica database instance\n" );
+	} elsif( 'mysql' eq $engine ) {
+		print( "-> Successfully connected to MySQL database instance\n" );
+	} else {
+		die( $fatal . " Unknown database instance '$engine'\n" );
+	}
 
 	#
 	# Create {fl,m}yway metadata tables
@@ -6719,7 +6759,7 @@ sub main( @ ) { # {{{
 			print( "\n=> Ensuring that $name `$tname` table exists ...\n" ) unless( $quiet or $silent);
 			if( 'vertica' eq $engine ) {
 				if( defined( $db ) ) {
-					$ddl =~ s/__SCHEMA__/$db./g;
+					$ddl =~ s/__SCHEMA__/\"$db\"./g;
 				} else {
 					$ddl =~ s/__SCHEMA__//g;
 				}
@@ -6731,7 +6771,7 @@ sub main( @ ) { # {{{
 					if( defined( $action ) and length( $action ) ) {
 						dosql( $dbh, $action );
 					} else {
-						dosql( $dbh, "DESCRIBE `$tname`" ) unless( 'vertica' eq $engine );
+						dosql( $dbh, "DESCRIBE `$tname`" ) if( 'mysql' eq $engine );
 					}
 				};
 				if( $@ ) {
@@ -6746,7 +6786,7 @@ sub main( @ ) { # {{{
 					if( defined( $action ) and length( $action ) ) {
 						formatastable( $dbh, $action, '   ' );
 					} else {
-						formatastable( $dbh, "DESCRIBE `$tname`", '   ' ) unless( 'vertica' eq $engine );
+						formatastable( $dbh, "DESCRIBE `$tname`", '   ' ) if( 'mysql' eq $engine );
 						#formatastable( $dbh, "SELECT * FROM `$tname`", '   ' );
 					}
 					print( "\n" );
@@ -6762,7 +6802,7 @@ sub main( @ ) { # {{{
 
 			# This all only applies to MySQL...
 			#
-			if( defined( $odbcdsn ) or not( 'vertica' eq $engine ) ) {
+			if( 'mysql' eq $engine ) {
 				# Older myway.pl releases lacked a `sqlstarted`
 				# attribute on metadata tables, and so could not
 				# differentiate between when backups commenced and when
@@ -6875,6 +6915,8 @@ sub main( @ ) { # {{{
 	$variables -> { 'clear' }     = $clear;
 	$variables -> { 'compat' }    = $compat;
 	$variables -> { 'desc' }      = $desc;
+	$variables -> { 'dsn' }       = $dsn;
+	$variables -> { 'engine' }    = $engine;
 	$variables -> { 'first' }     =  not( 'procedure' eq $mode );
 	$variables -> { 'force' }     = $force;
 	$variables -> { 'marker' }    = $marker if( $dosub );
@@ -6886,7 +6928,6 @@ sub main( @ ) { # {{{
 	$variables -> { 'strict' }    = $strict;
 	$variables -> { 'tmpdir' }    = $tmpdir;
 	$variables -> { 'unsafe' }    = $unsafe;
-	$variables -> { 'engine' }    = $engine;
 
 	my $version = undef;
 
