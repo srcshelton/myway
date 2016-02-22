@@ -1,0 +1,5 @@
+tools/dbbackup.sh usr/local/sbin
+tools/listschema.sh usr/local/bin
+tools/myway.pl usr/local/bin
+tools/run-dbbackup.sh usr/local/sbin
+tools/runrepl.sh usr/local/sbin

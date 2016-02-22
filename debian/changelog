@@ -1,0 +1,5 @@
+dbtools (1.0.0-1) unstable; urgency=low
+
+  * Database related tools for HoD Platform
+
+ -- Ian Thebridge <ian.thebridge@hp.com>  Mon, 22 Feb 2016 16:14:40 +0000

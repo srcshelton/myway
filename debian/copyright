@@ -1,0 +1,8 @@
+Format: http://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: dbtools
+Source: <url://example.com>
+
+Files: *
+Copyright: 2015 Ian Thebridge <ian.thebridge@hp.com>
+License:
+
