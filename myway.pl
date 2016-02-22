@@ -3586,15 +3586,15 @@ sub dbopen( $$$$;$$ ) { # {{{
 	}
 
 	#disable diagnostics;
-	$$dbh = DBI -> connect( $dsn, $user, $password, $options )
+	${ $dbh } = DBI -> connect( $dsn, $user, $password, $options )
 		or $error = "Cannot create connection with DSN '$dsn': $DBI::errstr";
 	#enable diagnostics;
 
-	if( defined( $$dbh ) ) {
-		$$dbh -> { 'InactiveDestroy' } = 1;
+	if( defined( ${ $dbh } ) ) {
+		${ $dbh } -> { 'InactiveDestroy' } = 1;
 
-		if( $dbh -> { Driver } -> { Name } =~ m/mysql/i ) {
-			my $mode = getsqlvalue( $$dbh, 'SELECT @@SESSION.sql_mode' );
+		if( ${ $dbh } -> { 'Driver' } -> { 'Name' } =~ m/mysql/i ) {
+			my $mode = getsqlvalue( ${ $dbh }, 'SELECT @@SESSION.sql_mode' );
 			pdebug( "Initial sql_mode is '$mode'" );
 
 			if( $strict ) {
@@ -3603,25 +3603,25 @@ sub dbopen( $$$$;$$ ) { # {{{
 				#
 				if( $mode !~ m/^.*,?(((STRICT_ALL_TABLES|STRICT_TRANS_TABLES),.*(STRICT_ALL_TABLES|STRICT_TRANS_TABLES))|TRADITIONAL),?.*$/i ) {
 					$mode .= ( defined( $mode ) and length ( $mode ) ? ',' : '' ) . "TRADITIONAL";
-					dosql( $$dbh, "SET SESSION sql_mode = '$mode'" );
+					dosql( ${ $dbh }, "SET SESSION sql_mode = '$mode'" );
 				}
 
 				# Now that we we have an (expanded) sql_mode set, remove
 				# the problematic NO_ZERO_DATE option...
 				#
-				$mode = getsqlvalue( $$dbh, 'SELECT @@SESSION.sql_mode' );
+				$mode = getsqlvalue( ${ $dbh }, 'SELECT @@SESSION.sql_mode' );
 				( my $newmode = $mode ) =~ s/,?NO_ZERO_DATE,?/,/i;
 				$newmode =~ s/,?TRADITIONAL,?/,/i;
 				$newmode =~ s/^,//;
 				$newmode =~ s/,$//;
-				dosql( $$dbh, "SET SESSION sql_mode = '$newmode'" ) unless( $mode eq $newmode );
+				dosql( ${ $dbh }, "SET SESSION sql_mode = '$newmode'" ) unless( $mode eq $newmode );
 
 				# Also set InnoDB strict mode - which, thankfully, is
 				# somewhat less complex...
 				#
-				$mode = getsqlvalue( $$dbh, 'SELECT @@SESSION.innodb_strict_mode' );
+				$mode = getsqlvalue( ${ $dbh }, 'SELECT @@SESSION.innodb_strict_mode' );
 				if( not( defined( $mode ) ) or ( $mode eq 0 ) ) {
-					dosql( $$dbh, "SET SESSION innodb_strict_mode = ON" );
+					dosql( ${ $dbh }, "SET SESSION innodb_strict_mode = ON" );
 				}
 			} else {
 				# We actually probably do need to deal with this
@@ -3635,16 +3635,16 @@ sub dbopen( $$$$;$$ ) { # {{{
 				#      granularity...
 				#
 				if( $mode =~ m/^.*,?(((STRICT_ALL_TABLES|STRICT_TRANS_TABLES),.*(STRICT_ALL_TABLES|STRICT_TRANS_TABLES))|TRADITIONAL),?.*$/i ) {
-					dosql( $$dbh, "SET SESSION sql_mode = ''" );
+					dosql( ${ $dbh }, "SET SESSION sql_mode = ''" );
 				}
-				$mode = getsqlvalue( $$dbh, 'SELECT @@SESSION.innodb_strict_mode' );
+				$mode = getsqlvalue( ${ $dbh }, 'SELECT @@SESSION.innodb_strict_mode' );
 				if( $mode eq 1 ) {
-					dosql( $$dbh, "SET SESSION innodb_strict_mode = OFF" );
+					dosql( ${ $dbh }, "SET SESSION innodb_strict_mode = OFF" );
 				}
 			}
 
 			if( DEBUG or ( $verbosity > 2 ) ) {
-				my $mode = getsqlvalue( $$dbh, 'SELECT @@SESSION.sql_mode' );
+				my $mode = getsqlvalue( ${ $dbh }, 'SELECT @@SESSION.sql_mode' );
 				pdebug( "Updated sql_mode is '$mode'" );
 			}
 		}
@@ -6510,7 +6510,7 @@ sub main( @ ) { # {{{
 					# Write per-database files to $location/ ...
 					foreach my $database ( @{ $availabledatabases } ) {
 						next if( qr/^$database$/ |M| [ 'information_schema', 'performance_schema' ] );
-						print( "\n*> Backing up database `$database` to '$location/$database.sql' ...\n" );
+						print( "\n*> Backing up database `$database` to '" . ( length( $location ) ? "$location/" : '' ) . "$database.sql' ...\n" );
 						my $databasesuccess = dbdump( $auth, $database, $location, "$database.sql", $compress, $small, $skipmeta );
 						$success += $databasesuccess;
 						print( "!> Database `$database` failed to backup: $databasesuccess\n" ) if( not( $databasesuccess ) );
