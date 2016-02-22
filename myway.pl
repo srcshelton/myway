@@ -3892,7 +3892,8 @@ sub dbdump( $;$$$$$$ ) { # {{{
 	if( defined( $transactional ) and $transactional ) {
 		$optdump = '--skip-opt --add-drop-database --add-drop-table'
 			 . ' --add-locks --allow-keywords --comments'
-			 . ' --complete-insert --create-options'
+			 . ' --complete-insert --skip-extended-insert'
+			 . ' --create-options'
 			 . ' --disable-keys --dump-date --events --flush-logs'
 			 . ' --flush-privileges --hex-blob'
 			 . ' --include-master-host-port --no-autocommit'
@@ -3903,7 +3904,8 @@ sub dbdump( $;$$$$$$ ) { # {{{
 	} else {
 		$optdump = '--skip-opt --add-drop-database --add-drop-table'
 			 . ' --add-locks --allow-keywords --comments'
-			 . ' --complete-insert --create-options'
+			 . ' --complete-insert --skip-extended-insert'
+			 . ' --create-options'
 			 . ' --disable-keys --dump-date --events --flush-logs'
 			 . ' --flush-privileges --hex-blob'
 			 . ' --include-master-host-port --lock-all-tables'
