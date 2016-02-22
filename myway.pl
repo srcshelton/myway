@@ -25,6 +25,8 @@ if 0;
 
 # TODO: # {{{
 #
+# * In a Galera cluster, drop out of cluster prior to backup?
+#
 # * fork()/exec() pv when performing restorations, and check for failure.  If
 #   so, show the last error from 'SHOW ENGINE INNODB STATUS';
 #
@@ -3774,7 +3776,11 @@ sub dbdump( $;$$$$$ ) { # {{{
 		$filename = $auth -> { 'database' } . ".sql" unless( defined( $filename ) and length( $filename ) );
 
 		if( not( defined( $objects ) and length( $objects ) ) ) {
-			$opttab = '';
+			my $db = $auth -> { 'database' };
+			$opttab = "--ignore-table=$db.$flywaytablename " .
+				  "--ignore-table=$db.$mywaytablename " .
+				  "--ignore-table=$db.$mywayactionsname " .
+				  "--ignore-table=$db.$mywayprocsname";
 
 		} elsif( ( '' eq ref( $objects ) ) or ( 'SCALAR' eq ref( $objects ) ) ) {
 			$opttab = $objects;
@@ -3810,15 +3816,45 @@ sub dbdump( $;$$$$$ ) { # {{{
 		$opttab = '';
 
 		if( not( defined( $objects ) and length( $objects ) ) ) {
+			print( "\n=> Checking for databases on '$host' ...\n" );
+			my $dsn = "DBI:mysql:host=$host;port=$port";
+			my $dbh;
+			my $error = dbopen( \$dbh, $dsn, $user, $password, FALSE );
+			die( $error . "\n" ) if $error;
+
+			my $databases = getsqlvalues( $dbh, 'SHOW DATABASES' );
+
+			print( "\n=> Complete - disconnecting from database ...\n" ) unless( $reduceoutput );
+			$dbh -> disconnect;
+
 			$optdb = "--all-databases";
+			for my $db ( @{ $databases } ) {
+				next if( $db eq 'information_schema' );
+				next if( $db eq 'mysql' );
+				next if( $db eq 'performance_schema' );
+				$opttab .= "--ignore-table=$db.$flywaytablename " .
+					   "--ignore-table=$db.$mywaytablename " .
+					   "--ignore-table=$db.$mywayactionsname " .
+					   "--ignore-table=$db.$mywayprocsname";
+			}
 
 		} elsif( ( '' eq ref( $objects ) ) or ( 'SCALAR' eq ref( $objects ) ) ) {
-			$optdb = "--databases $objects"
+			$optdb = "--databases $objects";
+			my $db = $objects;
+			$opttab = "--ignore-table=$db.$flywaytablename " .
+				  "--ignore-table=$db.$mywaytablename " .
+				  "--ignore-table=$db.$mywayactionsname " .
+				  "--ignore-table=$db.$mywayprocsname";
 
 		} elsif( 'ARRAY' eq ref( $objects ) ) {
 			$optdb = "--databases";
 			foreach my $item ( @{ $objects } ) {
-				$optdb .= " $item"
+				$optdb .= " $item";
+				my $db = $item;
+				$opttab .= "--ignore-table=$db.$flywaytablename " .
+					   "--ignore-table=$db.$mywaytablename " .
+					   "--ignore-table=$db.$mywayactionsname " .
+					   "--ignore-table=$db.$mywayprocsname";
 			}
 
 		} elsif( 'HASH' eq ref( $objects ) ) {
