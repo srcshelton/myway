@@ -2306,7 +2306,7 @@ sub processline( $$;$$ );
 sub processfile( $$;$$$ );
 sub dbopen( $$$$;$$ );
 sub dbclose( ;$$ );
-sub dbdump( $;$$$$$$ );
+sub dbdump( $;$$$$ );
 sub dbrestore( $$ );
 sub dosql( $$ );
 sub preparesql( $$ );
@@ -3670,8 +3670,8 @@ sub dbclose( ;$$ ) { # {{{
 	return( TRUE );
 } # dbclose # }}}
 
-sub dbdump( $;$$$$$$ ) { # {{{
-	my( $auth, $objects, $destination, $filename, $compress, $transactional, $skipmeta ) = @_;
+sub dbdump( $;$$$$ ) { # {{{
+	my( $auth, $objects, $destination, $filename, $variables ) = @_;
 
 	# N.B.: If per-table or per-database output is required, then call
 	#       dbdump() multiple times with different $objects and
@@ -3685,6 +3685,22 @@ sub dbdump( $;$$$$$$ ) { # {{{
 	my $user =     $auth -> { 'user' };
 	my $password = $auth -> { 'password' };
 	my $host =     $auth -> { 'host' };
+
+	my( $compress, $transactional, $skipmeta, $extinsert );
+	if( defined( $variables ) ) {
+		return( FALSE ) unless( ref( $variables ) eq 'HASH' );
+
+		#
+		# Retrieve variable and settings values # {{{
+		#
+
+		$compress      = $variables -> { 'compress' }      if( exists( $variables -> { 'compress' } ) );
+		$transactional = $variables -> { 'transactional' } if( exists( $variables -> { 'transactional' } ) );
+		$skipmeta      = $variables -> { 'skipmeta' }      if( exists( $variables -> { 'skipmeta' } ) );
+		$extinsert     = $variables -> { 'extinsert' }     if( exists( $variables -> { 'extinsert' } ) );
+
+		# }}}
+	}
 
 	my $port;
 	$port = $auth -> { 'port' } if( defined( $auth -> { 'port' } ) and $auth -> { 'port' } );
@@ -3892,8 +3908,7 @@ sub dbdump( $;$$$$$$ ) { # {{{
 	if( defined( $transactional ) and $transactional ) {
 		$optdump = '--skip-opt --add-drop-database --add-drop-table'
 			 . ' --add-locks --allow-keywords --comments'
-			 . ' --complete-insert --skip-extended-insert'
-			 . ' --create-options'
+			 . ' --complete-insert --create-options'
 			 . ' --disable-keys --dump-date --events --flush-logs'
 			 . ' --flush-privileges --hex-blob'
 			 . ' --include-master-host-port --no-autocommit'
@@ -3904,8 +3919,7 @@ sub dbdump( $;$$$$$$ ) { # {{{
 	} else {
 		$optdump = '--skip-opt --add-drop-database --add-drop-table'
 			 . ' --add-locks --allow-keywords --comments'
-			 . ' --complete-insert --skip-extended-insert'
-			 . ' --create-options'
+			 . ' --complete-insert --create-options'
 			 . ' --disable-keys --dump-date --events --flush-logs'
 			 . ' --flush-privileges --hex-blob'
 			 . ' --include-master-host-port --lock-all-tables'
@@ -3953,6 +3967,11 @@ sub dbdump( $;$$$$$$ ) { # {{{
 				}
 			}
 		}
+	}
+	if( defined( $extinsert ) and $extinsert ) {
+		$optdump .= ' --extended-insert';
+	} else {
+		$optdump .= ' --skip-extended-insert';
 	}
 	if( defined( $verbosity ) and ( $verbosity > 0 ) ) {
 		$optdump .= ' --verbose';
@@ -4429,7 +4448,9 @@ sub applyschema( $$$$;$ ) { # {{{
 	$action_migrate = $actions -> { 'migrate' } if( exists( $actions -> { 'migrate' } ) );
 	$action_check   = $actions -> { 'check' }   if( exists( $actions -> { 'check' } ) );
 
-	my( $tmpdir, $mode, $marker, $first, $backupdir, $safetyoff, $strict, $skipmeta, $unsafe, $desc, $pretend, $quiet, $silent, $clear, $compat, $force );
+	my( $tmpdir, $mode, $marker, $first, $backupdir, $safetyoff, $strict );
+	my( $skipmeta, $extinsert, $unsafe, $desc, $pretend, $quiet, $silent );
+	my( $clear, $compat, $force );
 	$backupdir = $variables -> { 'backupdir' } if( exists( $variables -> { 'backupdir' } ) );
 	$clear     = $variables -> { 'clear' }     if( exists( $variables -> { 'clear' } ) );
 	$compat    = $variables -> { 'compat' }    if( exists( $variables -> { 'compat' } ) );
@@ -4443,6 +4464,7 @@ sub applyschema( $$$$;$ ) { # {{{
 	$safetyoff = $variables -> { 'safetyoff' } if( exists( $variables -> { 'safetyoff' } ) );
 	$silent    = $variables -> { 'silent' }    if( exists( $variables -> { 'silent' } ) );
 	$skipmeta  = $variables -> { 'skipmeta' }  if( exists( $variables -> { 'skipmeta' } ) );
+	$extinsert = $variables -> { 'extinsert' } if( exists( $variables -> { 'extinsert' } ) );
 	$strict    = $variables -> { 'strict' }    if( exists( $variables -> { 'strict' } ) );
 	$tmpdir    = $variables -> { 'tmpdir' }    if( exists( $variables -> { 'tmpdir' } ) );
 	$unsafe    = $variables -> { 'unsafe' }    if( exists( $variables -> { 'unsafe' } ) );
@@ -5130,7 +5152,11 @@ SQL
 					, 'host'	=> $host
 					, 'database'	=> $systemdb
 				};
-				dbdump( $auth, \@backuptables, $tmpdir, "mysql.userpriv.$uuid.sql", $skipmeta ) or die( "Database backup failed - aborting\n" );
+				my $options = {
+					  'skipmeta'	=> $skipmeta
+					, 'extinsert'	=> $extinsert
+				};
+				dbdump( $auth, \@backuptables, $tmpdir, "mysql.userpriv.$uuid.sql", $options ) or die( "Database backup failed - aborting\n" );
 
 				print( "\n=> MySQL table backups completed\n" );
 			}
@@ -5156,7 +5182,11 @@ SQL
 							, 'host'	=> $host
 							, 'database'	=> $db
 						};
-						dbdump( $auth, $table, $tmpdir, "$db.$table.$uuid.sql", $skipmeta ) or die( "Database backup failed - aborting\n" );
+						my $options = {
+							  'skipmeta'	=> $skipmeta
+							, 'extinsert'	=> $extinsert
+						};
+						dbdump( $auth, $table, $tmpdir, "$db.$table.$uuid.sql", $options ) or die( "Database backup failed - aborting\n" );
 
 						print( "\n=> Backup of  `$db`.`$table` completed with UUID '$uuid'\n" );
 					}
@@ -5866,7 +5896,7 @@ sub main( @ ) { # {{{
 	my( $help, $desc, @paths, $file, $unsafe, $keepbackups );
 	my( $compat, $relaxed, $strict );
 	my( $lock, $keeplock );
-	my( $force, $clear, $compress, $small, $split, $skipmeta );
+	my( $force, $clear, $compress, $small, $split, $skipmeta, $extinsert );
 	my( $syntax, $odbcdsn, $user, $pass, $host, $db, $vschm );
 	my( $pretend, $safetyoff, $debug, $silent, $quiet, $notice, $verbose, $warn );
 	my $ok = TRUE;
@@ -5889,6 +5919,7 @@ sub main( @ ) { # {{{
 	,   'compress:s'				=> \$compress
 	,   'split|separate-files!'			=> \$split
 	,   'skip-metadata!'				=> \$skipmeta
+	,   'extended-insert!'				=> \$extinsert
 
 	, 'r|restore=s'					=> \$action_restore
 	, 'i|init:s'					=> \$action_init
@@ -5992,6 +6023,7 @@ sub main( @ ) { # {{{
 			$ok = FALSE if( defined( $small ) );
 			$ok = FALSE if( defined( $split ) );
 			$ok = FALSE if( defined( $skipmeta ) );
+			$ok = FALSE if( defined( $extinsert ) );
 			# TODO: Support restoring Stored Procedures only...
 			$ok = FALSE if( 'procedure' eq $mode );
 			$ok = FALSE if( defined( $pretend ) );
@@ -6004,6 +6036,7 @@ sub main( @ ) { # {{{
 			$ok = FALSE if( defined( $small ) );
 			$ok = FALSE if( defined( $split ) );
 			$ok = FALSE if( defined( $skipmeta ) );
+			$ok = FALSE if( defined( $extinsert ) );
 #			$ok = FALSE if( defined( $marker ) and not( defined( $dosub ) ) );
 			$ok = FALSE if( defined( $dosub ) and not( 'procedure' eq $mode ) );
 			if( not( defined( $action_init ) ) ) {
@@ -6075,6 +6108,11 @@ sub main( @ ) { # {{{
 	} else {
 		$skipmeta = FALSE;
 	}
+	if( defined( $extinsert ) and $extinsert ) {
+		$extinsert = TRUE;
+	} else {
+		$extinsert = FALSE;
+	}
 	if( defined( $unsafe ) and $unsafe ) {
 		$unsafe = TRUE;
 	} else {
@@ -6125,6 +6163,7 @@ sub main( @ ) { # {{{
 		$ok = FALSE if( $compress );
 		$ok = FALSE if( $split );
 		$ok = FALSE if( $skipmeta );
+		$ok = FALSE if( $extinsert );
 		$ok = FALSE if( $action_restore );
 		$ok = FALSE if( $dosub );
 		$ok = FALSE if( $marker );
@@ -6165,7 +6204,7 @@ sub main( @ ) { # {{{
 			print( "\n" );
 			print( ( " " x $length ) . "backup options:   [--compress [:scheme:]] [--small-dataset]\n" );
 			print( ( " " x $length ) . "                  [--lock [--keep-lock]] [--separate-files]\n" );
-			print( ( " " x $length ) . "                  [--skip-metadata]\n" );
+			print( ( " " x $length ) . "                  [--skip-metadata] [--extended-insert]\n" );
 			print( ( " " x $length ) . "scheme:           <gzip|bzip2|xz|lzma>\n" );
 			print( "\n" );
 			print( ( " " x $length ) . "mode:              --mode <schema|procedure>\n" );
@@ -6207,6 +6246,7 @@ sub main( @ ) { # {{{
 		warn( "Cannot specify argument '--lock' or '--keep-lock' without option '--backup'\n" ) if( ( $lock or $keeplock ) and not( defined( $action_backup ) ) );
 		warn( "Cannot specify argument '--separate-files' without option '--backup'\n" ) if( $split and not( defined( $action_backup ) ) );
 		warn( "Cannot specify argument '--skip-metadata' without option '--backup'\n" ) if( $skipmeta and not( defined( $action_backup ) ) );
+		warn( "Cannot specify argument '--extended-insert' without option '--backup'\n" ) if( $extinsert and not( defined( $action_backup ) ) );
 		warn( "Cannot specify argument '--keep-lock' without option '--lock'\n" ) if( $keeplock and not( $lock ) );
 		warn( "Cannot specify argument '--clear-metadata' without option '--force'\n" ) if( $clear and not( $force ) );
 		warn( "Cannot specify argument '--lock' with option '--database' (locks are global)\n" ) if( $lock and defined( $db ) );
@@ -6223,6 +6263,7 @@ sub main( @ ) { # {{{
 			warn( "Cannot specify argument '--compress' with option '--dsn'\n" ) if( defined( $compress ) );
 			warn( "Cannot specify argument '--separate-files' with option '--dsn'\n" ) if( $split );
 			warn( "Cannot specify argument '--skip-metadata' with option '--dsn'\n" ) if( $skipmeta );
+			warn( "Cannot specify argument '--extended-insert' with option '--dsn'\n" ) if( $extinsert );
 			warn( "Cannot specify argument '--restore' with option '--dsn'\n" ) if( defined( $action_restore ) );
 			warn( "Cannot specify argument '--mode' with option '--dsn'\n" ) if( not( $mode eq 'schema' ) );
 			warn( "Cannot specify argument '--substitute' with option '--dsn'\n" ) if( $dosub );
@@ -6485,18 +6526,24 @@ sub main( @ ) { # {{{
 		#
 		my $success;
 		#if( defined( $location ) ) {
+			my $options = {
+				  'compress'	=> $compress
+				, 'small'	=> $small
+				, 'skipmeta'	=> $skipmeta
+				, 'extinsert'	=> $extinsert
+			};
 			if( defined( $db ) and length( $db ) ) {
 				if( not( $split ) or not( $availabletables and scalar( @{ $availabletables } ) ) ) {
 					if( not( $availabletables and scalar( @{ $availabletables } ) ) ) {
 						print( "!> Unable to retrieve list of tables for database `$db`, backing up all tables to '$location' ...\n" );
 					}
 					# $location is a file-name ...
-					$success = dbdump( $auth, undef, undef, $location, $compress, $small, $skipmeta );
+					$success = dbdump( $auth, undef, undef, $location, $options );
 				} else {
 					# Write per-table files to $location/ ...
 					foreach my $table ( @{ $availabletables } ) {
 						print( "*> Backing up table `$db`.`$table` to '$location/$db.$table.sql' ...\n" );
-						my $tablesuccess = dbdump( $auth, $table, $location, "$db.$table.sql", $compress, $small, $skipmeta );
+						my $tablesuccess = dbdump( $auth, $table, $location, "$db.$table.sql", $options );
 						$success += $tablesuccess;
 						print( "!> Table `$table` failed to backup: $tablesuccess\n" ) if( not( $tablesuccess ) );
 					}
@@ -6507,20 +6554,20 @@ sub main( @ ) { # {{{
 						print( "!> Unable to retrieve list of databases for instance, backing up all databases to single file\n" );
 					}
 					# $location is a directory ...
-					$success = dbdump( $auth, undef, $location, undef, $compress, $small, $skipmeta );
+					$success = dbdump( $auth, undef, $location, undef, $options );
 				} else {
 					# Write per-database files to $location/ ...
 					foreach my $database ( @{ $availabledatabases } ) {
 						next if( qr/^$database$/ |M| [ 'information_schema', 'performance_schema' ] );
 						print( "\n*> Backing up database `$database` to '" . ( length( $location ) ? "$location/" : '' ) . "$database.sql' ...\n" );
-						my $databasesuccess = dbdump( $auth, $database, $location, "$database.sql", $compress, $small, $skipmeta );
+						my $databasesuccess = dbdump( $auth, $database, $location, "$database.sql", $options );
 						$success += $databasesuccess;
 						print( "!> Database `$database` failed to backup: $databasesuccess\n" ) if( not( $databasesuccess ) );
 					}
 				}
 			}
 		#} else {
-		#	$success = dbdump( $auth, undef, undef, undef, $compress, $small, $skipmeta );
+		#	$success = dbdump( $auth, undef, undef, undef, $options );
 		#}
 
 		if( $lock and not( $keeplock ) ) {
@@ -6980,6 +7027,7 @@ sub main( @ ) { # {{{
 	$variables -> { 'safetyoff' } = $safetyoff;
 	$variables -> { 'silent' }    = $silent;
 	$variables -> { 'skipmeta' }  = $skipmeta;
+	$variables -> { 'extinsert' } = $extinsert;
 	$variables -> { 'strict' }    = $strict;
 	$variables -> { 'tmpdir' }    = $tmpdir;
 	$variables -> { 'unsafe' }    = $unsafe;
