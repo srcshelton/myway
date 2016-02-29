@@ -2212,6 +2212,8 @@ use 5.014; # ... so that push/pop/etc work on scalars (experimental).
 use strict;
 use warnings;
 
+use re '/a';
+
 no if ( $] >= 5.02 ), warnings => 'experimental::autoderef';
 # ... because we should be able to push and splice via references, noting that
 # this warning doesn't exist on earlier perl versions and so can't be
@@ -2831,7 +2833,7 @@ sub processcomments( $$$;$ ) { # {{{
 				# semi-colon (but also ensure that Hint-like
 				# comments do always have the correct
 				# terminator)...
-				#$match .= DEFDELIM if( $match =~ m:^/\*![0-9]{5} (.+) \*/$: );
+				#$match .= DEFDELIM if( $match =~ m:^/\*!\d{5} (.+) \*/$: );
 				# This should no longer happen, as hints don't
 				# get passed to this code-path.
 
@@ -3080,11 +3082,11 @@ sub processline( $$;$$ ) { # {{{
 	# comment - however, it transpires that hints can correctly appear
 	# within a statement also, so we'll just have to return any hint-like
 	# data as-is.  Hopefully this will be safe...
-	#if( $line =~ m#(^|\s+)/\*![0-9]{5} .+ \*/(\s+|;\s*$)# ) {
+	#if( $line =~ m#(^|\s+)/\*!\d{5} .+ \*/(\s+|;\s*$)# ) {
 	# Be less specific here (especially since we don't yet know what the
 	# delimiter will be without shifting the code below around), at the
 	# potential risk of not identifying especially unusual comments...
-	if( $line =~ m#(^|\s+)/\*![0-9]{5} .+ \*/# ) {
+	if( $line =~ m#(^|\s+)/\*!\d{5} .+ \*/# ) {
 		pdebug( "  * Not processing text with hint '$line' for comments ..." );
 	} else {
 		pdebug( "  * Start processing text '$line' ..." );
@@ -4470,8 +4472,8 @@ sub applyschema( $$$$;$ ) { # {{{
 	$unsafe    = $variables -> { 'unsafe' }    if( exists( $variables -> { 'unsafe' } ) );
 
 	my( $dsn, $engine );
-	$dsn    = $auth -> { 'dsn' }    if( exists( $variables -> { 'dsn' } ) );
-	$engine = $auth -> { 'engine' } if( exists( $variables -> { 'engine' } ) );
+	$dsn    = $variables -> { 'dsn' }    if( exists( $variables -> { 'dsn' } ) );
+	$engine = $variables -> { 'engine' } if( exists( $variables -> { 'engine' } ) );
 
 	my( $user, $pass, $host, $port, $db );
 	$user = $auth -> { 'user' }     if( exists( $auth -> { 'user' } ) );
@@ -4573,10 +4575,12 @@ sub applyschema( $$$$;$ ) { # {{{
 								if( $line =~ m/Target\s+version:\s+([^\s]+)\s*/i ) {
 									$procedureversion = "_v${1}` ";
 									$procedureversion =~ s/\./_/g;
-									if( $pretend ) {
-										print( "*> Would adjust Stored Procedure names with version string '$procedureversion' from metadata\n" );
-									} else {
-										print( "*> Adjusting Stored Procedure names with version string '$procedureversion' from metadata\n" ) unless( $quiet or $silent );
+									if( $first ) {
+										if( $pretend ) {
+											print( "*> Would adjust Stored Procedure names with version string '$procedureversion' from metadata\n" );
+										} else {
+											print( "*> Adjusting Stored Procedure names with version string '$procedureversion' from metadata\n" ) unless( $quiet or $silent );
+										}
 									}
 								}
 							}
@@ -4584,13 +4588,13 @@ sub applyschema( $$$$;$ ) { # {{{
 					}
 				} elsif( $okay ) {
 					$okay = FALSE;
-					warn( "!> Metadata contains non-comment code which will be executed for each file\n" );
+					warn( "!> Metadata contains non-comment code which will be executed once for every specified file\n" );
 				}
 			}
 		}
 
 		if( not( defined( $procedureversion ) and length( $procedureversion ) ) and defined( $marker ) and length( $marker ) ) {
-			$procedureversion = $1 if( dirname( $file ) =~ m/^(?:.*?)(_v\d+_\d+)$/ );
+			$procedureversion = $1 if( dirname( $file ) =~ m/^(?:.*?)(_v\d+_\d+(_\d+)?)$/ );
 			if( defined( $procedureversion ) ) {
 				$procedureversion .= '` ';
 				if( $pretend ) {
@@ -4609,6 +4613,12 @@ sub applyschema( $$$$;$ ) { # {{{
 					}
 				}
 			}
+		}
+		if( $procedureversion =~ m/_v(\d+_\d+)_\d+/ ) {
+			( my $version = $1 ) =~ s/_/./g;
+			$procedureversion =~ m/_v\d+_\d+_(\d+)/;
+			my $hotfix = $1;
+			warn( "!> Metadata contains hotfix version $hotfix to base version $version\n" ) if( $first );
 		}
 
 	}
@@ -4670,11 +4680,11 @@ sub applyschema( $$$$;$ ) { # {{{
 				# a semantic difference here.  At the same time, it is still valid (although unlikely to be be what
 				# was intended) to specify an index name (only) and so we can only issue a warning when this occurs.
 				if( $text =~ m/\sADD\s+(?:CONSTRAINT\s+)?FOREIGN\s+KEY\s*([^(][^()`,\s]+`?)[()`,\s]/i ) {
-					pwarn( "index_name " . ( defined( $1 ) ? $1 : '' ) . " specified in place of CONSTRAINT symbol - this is likely a bug:\n\n$text\n", 1 );
+					pwarn( "index_name " . ( defined( $1 ) ? $1 : '' ) . " specified in place of CONSTRAINT - this is likely a bug:\n\n$text\n", 1 );
 				}
 
-				if( ( $text =~ m/[`' (]([^`' (]+_ibfk_[0-9]+)[) '`]/ ) and not( $text =~ m/DROP\s+FOREIGN\s+KEY\s+`[^`]+_ibfk_[0-9]+`/i ) ) {
-					pwarn( "Auto-generated constraint name `$1` used as deterministic CONSTRAINT symbol - this usage is deprecated:\n\n$text\n", 1 );
+				if( ( $text =~ m/[`' (]([^`' (]+_ibfk_\d+)[) '`]/ ) and not( $text =~ m/DROP\s+FOREIGN\s+KEY\s+`[^`]+_ibfk_\d+`/i ) ) {
+					pwarn( "Auto-generated constraint name `$1` used as deterministic CONSTRAINT - this usage is deprecated:\n\n$text\n", 1 );
 				}
 
 				# Ensure that constraints are explicitly named, so that we can deterministically drop them later...
@@ -4760,7 +4770,7 @@ sub applyschema( $$$$;$ ) { # {{{
 			if( defined( $verbosity ) and $verbosity > 0 ) {
 				die( "SQL parsing failed\n" );
 			} else {
-				die( "SQL parsing failed - please re-execute with the '--warn' option to display these issues\n" );
+				die( "SQL parsing failed - please re-execute with the '--warn' option to display discovered issues\n" );
 			}
 		}
 	}
@@ -5019,6 +5029,7 @@ SQL
 						warn( "!> Schema version '$schmversion' has already been applied to this database - forcibly re-applying ...\n" );
 					} else {
 						warn( "!> Schema version '$schmversion' has already been applied to this database - skipping ...\n\n" ) unless( $quiet or $silent );
+						dbclose( $dbh );
 						return( TRUE );
 					}
 				}
@@ -5281,11 +5292,14 @@ SQL
 
 							my $tablename = $flywaytablename;
 							my $statuscolumn = 'success';
-							$status = "TRUE";
+							$status = '1';
 							if( 'procedure' eq $mode ) {
 								$tablename = $mywayprocsname;
 								$statuscolumn = 'status';
-								$status = "'$status'";
+								# For this to work, we /have/ to assume that filenames are consistent and
+								# that they are always named '<function_name>.sql'...
+								#
+								$status = "'$status' AND filename = '$schmfile'";
 							}
 
 							if( not( defined( $schmtarget ) and length( $schmtarget ) ) ) {
@@ -5301,14 +5315,21 @@ SQL
 
 							} else {
 								# N.B. Logic change - previously, we were simply checking that the target version
-								#      hasn't been applied to the database.  Now, we're checking that nothing
+								#      hadn't been applied to the database.  Now, we're checking that nothing
 								#      newer than the target has been applied either.
 
 								# We could sort in the database here, but I'm not sure "ORDER BY" would cope with the
-								# various versions we might be trying to throw at it...
+								# various variations we might be trying to throw at it...
 								#
 								my $installedversions = getsqlvalues( $dbh, "SELECT DISTINCT(`version`) FROM `$tablename` WHERE `$statuscolumn` = $status" );
-								die( 'Unable to retrieve list of installed schema versions' . ( defined( $dbh -> errstr() ) ? ': ' . $dbh -> errstr() : '' ) . "\n" ) unless( scalar( $installedversions ) );
+								die( 'Unable to retrieve list of installed ' . ( 'procedure' eq $mode  ? 'stored procedures' : 'schema versions' ) . ( defined( $dbh -> errstr() ) ? ': ' . $dbh -> errstr() : '' ) . "\n" ) unless( scalar( $installedversions ) );
+
+								my( $codeversion, $changeversion, $stepversion, $hotfixversion );
+								if( 'procedure' eq $mode ) {
+									( $codeversion, $changeversion, $hotfixversion ) = ( $schmtarget =~ m/^(\d+)\.(\d+)(?:\.(\d+))?$/ );
+								} else {
+									( $codeversion, $changeversion, $stepversion, $hotfixversion ) = ( $schmfile =~ m/^V([[:xdigit:]]+)\.(\d+)\.(\d+)\.(\d+)__/ );
+								}
 
 								my $okay = TRUE;
 								my $fresh = TRUE;
@@ -5329,9 +5350,10 @@ SQL
 											}
 										} else {
 											if( $force or ( 'procedure' eq $mode ) ) {
-												warn( "!> " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " target version '$schmtarget' has already been applied to this database - forcibly applying ...\n" );
+												warn( "!> " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " target version '$schmtarget' has already been applied to this database - forcibly re-applying ...\n" );
 											} else {
 												warn( "!> Schema target version '$schmtarget' has already been applied to this database - skipping ...\n" ) unless( $quiet or $silent );
+												dbclose( $dbh );
 												return( TRUE );
 											}
 										}
@@ -5340,43 +5362,82 @@ SQL
 									}
 								}
 
-								my( $codeversion, $changeversion, $stepversion, $hotfixversion ) = ( $schmfile =~ m/^V([[:xdigit:]]+)\.([0-9]+)\.([0-9]+)\.([0-9]+)__/ );
+								# We only reach here if the file-version is new, or if
+								# we're forcing re-installation.
+								# XXX: ... or if we're in dry-run mode(?)
 
-								my @sortedversions = sort { versioncmp( $a, $b ) } ( @{ $installedversions }, $schmtarget );
+								my @sortedversions = sort { versioncmp( $a, $b ) } ( @{ $installedversions } );
 								my $latest = pop( @sortedversions );
-								if( not( $latest eq $schmtarget ) ) {
-									if( not( 'procedure' eq $mode ) and defined( $hotfixversion ) and not( $hotfixversion =~ m/0+/ ) ) {
-										if( $pretend ) {
-											warn( "!> Hot-fix Schema version '$schmtarget' would be applied onto existing Schema version '$latest' ...\n" );
+								@sortedversions = sort { versioncmp( $a, $b ) } ( @sortedversions, $schmtarget );
+								my $target = pop( @sortedversions );
+
+								# The logic here is slightly non-obvious:
+								#  $latest contains the highest version present
+								#  and marked as successfully installed;
+								#  $target will be equal to $latest if the file
+								#  version is already installed, or will be
+								#  equal to the fil version if this is new.
+								# Therefore, if the (inverse) condition below
+								# evaluates to true then we've moved on.
+								# $latest is used purely to track the installed
+								# version.
+
+								if( defined( $latest ) and defined( $target ) and not( $target eq $schmtarget ) ) {
+									# Latest installed version is beyond file version,
+									# but we're in dry-run mode or forcing installation.
+
+									if( $pretend ) {
+										if( $force ) {
+											warn( "!> Existing " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " version '$latest' is greater than target '$schmtarget'" . ( ( $quiet and ( 'procedure' eq $mode ) ) ? " for file '$schmfile'" : '' ) . ", and has already been applied to this database - would forcibly re-apply ...\n" );
 										} else {
-											warn( "!> Hot-fix Schema version '$schmtarget' will be applied onto existing Schema version '$latest' ...\n" );
+											warn( "!> Existing " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " version '$latest' is greater than target '$schmtarget'" . ( ( $quiet and ( 'procedure' eq $mode ) ) ? " for file '$schmfile'" : '' ) . ", and has already been applied to this database - would skip ...\n" );
 										}
-										print( "*> Schema version '$schmtarget' is a fresh install\n" ) unless( $silent );
-										$okay = TRUE;
 									} else {
+										if( $force ) {
+											warn( "!> Existing " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " version '$latest' is greater than target '$schmtarget'" . ( ( $quiet and ( 'procedure' eq $mode ) ) ? " for file '$schmfile'" : '' ) . ", and has already been applied to this database - forcibly re-applying ...\n" );
+										} else {
+											warn( "!> Existing " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " version '$latest' is greater than target '$schmtarget'" . ( ( $quiet and ( 'procedure' eq $mode ) ) ? " for file '$schmfile'" : '' ) . ", and has already been applied to this database - skipping ...\n" ) unless( $quiet or $silent );
+											dbclose( $dbh );
+											return( TRUE );
+										}
+									}
+									$greaterversionpresent = TRUE;
+									$okay = FALSE;
+								} elsif( defined( $hotfixversion ) and not( $hotfixversion =~ m/0+/ ) ) {
+									# For this to work for Stored Procedures, we /have/
+									# to assume that filenames are consistent and that
+									# they are always named '<function_name>.sql'...
+									#
+									if( defined( $latest ) and ( $latest eq $schmtarget ) ) {
 										if( $pretend ) {
-											if( $force ) {
-												warn( "!> Existing " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " version '$latest' is greater than target '$schmtarget', and has already been applied to this database - would forcibly re-apply ...\n" );
+											if ( $force ) {
+												warn( "!> " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " hot-fix version '$schmtarget'" . ( ( $quiet and ( 'procedure' eq $mode ) ) ? " for file '$schmfile'" : '' ) . " is already present - would forcibly re-apply ...\n" );
 											} else {
-												warn( "!> Existing " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " version '$latest' is greater than target '$schmtarget', and has already been applied to this database - would skip ...\n" );
+												warn( "!> " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " hot-fix version '$schmtarget'" . ( ( $quiet and ( 'procedure' eq $mode ) ) ? " for file '$schmfile'" : '' ) . " is already present - would skip ...\n" );
 											}
 										} else {
-											if( $force ) {
-												warn( "!> Existing " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " version '$latest' is greater than target '$schmtarget', and has already been applied to this database - forcibly applying ...\n" );
+											if ( $force ) {
+												warn( "!> " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " hot-fix version '$schmtarget'" . ( ( $quiet and ( 'procedure' eq $mode ) ) ? " for file '$schmfile'" : '' ) . " is already present - forcibly re-applying ...\n" );
 											} else {
-												warn( "!> Existing " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " version '$latest' is greater than target '$schmtarget', and has already been applied to this database - skipping ...\n" ) unless( $quiet or $silent );
+												warn( "!> " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " hot-fix version '$schmtarget'" . ( ( $quiet and ( 'procedure' eq $mode ) ) ? " for file '$schmfile'" : '' ) . " is already present - skipping ...\n" );
+												dbclose( $dbh );
 												return( TRUE );
 											}
 										}
-										$greaterversionpresent = TRUE;
 										$okay = FALSE;
+									} else {
+										if( $pretend ) {
+											warn( "!> " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " hot-fix version '$schmtarget' would be applied" . ( defined( $latest ) ? " over existing version '$latest'" : '' ) . ( ( $quiet and ( 'procedure' eq $mode ) ) ? " for file '$schmfile'" : '' ) . " ...\n" );
+										} else {
+											warn( "!> " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " hot-fix version '$schmtarget' will be applied" . ( defined( $latest ) ? " over existing version '$latest'" : '' ) . ( ( $quiet and ( 'procedure' eq $mode ) ) ? " for file '$schmfile'" : '' ) . " ...\n" );
+										}
 									}
 								} elsif( $fresh ) { # and ( $first )
-									print( "*> " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " version '$schmtarget' is a fresh install\n" ) unless( $silent );
+									print( "*> " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " version '$schmtarget'" . ( $quiet and ( 'procedure' eq $mode ) ? " for file '$schmfile'" : '' ) . " is a fresh install\n" ) unless( $silent );
 								} elsif( $first ) {
-									print( "*> " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " version '$schmtarget' is a re-install\n" ) unless( $silent );
+									print( "*> " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " version '$schmtarget'" . ( $quiet and ( 'procedure' eq $mode ) ? " for file '$schmfile'" : '' ) . " is a re-install\n" ) unless( $silent );
 								}
-								if( $okay ) {
+								if( $okay or ( 'procedure' eq $mode ) ) {
 									$schmversion = $schmtarget;
 								}
 							}
@@ -5451,38 +5512,15 @@ SQL
 
 							# We finally know that Stored Procedures are safe to apply!
 							if( 'procedure' eq $mode ) {
-								if( defined( $mywayprocsname ) and not( qr/^$mywayprocsname$/ |M| \@{ $availabletables } ) ) {
-									# We've already said this by this point...
-									#warn( "!> metadata table `$mywayprocsname` does not exist - not validating target installation chain\n" );
-								} else {
-									# This is wrong - as we're processing separate files, we do need to store
-									# metadata entries for every file...
-									#
+								if( defined( $mywayprocsname ) and ( qr/^$mywayprocsname$/ |M| \@{ $availabletables } ) ) {
+									my $uid = ( $ENV{ LOGNAME } or $ENV{ USER } or getpwuid( $< ) );
+									my $oshost = qx( hostname -f );
+									my $sum = qx( sha1sum \"$file\" );
+									chomp( $oshost );
+									chomp( $sum );
+									$sum =~ s/\s+.*$//;
 
-									#my $metadataversions = getsqlvalues( $dbh, "SELECT DISTINCT(`version`) FROM `$mywayprocsname` WHERE `status` = '$status'" );
-									##if( /^$schmversion$/ ~~ $metadataversions )
-									#if( not( $first ) and ( qr/^$schmversion$/ |M| $metadataversions ) ) {
-									#	pdebug( "Metadata for version '$schmversion' already exists ..." );
-									#} else {
-									#	# Only write metadata once per invocation, for first file only...
-									#	#
-
-									# For this to work, we /have/ to assume that filenames are consistent and
-									# that they are always named '<function_name>.sql'...
-									#
-									my $metadataversions = getsqlvalues( $dbh, "SELECT DISTINCT(`version`) FROM `$mywayprocsname` WHERE `filename` = '$schmfile' AND `status` = '$status'" );
-									if( qr/^$schmversion$/ |M| $metadataversions ) {
-										pdebug( "Metadata for file '$schmfile' version '$schmversion' already exists ..." );
-									} else {
-
-										my $uid = ( $ENV{ LOGNAME } or $ENV{ USER } or getpwuid( $< ) );
-										my $oshost = qx( hostname -f );
-										my $sum = qx( sha1sum \"$file\" );
-										chomp( $oshost );
-										chomp( $sum );
-										$sum =~ s/\s+.*$//;
-
-										my $sth = preparesql( $dbh, <<SQL );
+									my $sth = preparesql( $dbh, <<SQL );
 INSERT INTO `$mywayprocsname` (
     `id`
   , `dbuser`
@@ -5496,24 +5534,23 @@ INSERT INTO `$mywayprocsname` (
 ) VALUES ( ?, ?, ?, ?, ?, ?, ?, ?, SYSDATE() )
 SQL
 # Currently unchanged values: `version`, `description`, `type`, `sqlstarted`, `finished`, `status`.
-										die( "Unable to create tracking statement handle: " . $dbh -> errstr() . "\n" ) unless( defined( $sth ) and $sth );
-										if( $safetyoff ) {
+									die( "Unable to create tracking statement handle: " . $dbh -> errstr() . "\n" ) unless( defined( $sth ) and $sth );
+									if( $safetyoff ) {
 #warn "DEBUG: Inserting entry to `$mywayprocsname` for file '$schmfile'";
-											pdebug( "DEBUG: Inserting entry to `$mywayprocsname` for file '$schmfile'" );
-											executesql( $dbh, $sth, undef,
-												   $uuid
-												,  $user
-												,  $host
-												,  $uid
-												,  $oshost
-												,  $sum
-												,  $schmpath
-												,  $schmfile
+										pdebug( "DEBUG: Inserting entry to `$mywayprocsname` for file '$schmfile'" );
+										executesql( $dbh, $sth, undef,
+											   $uuid
+											,  $user
+											,  $host
+											,  $uid
+											,  $oshost
+											,  $sum
+											,  $schmpath
+											,  $schmfile
 
-											);
-										}
-										$sth -> finish();
+										);
 									}
+									$sth -> finish();
 								}
 							} # ( 'procedure' eq $mode )
 						} # defined( $firstcomment )
@@ -5542,7 +5579,7 @@ SQL
 						chomp( $line );
 						# Hints are no longer passed as comments, so this block
 						# is no longer necessary...
-						#if( $line =~ m:/\*![0-9]{5} (.+) \*/: ) {
+						#if( $line =~ m:/\*!\d{5} (.+) \*/: ) {
 						#	print( "-> Hint: " . $1 . "\n" ) if( $verbosity );
 						#	if( $safetyoff ) {
 						#		dosql( $dbh, $line ) or die( "Statement execution failed\n" );
@@ -5556,7 +5593,7 @@ SQL
 					chomp( $line );
 					# Hints are no longer passed as comments, so this block
 					# is no longer necessary...
-					#if( $line =~ m:/\*![0-9]{5} (.+) \*/: ) {
+					#if( $line =~ m:/\*!\d{5} (.+) \*/: ) {
 					#	print( "-> Hint: " . $1 . "\n" ) if( $verbosity );
 					#	if( $safetyoff ) {
 					#		dosql( $dbh, $line ) or die( "Statement execution failed\n" );
@@ -5634,7 +5671,7 @@ SQL
 					if( $verbosity ) {
 						print( "-> " . $line . "\n" );
 						foreach my $match ( ( $line =~ m/$RE{ balanced }{ -begin => '\/*' }{ -end => '*\/' }/g ) ) {
-							if( $match =~ m:^/\*![0-9]{5} (.+) \*/$: ) {
+							if( $match =~ m:^/\*!\d{5} (.+) \*/$: ) {
 								print( "-> Hint: " . $1 . "\n" );
 							}
 						}
@@ -5745,7 +5782,8 @@ SQL
 		print( "S> Would update myway metadata for invocation '$uuid' ...\n" );
 	} else {
 		my $oldstatus = $status;
-		$status = 1 if( not( 'procedure' eq $mode ) );
+		#$status = 1 if( not( 'procedure' eq $mode ) );
+		$status = 1;
 
 		dosql( $dbh, "START TRANSACTION" ) or die( "Failed to start transaction\n" );
 		print( "=> Updating myway metadata for invocation '$uuid' ...\n" ) unless( $quiet or $silent );
@@ -5757,12 +5795,12 @@ SQL
 
 	#if( not( /^$flywaytablename$/ ~~ @{ $availabletables } ) )
 	if( defined( $tablename ) and not( qr/^$tablename$/ |M| \@{ $availabletables } ) ) {
-		print( "*> Would update " . ( 'procedure' eq $mode ? '' : 'flyway ' ) . "metadata with version '$schmversion', if it existed ...\n" );
+		print( "*> Would update " . ( 'procedure' eq $mode ? '' : 'flyway ' ) . "metadata with version '$schmversion' for '$schmfile', if it existed ...\n" );
 	} else {
 		if( $pretend ) {
-			print( "S> Would update " . ( 'procedure' eq $mode ? '' : 'flyway ' ) . "metadata with version '$schmversion' ...\n" );
+			print( "S> Would update " . ( 'procedure' eq $mode ? '' : 'flyway ' ) . "metadata with version '$schmversion' for '$schmfile' ...\n" );
 		} else {
-			print( "=> Updating " . ( 'procedure' eq $mode ? '' : 'flyway ' ) . "metadata with version '$schmversion' ...\n" ) unless( $quiet or $silent );
+			print( "=> Updating " . ( 'procedure' eq $mode ? '' : 'flyway ' ) . "metadata with version '$schmversion' for '$schmfile' ...\n" ) unless( $quiet or $silent );
 		}
 		if( not( 'procedure' eq $mode ) ) {
 			{
@@ -5847,7 +5885,7 @@ SQL
 			}
 			$sth -> finish();
 			}
-		} else {
+		} else { # ( 'procedure' eq $mode )
 			my $sth = preparesql( $dbh, <<SQL );
 UPDATE `$mywayprocsname` SET
     `version` = ?
