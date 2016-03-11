@@ -2268,12 +2268,12 @@ use Regexp::Common;
 use Sort::Versions;
 use Time::HiRes qw( gettimeofday tv_interval );
 
-eval {
-	use DBD::ODBC;
-	if( ! $@ ) {
-		use Data::GUID;
+if( eval "require( DBD::ODBC );" ) {
+	DBD::ODBC -> import();
+	if( eval "require( Data::GUID );" ) {
+		Data::GUID -> import();
 	}
-};
+}
 
 use Data::Dumper;
 #use Devel::StackTrace; # Core with Perl 5.20, apparently not present on Ubuntu
@@ -2871,7 +2871,7 @@ sub processcomments( $$$;$ ) { # {{{
 				( my $filtered = $pre ) =~ s/\s+//g;
 				if( defined( $filtered ) and length( $filtered ) ) {
 					pdebug( "  C Processing text before comment '$pre' ..." );
-					$line = processline( $data, $pre, $masterstate, $strict );
+					$line = ( processline( $data, $pre, $masterstate, $strict ) )[ 0 ];
 				} else {
 					pdebug( "  C Empty line, save for comment" );
 					undef( $line );
@@ -2917,10 +2917,10 @@ sub processcomments( $$$;$ ) { # {{{
 
 				pdebug( "  C Processing line before comment '$line' ..." ) if( length( $line ) );
 
-				#$line = processline( $data, $line, $masterstate, $strict ) if( length( $line ) );
+				#$line = processline( $data, $line, $masterstate, $strict ) if( length( $line ) )[ 0 ];
 				( my $filtered = $line ) =~ s/\s+//g;
 				if( defined( $filtered ) and length( $filtered ) ) {
-					return( processline( $data, $line, $masterstate, $strict ) );
+					return( processline( $data, $line, $masterstate, $strict ) )[ 0 ];
 				} else {
 					return( undef );
 				}
@@ -2986,7 +2986,7 @@ sub processcomments( $$$;$ ) { # {{{
 			if( length( $pre ) ) {
 				pdebug( "  C Processing text before nested comment '$pre' ..." );
 
-				$line = processline( $data, $pre, $masterstate, $strict );
+				$line = ( processline( $data, $pre, $masterstate, $strict ) )[ 0 ];
 			} else {
 				pdebug( "  C Empty line" );
 
@@ -3030,7 +3030,7 @@ sub processcomments( $$$;$ ) { # {{{
 
 			if( length( $post ) ) {
 				pdebug( "  C Processing text after comment '$post' ..." );
-				$line = processline( $data, $post, $masterstate, $strict );
+				$line = ( processline( $data, $post, $masterstate, $strict ) )[ 0 ];
 			} else {
 				pdebug( "  C Empty line" );
 				undef( $line );
@@ -3057,6 +3057,7 @@ sub processcomments( $$$;$ ) { # {{{
 
 sub processline( $$;$$ ) { # {{{
 	my( $data, $line, $state, $strict ) = @_;
+	my $status = undef;
 
 	sub walk( $$;$ );
 
@@ -3071,10 +3072,10 @@ sub processline( $$;$$ ) { # {{{
 		$state -> { 'statements' } = initstate();
 	}
 
-	return( undef ) unless( defined( $line ) and length( $line ) );
+	return( undef, undef ) unless( defined( $line ) and length( $line ) );
 	if( $line =~ m/^\s*$/ ) {
 		pdebug( "  S Skipping blank line '$line' ..." );
-		return( undef );
+		return( undef, undef );
 	}
 
 	# Previously, we were looking for lines where the entirity of the line
@@ -3093,7 +3094,7 @@ sub processline( $$;$$ ) { # {{{
 
 		$line = processcomments( $data, $line, $state, $strict );
 
-		return( $line ) unless( defined( $line ) );
+		return( $line, undef ) unless( defined( $line ) );
 	}
 
 	pdebug( "  S Line '$line' should contain a statement..." );
@@ -3140,12 +3141,12 @@ sub processline( $$;$$ ) { # {{{
 		undef( $state -> { 'statements' } -> { 'type' } );
 		undef( $state -> { 'statements' } -> { 'entry' } );
 
-		return( undef ) unless( length( $line ) );
+		return( undef, undef ) unless( length( $line ) );
 
 		if( length( $line ) ) {
-			return( processline( $data, $line, $state, $strict ) );
+			return( ( processline( $data, $line, $state, $strict ) )[ 0 ], undef );
 		} else {
-			return( undef );
+			return( undef, undef );
 		}
 	}
 
@@ -3169,7 +3170,7 @@ sub processline( $$;$$ ) { # {{{
 
 	if( $line =~ m/^\s*$/ ) {
 		pdebug( "  S Skipping blank line '$line' ..." );
-		return( undef );
+		return( undef, undef );
 	}
 
 	# A quoted sting could contain $delim, in which case literal splits
@@ -3236,7 +3237,7 @@ sub processline( $$;$$ ) { # {{{
 			walk( $pre, sub {
 				my ( $strref, $varref ) = @_;
 
-				return if( not( length( ${ $strref } ) and ( ${ $strref } =~ m/__MW_(LTOK|LITERAL_QUOTE_)_/ ) ) );
+				return( undef ) if( not( length( ${ $strref } ) and ( ${ $strref } =~ m/__MW_(LTOK|LITERAL_QUOTE_)_/ ) ) );
 				#warn "WWW: strref is '$strref', refers to '" . ${ $strref } . "'";
 
 				my $original = ${ $strref };
@@ -3246,7 +3247,7 @@ sub processline( $$;$$ ) { # {{{
 
 				my @str = @{ $varref };
 				#warn "WWW: walk read " . scalar( @str ) . " parameters";
-				return if( not( scalar( @str ) ) );
+				return( undef ) if( not( scalar( @str ) ) );
 
 				for( my $index = ( scalar( @str ) - 1 ) ; $index >= 0 ; $index-- ) {
 					my $match = $str[ $index ];
@@ -3267,7 +3268,7 @@ sub processline( $$;$$ ) { # {{{
 			walk( $post, sub {
 				my ( $strref, $varref ) = @_;
 
-				return if( not( length( ${ $strref } ) and ( ${ $strref } =~ m/__MW_(LTOK|LITERAL_QUOTE_)_/ ) ) );
+				return( undef ) if( not( length( ${ $strref } ) and ( ${ $strref } =~ m/__MW_(LTOK|LITERAL_QUOTE_)_/ ) ) );
 				#warn "WWW: strref is '$strref', refers to '" . ${ $strref } . "'";
 
 				my $original = ${ $strref };
@@ -3277,7 +3278,7 @@ sub processline( $$;$$ ) { # {{{
 
 				my @str = @{ $varref };
 				#warn "WWW: walk read " . scalar( @str ) . " parameters";
-				return if( not( scalar( @str ) ) );
+				return( undef ) if( not( scalar( @str ) ) );
 
 				for( my $index = ( scalar( @str ) - 1 ) ; $index >= 0 ; $index-- ) {
 					my $match = $str[ $index ];
@@ -3326,7 +3327,7 @@ sub processline( $$;$$ ) { # {{{
 			walk( $command, sub {
 				my ( $strref, $varref ) = @_;
 
-				return if( not( length( ${ $strref } ) and ( ${ $strref } =~ m/__MW_(TOK|LITERAL_QUOTE_)_/ ) ) );
+				return( undef ) if( not( length( ${ $strref } ) and ( ${ $strref } =~ m/__MW_(TOK|LITERAL_QUOTE_)_/ ) ) );
 				#warn "WWW: strref is '$strref', refers to '" . ${ $strref } . "'";
 
 				my $original = ${ $strref };
@@ -3336,7 +3337,7 @@ sub processline( $$;$$ ) { # {{{
 
 				my @str = @{ $varref };
 				#warn "WWW: walk read " . scalar( @str ) . " parameters";
-				return if( not( scalar( @str ) ) );
+				return( undef ) if( not( scalar( @str ) ) );
 
 				for( my $index = ( scalar( @str ) - 1 ) ; $index >= 0 ; $index-- ) {
 					my $match = $str[ $index ];
@@ -3414,22 +3415,25 @@ sub processline( $$;$$ ) { # {{{
 					( my $errortext = $@ ) =~ s/\.$//;
 					chomp( $errortext );
 
-					if( defined( $strict ) and $strict ) {
-						if( $errortext =~ m/Cannot parse .* queries/ ) {
-							warn( "!> " . $errortext . ( ( defined( $state -> { 'file' } ) and length( $state -> { 'file' } ) ) ? " in file '" . $state -> { 'file' } . "'" : '' ) . "\n" );
-							$state -> { 'statements' } -> { 'tokens' } = undef;
+					if( $errortext =~ m/(Cannot parse .* queries) .* line (\d+)$/ ) {
+						if( $verbosity > 0 ) {
+							warn( "!> " . $1 . ( ( defined( $state -> { 'file' } ) and length( $state -> { 'file' } ) ) ? " at '" . $state -> { 'file' } . "':$2" : '' ) . "\n" );
 						} else {
-							die( "\n" . $errortext . ( ( defined( $state -> { 'file' } ) and length( $state -> { 'file' } ) ) ? " in file '" . $state -> { 'file' } . "'" : '' ) . "\n" );
+							$status = $1
 						}
 					} else {
-						warn( "!> " . $errortext . ( ( defined( $state -> { 'file' } ) and length( $state -> { 'file' } ) ) ? " in file '" . $state -> { 'file' } . "'" : '' ) . "\n" );
-						$state -> { 'statements' } -> { 'tokens' } = undef;
+						if( defined( $strict ) and $strict ) {
+							die( "\n" . $errortext . ( ( defined( $state -> { 'file' } ) and length( $state -> { 'file' } ) ) ? " in file '" . $state -> { 'file' } . "'" : '' ) . "\n" );
+						} else {
+							warn( "!> " . $errortext . ( ( defined( $state -> { 'file' } ) and length( $state -> { 'file' } ) ) ? " in file '" . $state -> { 'file' } . "'" : '' ) . "\n" );
+						}
 					}
+					$state -> { 'statements' } -> { 'tokens' } = undef;
 				} else {
 					walk( $tokens, sub {
 						my ( $strref, $varref ) = @_;
 
-						return if( not( length( ${ $strref } ) and ( ${ $strref } =~ m/__MW_TOK_/ ) ) );
+						return( undef ) if( not( length( ${ $strref } ) and ( ${ $strref } =~ m/__MW_TOK_/ ) ) );
 						#warn "WWW: strref is '$strref', refers to '" . ${ $strref } . "'";
 
 						my $original = ${ $strref };
@@ -3439,7 +3443,7 @@ sub processline( $$;$$ ) { # {{{
 
 						my @str = @{ $varref };
 						#warn "WWW: walk read " . scalar( @str ) . " parameters";
-						return if( not( scalar( @str ) ) );
+						return( undef ) if( not( scalar( @str ) ) );
 
 						for( my $index = ( scalar( @str ) - 1 ) ; $index >= 0 ; $index-- ) {
 							my $match = $str[ $index ];
@@ -3472,9 +3476,11 @@ sub processline( $$;$$ ) { # {{{
 			if( length( $post ) and not( $post eq $delim and not( length( $pre ) ) ) ) {
 				pdebug( "  S Follow-on section is '$post'" );
 
-				return( processline( $data, $post, $state, $strict ) )
+				my ( $newline, $newstatus ) = processline( $data, $post, $state, $strict );
+				$newstatus = $status unless( defined( $newstatus ) );
+				return( $newline, $newstatus );
 			} else {
-				return( undef );
+				return( undef, $status );
 			}
 
 		} else {
@@ -3498,14 +3504,14 @@ sub processline( $$;$$ ) { # {{{
 				$state -> { 'statements' } -> { 'type' } = 'statement';
 			}
 			pushfragment( $state -> { 'statements' }, 'statement', $line, 'SQL statement' );
-			return( undef );
+			return( undef, undef );
 		}
 	}
 
 	if( length( $line ) ) {
-		return( $line );
+		return( $line, undef );
 	} else {
-		return( undef );
+		return( undef, undef );
 	}
 } # processline # }}}
 
@@ -3516,6 +3522,7 @@ sub processfile( $$;$$$ ) { # {{{
 
 	my $state = initstate();
 	my $validated = TRUE;
+	my $status = undef;
 
 	$state -> { 'file' } = $file;
 
@@ -3543,7 +3550,9 @@ sub processfile( $$;$$$ ) { # {{{
 		# NB: $. contains the last-read line-number
 		pdebug( "$. '$line'" );
 
-		$line = processline( $data, $line, $state, $strict );
+		my $newstatus;
+		( $line, $newstatus ) = processline( $data, $line, $state, $strict );
+		$status = $newstatus if( defined( $newstatus ) );
 		next LINE unless( length( $line ) );
 
 		pdebug( "Value '$line' leftover after calling processline()" );
@@ -3561,7 +3570,13 @@ sub processfile( $$;$$$ ) { # {{{
 		$delim = $state -> { 'statements' } -> { 'symbol' } if( defined( $state -> { 'statements' } -> { 'symbol' } ) );
 		pwarn( "Attempting to auto-correct by inserting '" . $delim . "' character ..." );
 
-		processline( $data, $delim, $state, $strict );
+		my ( $unused, $newstatus ) = processline( $data, $delim, $state, $strict );
+		$status = $newstatus if( defined( $newstatus ) );
+	}
+
+	if( defined( $status ) and length( $status ) ) {
+		warn( "!> Serious schema error: " . $status . "\n" );
+		warn( "!> Your schema may not apply as you intend.\n" );
 	}
 
 	# FIXME: We haven't ever actually changed this value since it was defined...
@@ -5573,7 +5588,7 @@ SQL
 							$desc = $schmdescription;
 						}
 
-						print( "\n" ) if( $verbosity or not( $quiet or $silent ) );
+						print( "\n" ) if( $verbosity and not( $quiet or $silent ) );
 					} # }}}
 					foreach my $line ( @{ $statement -> { 'entry' } } ) {
 						chomp( $line );
@@ -5760,7 +5775,7 @@ SQL
 			} else {
 				die( "Unknown statement type '" . $statement -> { 'type' } . "'\n" );
 			}
-			print( "\n" ) if( $verbosity or not( $quiet or $silent ) );
+			print( "\n" ) if( $verbosity and not( $quiet or $silent ) );
 		} # foreach my $statement ( @{ $entry } )
 
 		if( not( 'procedure' eq $mode ) ) {
