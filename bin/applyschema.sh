@@ -156,6 +156,8 @@ function main() {
 	done
 	if [[ ! -r "${filename}" ]]; then
 		die "Cannot read configuration file"
+	else
+		(( silent )) || info "Using configuration file '${filename}' ..."
 	fi
 
 	local defaults="$( source "${std_LIBPATH}/${std_LIB}" 2>/dev/null ; std::getfilesection "${filename}" "DEFAULT" | sed -r 's/#.*$// ; /^[^[:space:]]+\.[^[:space:]]+\s*=/s/\./_/' | grep -Ev '^\s*$' | sed -r 's/\s*=\s*/=/' )"
@@ -170,10 +172,10 @@ function main() {
 
 	if [[ -n "${db:-}" ]]; then
 		local name="$( grep -om 1 "^${db}$" <<<"${databases}" )"
-		[[ -n "${name:-}" ]] || die "Unknown database '${db}'"
+		[[ -n "${name:-}" ]] || die "Database '${db}' not defined in '${filename}'"
 
 		local details="$( source "${std_LIBPATH}/${std_LIB}" 2>/dev/null ; std::getfilesection "${filename}" "${name}" | sed -r 's/#.*$// ; /^[^[:space:]]+\.[^[:space:]]+\s*=/s/\./_/' | grep -Ev '^\s*$' | sed -r 's/\s*=\s*/=/' )"
-		[[ -n "${details:-}" ]] || die "Unconfigured database '${db}'"
+		[[ -n "${details:-}" ]] || die "Database '${db}' lacks a configuration block in '${filename}'"
 		debug "${db}:\n${details}\n"
 
 		local host="$( grep -m 1 "host=" <<<"${details}" | cut -d'=' -f 2 )"
@@ -181,10 +183,10 @@ function main() {
 			output "Database '${db}' has write master '${host}'"
 		else
 			local cluster="$( grep -m 1 "cluster=" <<<"${details}" | cut -d'=' -f 2 )"
-			[[ -n "${cluster:-}" ]] || die "Database '${db}' has no defined cluster membership"
+			[[ -n "${cluster:-}" ]] || die "Database '${db}' has no defined cluster membership in '${filename}'"
 
 			local master="$( grep -m 1 "^${cluster}=" <<<"${hosts}" | cut -d'=' -f 2 )"
-			[[ -n "${master:-}" ]] || die "Cluster '${cluster}' (of which '${db}' is a stated member) is undefined"
+			[[ -n "${master:-}" ]] || die "Cluster '${cluster}' (of which '${db}' is a stated member) is not defined in '${filename}'"
 
 			output "Database '${db}' is a member of cluster '${cluster}' with write master '${master}'"
 		fi
@@ -222,7 +224,7 @@ function main() {
 		fi
 
 		local details="$( source "${std_LIBPATH}/${std_LIB}" 2>/dev/null ; std::getfilesection "${filename}" "${db}" | sed -r 's/#.*$// ; /^[^[:space:]]+\.[^[:space:]]+\s*=/s/\./_/' | grep -Ev '^\s*$' | sed -r 's/\s*=\s*/=/' )"
-		[[ -n "${details:-}" ]] || die "Unconfigured database '${db}'"
+		[[ -n "${details:-}" ]] || die "Database '${db}' lacks a configuration block in '${filename}'"
 		debug "${db}:\n${details}\n"
 
 		eval "${details}"
@@ -297,7 +299,7 @@ function main() {
 		elif [[ -n "${cluster:-}" ]]; then
 			host="$( eval echo "\$${cluster}" )"
 		else
-			die "Neither 'host' nor 'cluster' membership is defined for database '${db}'"
+			die "Neither 'host' nor 'cluster' membership is defined for database '${db}' in '${filename}'"
 		fi
 		debug "Attempting to resolve host '${host}' ..."
 		if (( std_DEBUG )); then
