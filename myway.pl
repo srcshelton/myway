@@ -2225,17 +2225,20 @@ no if ( $] >= 5.02 ), warnings => 'experimental::autoderef';
 # ... in actual fact, diagnostics causes more problems than it solves.  It does
 # appear to be, in reality, quite silly.
 
-use constant VERSION  =>  1.0.13;
+use constant VERSION     =>  1.1.0;
 
-use constant TRUE     =>  1;
-use constant FALSE    =>  0;
+use constant TRUE        =>  1;
+use constant FALSE       =>  0;
 
-use constant DEBUG    => ( $ENV{ 'DEBUG' } or FALSE );
+use constant DEBUG       => ( $ENV{ 'DEBUG' } or FALSE );
 
-use constant DEFDELIM => ';';
+use constant DEFDELIM    => ';';
 
-use constant PORT     =>  3306;
-use constant MARKER   => '`<<VERSION>>';
+use constant PORT        =>  3306;
+use constant VERTICAPORT =>  5433;
+use constant MARKER      => '`<<VERSION>>';
+
+use constant VERTICAODBCISBROKEN => TRUE;
 
 # Necessary non-default modules:
 #
@@ -2263,6 +2266,7 @@ use File::Touch;
 use File::Which;
 use FileHandle;
 use Getopt::Long qw( GetOptionsFromArray );
+use Module::Loaded qw( is_loaded );
 use Pod::Usage;
 use Regexp::Common;
 use Sort::Versions;
@@ -2310,6 +2314,7 @@ sub dbopen( $$$$;$$ );
 sub dbclose( ;$$ );
 sub dbdump( $;$$$$ );
 sub dbrestore( $$ );
+sub checkdbconnection( $ );
 sub dosql( $$ );
 sub preparesql( $$ );
 sub executesql( $$$;@ );
@@ -2321,10 +2326,27 @@ sub applyschema( $$$$;$ );
 sub main( @ );
 
 our $fatal   = "FATAL:";
+our $failed  = "FAIL: ";
 our $warning = "WARN: ";
+
+
+# XXX: Too many globals... :(
 
 our $verbosity = 0;
 our $reduceoutput = FALSE;
+
+our $allowunsafeoperations = FALSE;
+
+# XXX: It would be nice if this wasn't a global, but the degree of separation
+#      between where we could plausibly set this and where we use it are too
+#      great to make this easily localisable...
+our $tokenise = FALSE;
+
+# XXX: We're seeing random disconnects after successful commands with Vertica
+#      so this provides a temporary way to alert and attempt to reconnect...
+our $connection;
+#      ... and, of course, Vertica is very special :(
+our $searchpath;
 
 
 our $flywaytablename = 'schema_version';
@@ -2362,7 +2384,7 @@ CREATE TABLE IF NOT EXISTS __SCHEMA__"$flywaytablename" (
   , "success"		BOOLEAN		                          NOT NULL
   , PRIMARY KEY                         ("version")
 )
-ORDER BY "version", "version_rank", "installed_rank", "success",
+ORDER BY "version", "version_rank", "installed_rank", "success"
 SEGMENTED BY HASH( "version" ) ALL NODES;
 DDL
 
@@ -2400,15 +2422,15 @@ CREATE TABLE IF NOT EXISTS __SCHEMA__"$mywaytablename" (
   , "osuser"		CHAR(32)	                          NOT NULL
   , "host"		CHAR(64)	                          NOT NULL
   , "sha1sum"		CHAR(40)	                          NOT NULL
-  , "path"		VARCHAR(4096)	CHARACTER SET "UTF8"      NOT NULL
-  , "filename"		VARCHAR(255)	CHARACTER SET "UTF8"      NOT NULL
+  , "path"		VARCHAR(4096)	                          NOT NULL
+  , "filename"		VARCHAR(255)	                          NOT NULL
   , "started"		TIMESTAMP
   , "sqlstarted"	TIMESTAMP	DEFAULT NULL                  NULL
   , "finished"		TIMESTAMP	DEFAULT NULL                  NULL
-  , "status"		TINYINT		UNSIGNED
+  , "status"		INT
   , PRIMARY KEY ("id")
 )
-ORDER BY "started",
+ORDER BY "started"
 SEGMENTED BY HASH( "id" ) ALL NODES;
 DDL
 
@@ -2427,7 +2449,7 @@ CREATE TABLE IF NOT EXISTS `$mywayactionsname` (
   , `started`		TIMESTAMP(6)	DEFAULT CURRENT_TIMESTAMP NOT NULL
   , `event`		VARCHAR(256)	                          NOT NULL
   , `statement`		LONGTEXT	CHARACTER SET 'UTF8'      NOT NULL
-  , `line`		BIGINT		UNSIGNED
+  , `line`		INT		UNSIGNED
   , `time`		DECIMAL(13,3)
   , `state`		CHAR(5)
   , INDEX        `${mywayactionsname}_schema_id_idx` (`schema_id`)
@@ -2441,14 +2463,14 @@ CREATE TABLE IF NOT EXISTS __SCHEMA__"$mywayactionsname" (
     "schema_id"		CHAR(36)	                          NOT NULL
   , "started"		TIMESTAMP(6)	DEFAULT CURRENT_TIMESTAMP NOT NULL
   , "event"		VARCHAR(256)	                          NOT NULL
-  , "statement"		LONGTEXT	CHARACTER SET 'UTF8'      NOT NULL
-  , "line"		BIGINT		UNSIGNED
+  , "statement"		LONGTEXT	                          NOT NULL
+  , "line"		INT
   , "time"		DECIMAL(13,3)
   , "state"		CHAR(5)
   , CONSTRAINT   "${mywayactionsname}_schema_id_${mywaytablename}_id"
     FOREIGN KEY ("schema_id") REFERENCES "$mywaytablename" ("id")
 )
-ORDER BY "schema_id",
+ORDER BY "schema_id"
 SEGMENTED BY HASH( "schema_id" ) ALL NODES;
 DDL
 
@@ -2461,11 +2483,11 @@ CREATE TABLE IF NOT EXISTS `$mywayprocsname` (
   , `osuser`		CHAR(32)	                          NOT NULL
   , `host`		CHAR(64)	                          NOT NULL
   , `sha1sum`		CHAR(40)	                          NOT NULL
-  , `path`		VARCHAR(4096)	CHARACTER SET 'UTF8'      NOT NULL
-  , `filename`		VARCHAR(255)	CHARACTER SET 'UTF8'      NOT NULL
-  , `version`		VARCHAR(50)	CHARACTER SET 'UTF8'
-  , `description`	VARCHAR(200)	CHARACTER SET 'UTF8'
-  , `type`		VARCHAR(20)	CHARACTER SET 'UTF8'
+  , `path`		VARCHAR(4096)	                          NOT NULL
+  , `filename`		VARCHAR(255)	                          NOT NULL
+  , `version`		VARCHAR(50)
+  , `description`	VARCHAR(200)
+  , `type`		VARCHAR(20)
   , `started`		TIMESTAMP
   , `sqlstarted`	TIMESTAMP	DEFAULT NULL                  NULL
   , `finished`		TIMESTAMP	DEFAULT NULL                  NULL
@@ -2481,18 +2503,18 @@ CREATE TABLE IF NOT EXISTS __SCHEMA__"$mywayprocsname" (
   , "osuser"		CHAR(32)	                          NOT NULL
   , "host"		CHAR(64)	                          NOT NULL
   , "sha1sum"		CHAR(40)	                          NOT NULL
-  , "path"		VARCHAR(4096)	CHARACTER SET 'UTF8'      NOT NULL
-  , "filename"		VARCHAR(255)	CHARACTER SET 'UTF8'      NOT NULL
-  , "version"		VARCHAR(50)	CHARACTER SET 'UTF8'
-  , "description"	VARCHAR(200)	CHARACTER SET 'UTF8'
-  , "type"		VARCHAR(20)	CHARACTER SET 'UTF8'
+  , "path"		VARCHAR(4096)	                          NOT NULL
+  , "filename"		VARCHAR(255)	                          NOT NULL
+  , "version"		VARCHAR(50)
+  , "description"	VARCHAR(200)
+  , "type"		VARCHAR(20)
   , "started"		TIMESTAMP
   , "sqlstarted"	TIMESTAMP	DEFAULT NULL                  NULL
   , "finished"		TIMESTAMP	DEFAULT NULL                  NULL
-  , "status"		TINYINT		UNSIGNED
+  , "status"		INT
   , PRIMARY KEY ("id")
 )
-ORDER BY "started",
+ORDER BY "started"
 SEGMENTED BY HASH( "id" ) ALL NODES;
 DDL
 
@@ -3122,16 +3144,20 @@ sub processline( $$;$$ ) { # {{{
 		pdebug( "  * Changing statement delimiter to '$delim' ..." );
 		$state -> { 'statements' } -> { 'symbol' } = $delim;
 
-		my $sqlparser = SQLParser -> new();
-		my $tokens;
-		eval {
-			$tokens = $sqlparser -> parse( "DELIMITER $delim" );
-		};
-		if( $@ ) {
-			warn( $@ . "\n" ) if( length( $@ ) );
+		if( not( $tokenise ) ) {
 			$state -> { 'statements' } -> { 'tokens' } = undef;
 		} else {
-			$state -> { 'statements' } -> { 'tokens' } = $tokens;
+			my $sqlparser = SQLParser -> new();
+			my $tokens;
+			eval {
+				$tokens = $sqlparser -> parse( "DELIMITER $delim" );
+			};
+			if( $@ ) {
+				warn( $failed . $@ . "\n" ) if( length( $@ ) );
+				$state -> { 'statements' } -> { 'tokens' } = undef;
+			} else {
+				$state -> { 'statements' } -> { 'tokens' } = $tokens;
+			}
 		}
 
 		pushfragment( $state -> { 'statements' }, 'statement', "DELIMITER $delim", 'delimiter change' );
@@ -3369,100 +3395,104 @@ sub processline( $$;$$ ) { # {{{
 				pushstate( $data, $state -> { 'statements' } );
 
 			} else {
-				# We only parse SQL to determine affected
-				# tables, so we can make this easier by
-				# removing all quoted strings, so that the
-				# easily-confused parser is less likely to
-				# become flummoxed.
-				my @replacements;
-
-				# Handle escaped quotes, which confuse parsing.
-				( my $filteredcommand = $command ) =~ s/''/__MW_LITERAL_QUOTE__/g;
-
-				foreach my $match ( ( $filteredcommand =~ m/$RE{ quoted }/g ) ) {
-					# $RE{quoted} also captures back-ticks,
-					# which we need to maintain...
-					next if( $match =~ m/^\`.*\`$/ );
-
-					if( not( length( $match ) > 2 ) ) {
-						pdebug( "  S Quoted string `$match` is too short to process - skipping further processing of this token" );
-						next;
-					}
-
-					my $qu = substr( $match, 0, 1 );
-					my $te = substr( $match, -1, 1 );
-					if( $qu ne $te ) {
-						pdebug( "  S Found differing quoted string delimiters `$qu` and `$te` - skipping further processing string `$match`" );
-						next;
-					} elsif( not( $qu =~ m/['"]/ ) ) {
-						pwarn( "  S Token string delimiter `$qu` is not recognised - skipping further processing string `$match`" );
-						next;
-					}
-					# Keep external quotes...
-					$match =~ s/^$qu//;
-					$match =~ s/$te$//;
-
-					my $index = scalar( @replacements );
-					$filteredcommand =~ s/$qu\Q$match\E$te/${qu}__MW_TOK_${index}__${te}/;
-					push( @replacements, $match );
-					pdebug( "  S Replacing \`$match\` with \`__MW_TOK_${index}__\` to give \`$filteredcommand\`" );
-				}
-
-				eval {
-					$tokens = $sqlparser -> parse( $filteredcommand, $delim );
-				};
-				if( $@ ) {
-					( my $errortext = $@ ) =~ s/\.$//;
-					chomp( $errortext );
-
-					if( $errortext =~ m/(Cannot parse .* queries) .* line (\d+)$/ ) {
-						if( $verbosity > 0 ) {
-							warn( "!> " . $1 . ( ( defined( $state -> { 'file' } ) and length( $state -> { 'file' } ) ) ? " at '" . $state -> { 'file' } . "':$2" : '' ) . "\n" );
-						} else {
-							$status = $1
-						}
-					} else {
-						if( defined( $strict ) and $strict ) {
-							die( "\n" . $errortext . ( ( defined( $state -> { 'file' } ) and length( $state -> { 'file' } ) ) ? " in file '" . $state -> { 'file' } . "'" : '' ) . "\n" );
-						} else {
-							warn( "!> " . $errortext . ( ( defined( $state -> { 'file' } ) and length( $state -> { 'file' } ) ) ? " in file '" . $state -> { 'file' } . "'" : '' ) . "\n" );
-						}
-					}
+				if( not( $tokenise ) ) {
 					$state -> { 'statements' } -> { 'tokens' } = undef;
 				} else {
-					walk( $tokens, sub {
-						my ( $strref, $varref ) = @_;
+					# We only parse SQL to determine affected
+					# tables, so we can make this easier by
+					# removing all quoted strings, so that the
+					# easily-confused parser is less likely to
+					# become flummoxed.
+					my @replacements;
 
-						return( undef ) if( not( length( ${ $strref } ) and ( ${ $strref } =~ m/__MW_TOK_/ ) ) );
-						#warn "WWW: strref is '$strref', refers to '" . ${ $strref } . "'";
+					# Handle escaped quotes, which confuse parsing.
+					( my $filteredcommand = $command ) =~ s/''/__MW_LITERAL_QUOTE__/g;
 
-						my $original = ${ $strref };
-						if( ${ $strref } =~ s/__MW_LITERAL_QUOTE__/''/g ) {
-							pdebug( "  S Replaced \`__MW_LITERAL_QUOTE__\` from tokenised hash leaf value \`$original\` with \`''\` to give \`${ $strref }\`" );
+					foreach my $match ( ( $filteredcommand =~ m/$RE{ quoted }/g ) ) {
+						# $RE{quoted} also captures back-ticks,
+						# which we need to maintain...
+						next if( $match =~ m/^\`.*\`$/ );
+
+						if( not( length( $match ) > 2 ) ) {
+							pdebug( "  S Quoted string `$match` is too short to process - skipping further processing of this token" );
+							next;
 						}
 
-						my @str = @{ $varref };
-						#warn "WWW: walk read " . scalar( @str ) . " parameters";
-						return( undef ) if( not( scalar( @str ) ) );
+						my $qu = substr( $match, 0, 1 );
+						my $te = substr( $match, -1, 1 );
+						if( $qu ne $te ) {
+							pdebug( "  S Found differing quoted string delimiters `$qu` and `$te` - skipping further processing string `$match`" );
+							next;
+						} elsif( not( $qu =~ m/['"]/ ) ) {
+							pwarn( "  S Token string delimiter `$qu` is not recognised - skipping further processing string `$match`" );
+							next;
+						}
+						# Keep external quotes...
+						$match =~ s/^$qu//;
+						$match =~ s/$te$//;
 
-						for( my $index = ( scalar( @str ) - 1 ) ; $index >= 0 ; $index-- ) {
-							my $match = $str[ $index ];
-							$match =~ s/__MW_LITERAL_QUOTE__/''/g;
-							#warn "WWW: walk read original string '$match'";
+						my $index = scalar( @replacements );
+						$filteredcommand =~ s/$qu\Q$match\E$te/${qu}__MW_TOK_${index}__${te}/;
+						push( @replacements, $match );
+						pdebug( "  S Replacing \`$match\` with \`__MW_TOK_${index}__\` to give \`$filteredcommand\`" );
+					}
 
-							# FIXME: It may be possible that a token might expand to a string containing another token, in which case we intentionally break...
+					eval {
+						$tokens = $sqlparser -> parse( $filteredcommand, $delim );
+					};
+					if( $@ ) {
+						( my $errortext = $@ ) =~ s/\.$//;
+						chomp( $errortext );
 
-							if( defined( $match ) and length( $match ) ) {
-								$original = ${ $strref };
-								if( ${ $strref } =~ s/__MW_TOK_${index}__/$match/ ) {
-									pdebug( "  S Replaced \`__MW_TOK_${index}__\` from tokenised hash leaf value \`$original\` with \`$match\` to give \`${ $strref }\`" );
-								}
+						if( $errortext =~ m/(Cannot parse .* queries) .* line (\d+)$/ ) {
+							if( $verbosity > 0 ) {
+								warn( "!> " . $1 . ( ( defined( $state -> { 'file' } ) and length( $state -> { 'file' } ) ) ? " at '" . $state -> { 'file' } . "':$2" : '' ) . "\n" );
+							} else {
+								$status = $1
+							}
+						} else {
+							if( defined( $strict ) and $strict ) {
+								die( "\n" . $errortext . ( ( defined( $state -> { 'file' } ) and length( $state -> { 'file' } ) ) ? " in file '" . $state -> { 'file' } . "'" : '' ) . "\n" );
+							} else {
+								warn( "!> " . $errortext . ( ( defined( $state -> { 'file' } ) and length( $state -> { 'file' } ) ) ? " in file '" . $state -> { 'file' } . "'" : '' ) . "\n" );
 							}
 						}
-					}, \@replacements );
+						$state -> { 'statements' } -> { 'tokens' } = undef;
+					} else {
+						walk( $tokens, sub {
+							my ( $strref, $varref ) = @_;
 
-					$state -> { 'statements' } -> { 'tokens' } = $tokens;
-					#print Data::Dumper -> Dump( [ $tokens ], [ qw( *tokens ) ] ) if DEBUG;
+							return( undef ) if( not( length( ${ $strref } ) and ( ${ $strref } =~ m/__MW_TOK_/ ) ) );
+							#warn "WWW: strref is '$strref', refers to '" . ${ $strref } . "'";
+
+							my $original = ${ $strref };
+							if( ${ $strref } =~ s/__MW_LITERAL_QUOTE__/''/g ) {
+								pdebug( "  S Replaced \`__MW_LITERAL_QUOTE__\` from tokenised hash leaf value \`$original\` with \`''\` to give \`${ $strref }\`" );
+							}
+
+							my @str = @{ $varref };
+							#warn "WWW: walk read " . scalar( @str ) . " parameters";
+							return( undef ) if( not( scalar( @str ) ) );
+
+							for( my $index = ( scalar( @str ) - 1 ) ; $index >= 0 ; $index-- ) {
+								my $match = $str[ $index ];
+								$match =~ s/__MW_LITERAL_QUOTE__/''/g;
+								#warn "WWW: walk read original string '$match'";
+
+								# FIXME: It may be possible that a token might expand to a string containing another token, in which case we intentionally break...
+
+								if( defined( $match ) and length( $match ) ) {
+									$original = ${ $strref };
+									if( ${ $strref } =~ s/__MW_TOK_${index}__/$match/ ) {
+										pdebug( "  S Replaced \`__MW_TOK_${index}__\` from tokenised hash leaf value \`$original\` with \`$match\` to give \`${ $strref }\`" );
+									}
+								}
+							}
+						}, \@replacements );
+
+						$state -> { 'statements' } -> { 'tokens' } = $tokens;
+						#print Data::Dumper -> Dump( [ $tokens ], [ qw( *tokens ) ] ) if DEBUG;
+					}
 				}
 
 				pdebug( "  S Pushing resultant statements array ..." );
@@ -3592,19 +3622,25 @@ sub dbopen( $$$$;$$ ) { # {{{
 	# Ugh, now that we have Vertica support we need to parse certain values
 	# out of the provided DSN :(
 	if( not( defined ( $user ) ) or ( '' eq $user ) ) {
-		if( $dsn =~ m/(?:uid|user(?:name)?)=([^;]+)(;|$)/i ) {
+		if( $dsn =~ m/(?:uid|user(?:name)?)=([^;]+)(?:;|$)/i ) {
 			$user = $1;
 		}
 	}
 	if( not( defined ( $password ) ) or ( '' eq $password ) ) {
-		if( $dsn =~ m/(?:pwd|pass(?:word)?)=([^;]+)(;|$)/i ) {
+		if( $dsn =~ m/(?:pwd|pass(?:word)?)=([^;]+)(?:;|$)/i ) {
 			$password = $1;
 		}
 	}
 
+	$connection -> { 'dsn' }      = $dsn      if( defined( $dsn ) );
+	$connection -> { 'user' }     = $user     if( defined( $user ) );
+	$connection -> { 'password' } = $password if( defined( $password ) );
+	$connection -> { 'strict' }   = $strict   if( defined( $strict ) );
+	$connection -> { 'options' }  = $options  if( defined( $options ) );
+
 	#disable diagnostics;
 	${ $dbh } = DBI -> connect( $dsn, $user, $password, $options )
-		or $error = "Cannot create connection with DSN '$dsn': $DBI::errstr";
+		or $error = "Cannot create connection with DSN '$dsn' (user='$user', password='$password', options='@{ [ %{ $options } ] }'): $DBI::errstr";
 	#enable diagnostics;
 
 	if( defined( ${ $dbh } ) ) {
@@ -4032,11 +4068,11 @@ sub dbdump( $;$$$$ ) { # {{{
 		pdebug( "Shell-command is: '$command'" );
 		my $result = qx( $command );
 		if( not( defined( $result ) ) ) {
-			warn( "Unable to launch external process: $!\n" );
+			warn( "$failed Unable to launch external process: $!\n" );
 			return( undef );
 		}
 		if( $? ) {
-			warn( "Database dump failed: $?\n" ) ;
+			warn( "$failed Database dump failed: $?\n" ) ;
 			return( undef );
 		}
 		#return( $result );
@@ -4117,11 +4153,56 @@ sub dbrestore( $$ ) { # {{{
 		$command = 'cat "' . basename( $file ) . '" "' . $file . ( defined( $decompress ) ? '" | ' . $decompress : '"' ) . ' | { ' . $mysql . " -u $user -p$password -h $host 2>&1 ; }"
 	}
 	pdebug( "Restore command is '$command'" );
-	exec( $command ) or die( "Failed to execute 'pv' in order to monitor data restoration: $!\n" );
+	#exec( $command ) or die( "Failed to execute 'pv' in order to monitor data restoration: $!\n" );
+	system( $command );
+	if( -1 == $? ) {
+		die( "Failed to execute 'pv' in order to monitor data restoration: $!\n" );
+	} else {
+		return( $? >> 8 );
+	}
 
 	# Unreachable
 	return( undef );
 } # dbrestore # }}}
+
+sub checkdbconnection( $ ) { # {{{
+	my( $dbh ) = @_;
+
+	#
+	# Vertica's ODBC interface appears to be horrendously broken, such that
+	# use of invalid syntax doesn't get reported, but causes the database
+	# to dro pthe connection.  If this is then re-established then there
+	# appears to be an off-by-one issue when you will then receive, in
+	# response to the next statement dispatched to the database (whether
+	# valid or not) the error associated with the *previous* statement!
+	#
+
+	return( undef ) unless( defined( $dbh ) );
+
+	return( TRUE ) if( $dbh -> ping() );
+
+	# Just in case we have anything cached...
+	$dbh -> disconnect();
+
+	pwarn( "Database unexpectedly dropped connection!\n" );
+	if( VERTICAODBCISBROKEN ) {
+		die( "You probably have a syntax error in your previous SQL statement, but the Vertica ODBC connector is broken and won't tell me what happened :(\n" );
+	} else {
+		if( not( defined( $connection ) and ( scalar( $connection ) > 0 ) ) ) {
+			die( "Database connection unstable, unable to proceed.\n" );
+		} else {
+			pwarn( "Attempting to reconnect using last connection string ...\n" );
+			my $error = dbopen( \$dbh, $connection -> { 'dsn' } , $connection -> { 'user' }, $connection -> { 'password' }, $connection -> { 'strict' }, $connection -> { 'options' } );
+			die( $error ."\n" ) if $error;
+
+			if( defined( $searchpath ) and length( $searchpath ) ) {
+				dosql( $dbh, $searchpath ) or die( "Unable to restore database connetion state.\n" );
+			}
+		}
+	}
+
+	return( FALSE );
+} # checkdbconnection # }}}
 
 sub dosql( $$ ) { # {{{
 	my( $dbh, $st ) = @_;
@@ -4137,15 +4218,25 @@ sub dosql( $$ ) { # {{{
 	return( undef ) unless( defined( $st ) and length( $st ) );
 
 	if( $st =~ m/__MW_(STR|L?TOK|LITERAL_QUOTE_)_/ ) {
-		warn "\nUnexpended token detected in `$st`\n";
+		warn "\n$warning Unexpended token detected in `$st`\n";
 		#my $trace = Devel::StackTrace -> new;
 		#print $trace -> as_string;
 		return( FALSE );
 	}
 
+	if( $st =~ m/^\s*DROP\s+(?:TABLE|DATABASE)\s/i ) {
+		if( $allowunsafeoperations ) {
+			warn( "\n$warning Executing destructive SQL statement:\n!> $st\n" );
+		} else {
+			warn( "\n$warning Refusing to execute prohibited SQL statement:\n!> $st\n" );
+			# Don't abort...
+			return( TRUE );
+		}
+	}
+
 	# Apparently '17' (SQL_DBMS_NAME) canonically returns the database
 	# instance vendor...
-	if( $dbh -> get_info( 17 ) =~ m/vertica/i ) {
+	if( lc( $dbh -> get_info( 17 ) ) eq 'vertica database' ) {
 		# Can't we all just agree to get along??
 		$st =~ s/`/\"/g;
 	}
@@ -4170,7 +4261,8 @@ sub dosql( $$ ) { # {{{
 		}
 	};
 	if( $@ ) {
-		warn( "\nError when processing SQL statement (" . $dbh -> err() . "):\n$st\n$@" );
+		my $error = join( ' ', split( /\s*\n+\s*/, $dbh -> errstr() ) );
+		warn( "\n$warning Error when processing SQL statement (" . $dbh -> err() . ": '$error'):\n$st\n$@" );
 		if( ( ( $st =~ m/^\s*DROP\s/i ) or ( $st =~ m/^\s*ALTER\s(O(N|FF)LINE\s+)?(IGNORE\s+)?TABLE\s.*\sDROP\s/i ) ) and $dbh -> err() eq '1091' ) {
 			# XXX: This simply seems to propagate the error to the
 			#      next prepared statement, which will then fail.
@@ -4188,12 +4280,17 @@ sub dosql( $$ ) { # {{{
 				die( "Trivial command following error failed" );
 			}
 
+			checkdbconnection( $dbh );
 			return( TRUE );
 
 		} else {
+
+			checkdbconnection( $dbh );
 			return( FALSE );
 		}
 	} else {
+
+		checkdbconnection( $dbh );
 		return( TRUE );
 	}
 
@@ -4214,16 +4311,39 @@ sub preparesql( $$ ) { # {{{
 	#}
 	return( undef ) unless( defined( $st ) and length( $st ) );
 
+	if( $st =~ m/^\s*DROP\s+(?:TABLE|DATABASE)\s/i ) {
+		if( $allowunsafeoperations ) {
+			warn( "\n$warning Executing destructive SQL statement:\n!> $st\n" );
+		} else {
+			warn( "\n$warning Refusing to execute prohibited SQL prepared statement:\n!> $st\n" );
+			# We'll likely abort if we hit this, but that's better than
+			# dropping a production database object...
+			# TODO: Make this behaviour configurable.
+			return( undef );
+		}
+	}
+
+	# Apparently '17' (SQL_DBMS_NAME) canonically returns the database
+	# instance vendor...
+	if( lc( $dbh -> get_info( 17 ) ) eq 'vertica database' ) {
+		# Can't we all just agree to get along??
+		$st =~ s/`/\"/g;
+	}
+
+
 	pdebug( 'SQL: Preparing: "' . join( ' ', split( /\s*\n\s*/, $st ) ) . '"' );
 	my $sth = $dbh -> prepare_cached( $st );
 	if( $@ ) {
-		my $error = $dbh -> errstr();
-		warn( "\nError when processing SQL statement:\n$st\n$@\n" . ( defined( $error ) and length( $error) ? $error . "\n" : '' ) );
+		my $error = join( ' ', split( /\s*\n+\s*/, $dbh -> errstr() ) );
+		warn( "\n$failed Error when processing SQL statement:\n$st\n$@\n" . ( defined( $error ) and length( $error) ? $error . "\n" : '' ) );
+
+		checkdbconnection( $dbh );
 		return( undef );
 	} else {
 		# N.B.: $sth -> finish() must be called prior to the next SQL
 		#       interaction!
 
+		checkdbconnection( $dbh );
 		return( $sth );
 	}
 
@@ -4242,19 +4362,22 @@ sub executesql( $$$;@ ) { # {{{
 	#if( $@ ) {
 	#	die( "Not a database handle or handle state in error: $@" );
 	#}
-	if( not( defined( $sth ) and $sth ) ) {
+
+	if( defined( $sth ) and $sth ) {
+		pdebug( 'SQL: About to execute prepared query in statement handle provided ...' );
+	} else {
 		return( undef ) unless( defined( $st ) and length( $st ) );
+		pdebug( 'SQL: Preparing to execute query: "' . join( ' ', split( /\s*\n+\s*/, $st ) ) . '"' );
 		$sth = preparesql( $dbh, $st );
 		return( undef ) unless( defined( $sth ) and $sth );
 	}
 
-	pdebug( 'SQL: Executing: "' . join( ' ', split( /\s*\n\s*/, $dbh -> { 'Statement' } ) ) . '"' ) if( defined( $dbh -> { 'Statement' } ) );
+	pdebug( 'SQL: Executing: "' . join( ' ', split( /\s*\n+\s*/, $dbh -> { 'Statement' } ) ) . '"' ) if( defined( $dbh -> { 'Statement' } ) );
 	pdebug( 'SQL: Parameters: "' . join( '", "', grep defined, @values ) . '"' ) if( @values and scalar( @values ) );
 	eval {
 		my $result = $sth -> execute( @values );
 		if( not( defined( $result ) ) ) {
-			#die( "Error when processing SQL statement:\n$st\n" );
-			die( $dbh -> errstr() . "\n" );
+			die( "$fatal SQL executon error: " . join( ' ', split( /\s*\n+\s*/, $dbh -> errstr() ) ) . "\n" );
 		}
 	};
 	if( $@ ) {
@@ -4272,25 +4395,27 @@ sub executesql( $$$;@ ) { # {{{
 		@values = map { defined( $_ ) ? $_ : '' } @values;
 
 		if( defined( $st ) ) {
-			warn( "\nError when processing SQL statement:\n$st\n" );
-			warn( '... with parameters "' . join( '", "', @values ) . "\"\n" ) if( scalar( @values ) );
+			warn( "\n$failed Error when processing SQL statement:\n$st\n" );
+			warn( '       ... with parameters "' . join( '", "', @values ) . "\"\n" ) if( scalar( @values ) );
 		} else {
-			warn( 'Error applying parameters "' . join( '", "', @values ) . "\"\n" ) if( @values and scalar( @values ) );
+			warn( "\n$failed Error applying parameters \"" . join( '", "', @values ) . "\"\n" ) if( @values and scalar( @values ) );
 		}
 		warn( "Error was:\n" );
-		warn( $errstr . "\n" );
-		warn( $dbh -> errstr() . "\n" ) if( defined( $dbh -> errstr() ) );
+		warn( "Statement:    " . $errstr . "\n" );
+		warn( "Database:     " . $dbh -> errstr() . "\n" ) if( defined( $dbh -> errstr() ) );
 		warn( "Statement debug:\n" );
-		warn( $stherr . "\n" ) if( defined( $stherr ) );
-		warn( $stherrstr . "\n" ) if( defined( $stherrstr ) );
-		warn( $sthstate . "\n" ) if( defined( $sthstate ) );
+		warn( "Error:        " . $stherr . "\n" ) if( defined( $stherr ) );
+		warn( "Error string: " . $stherrstr . "\n" ) if( defined( $stherrstr ) );
+		warn( "State:        " . $sthstate . "\n" ) if( defined( $sthstate ) );
 
+		checkdbconnection( $dbh );
 		return( undef );
 
 	} else {
 		# N.B.: $sth -> finish() must be called prior to the next SQL
 		#       interaction!
 
+		checkdbconnection( $dbh );
 		return( $sth );
 	}
 
@@ -4316,7 +4441,7 @@ sub getsqlvalue( $$ ) { # {{{
 	my $sth = executesql( $dbh, undef, $st );
 	if( not( defined( $sth ) and $sth ) ) {
 		my $errstr = $dbh -> errstr();
-		warn( "Unable to create statement handle to execute '$st'" . ( defined( $errstr ) and length( $errstr ) ? ": " . $errstr : '' ) . "\n" );
+		warn( "\n$failed Unable to create statement handle to execute '$st'" . ( defined( $errstr ) and length( $errstr ) ? ": " . $errstr : '' ) . "\n" );
 	} else {
 		while( my $ref = $sth -> fetchrow_arrayref() ) {
 			$response = @{ $ref }[ 0 ];
@@ -4345,13 +4470,14 @@ sub getsqlvalues( $$;$ ) { # {{{
 	my @response;
 
 	my $sth = executesql( $dbh, undef, $st );
-	if( defined( $sth ) and $sth ) {
+	if( not( defined( $sth ) and $sth ) ) {
+		my $errstr = $dbh -> errstr();
+		warn( "\n$failed Unable to create statement handle to execute '$st'" . ( defined( $errstr ) and length( $errstr ) ? ": " . $errstr : '' ) . "\n" );
+	} else {
 		while( my $ref = $sth -> fetchrow_arrayref() ) {
 			push( @response, @{ $ref }[ $column ] );
 		}
 		$sth -> finish();
-	} else {
-		warn( "Unable to create statement handle to execute '$st': " . $dbh -> errstr() . "\n" );
 	}
 
 	return( \@response );
@@ -4362,7 +4488,10 @@ sub outputtable( $$;$ ) { # {{{
 
 
 	my $sth = executesql( $dbh, undef, $st );
-	if( defined( $sth ) and $sth ) {
+	if( not( defined( $sth ) and $sth ) ) {
+		my $errstr = $dbh -> errstr();
+		warn( "\n$failed Unable to create statement handle to render table" . ( defined( $errstr ) and length( $errstr ) ? ": " . $errstr : '' ) . "\n" );
+	} else {
 		my $table = DBI::Format::PartBox -> new();
 		if( defined( $fh ) ) {
 			$table -> header( $sth, $fh );
@@ -4374,8 +4503,6 @@ sub outputtable( $$;$ ) { # {{{
 		}
 		$table -> trailer();
 		$sth -> finish();
-	} else {
-		warn( 'Unable to create statement handle to render table' . ( defined( $dbh -> errstr() ) ? ': ' . $dbh -> errstr() : '' ) . "\n" );
 	}
 
 	return( TRUE );
@@ -4431,9 +4558,9 @@ sub formatastable( $$$ ) { # {{{
 			my( $rc, $sig, $core ) = ( $? >> 8, $? & 127, $? & 128 );
 
 			if( $core ) {
-				warn( "$fatal rendering process $firstchildpidorzero core-dumped\n" );
+				warn( "\n$failed rendering process $firstchildpidorzero core-dumped\n" );
 			} elsif( 9 == $sig ) {
-				warn( "$warning rendering process $firstchildpidorzero was KILLed\n" );
+				warn( "\n$warning rendering process $firstchildpidorzero was KILLed\n" );
 			} else {
 				pwarn( "rendering process $firstchildpidorzero returned $rc" . ( $sig ? " after signal $sig" : '' ) ) unless( 0 == $rc );
 			}
@@ -4486,9 +4613,10 @@ sub applyschema( $$$$;$ ) { # {{{
 	$tmpdir    = $variables -> { 'tmpdir' }    if( exists( $variables -> { 'tmpdir' } ) );
 	$unsafe    = $variables -> { 'unsafe' }    if( exists( $variables -> { 'unsafe' } ) );
 
-	my( $dsn, $engine );
+	my( $dsn, $engine, $vschm );
 	$dsn    = $variables -> { 'dsn' }    if( exists( $variables -> { 'dsn' } ) );
 	$engine = $variables -> { 'engine' } if( exists( $variables -> { 'engine' } ) );
+	$vschm  = $variables -> { 'vschm' }  if( exists( $variables -> { 'vschm' } ) );
 
 	my( $user, $pass, $host, $port, $db );
 	$user = $auth -> { 'user' }     if( exists( $auth -> { 'user' } ) );
@@ -4636,7 +4764,7 @@ sub applyschema( $$$$;$ ) { # {{{
 			warn( "!> Metadata contains hotfix version $hotfix to base version $version\n" ) if( $first );
 		}
 
-	}
+	} # ( 'procedure' eq $mode )
 
 	if( ( 'procedure' eq $mode ) and defined( $marker ) and length( $marker ) ) {
 		$invalid = $invalid | not( processfile( $data, $file, $marker, $procedureversion, $strict ) );
@@ -4644,6 +4772,8 @@ sub applyschema( $$$$;$ ) { # {{{
 		$invalid = $invalid | not( processfile( $data, $file, undef, undef, $strict ) );
 	}
 	die( "Data failed validation - aborting.\n" ) if( $invalid );
+
+	print "*> Finished pre-processing file '$file' ...\n" unless( $quiet or $silent );
 
 	#
 	# Confirm data validity, and enumerate tables we need to backup # {{{
@@ -4708,7 +4838,7 @@ sub applyschema( $$$$;$ ) { # {{{
 					$invalid = TRUE;
 				}
 
-				if( not( defined( $entry -> { 'tokens' } ) ) ) {
+				if( $tokenise and not( defined( $entry -> { 'tokens' } ) ) ) {
 					# FIXME: Filter known edge-cases which the Parser fails to tokenise...
 					if( 'mysql' eq $engine ) {
 						if( not( $text =~ m/^((LOCK|UNLOCK|SET|CREATE\s+PROCEDURE|GRANT|TRUNCATE)\s+|\s*\/\*\!)/i ) ) {
@@ -4737,7 +4867,7 @@ sub applyschema( $$$$;$ ) { # {{{
 				}
 			}
 
-			if( not( $unsafe ) ) {
+			if( not( $unsafe ) and defined( $entry -> { 'tokens' } ) ) {
 				foreach my $key ( keys( $entry -> { 'tokens' } ) ) {
 					if( ref( $entry -> { 'tokens' } -> { $key } ) eq 'ARRAY' ) {
 						foreach my $element ( @{ $entry -> { 'tokens' } -> { $key } } ) {
@@ -4807,12 +4937,26 @@ sub applyschema( $$$$;$ ) { # {{{
 	die( $error ."\n" ) if $error;
 
 	if( 'vertica' eq $engine ) {
+		my $path;
+		if( defined( $vschm ) and length( $vschm ) ) {
+			$path = $vschm;
+		} elsif( defined( $db ) and length( $db ) ) {
+			$path = $db;
+		}
+		if( defined( $path ) and length( $path ) ) {
+			print( "\n=> Setting Vertica SEARCH_PATH to include `$path` ...\n" ) unless( $quiet or $silent );
+			$searchpath = "SET SEARCH_PATH TO \"$path\", " . ( ( defined( $user ) and length( $user ) ) ? "\"$user\", " : '' ) . "PUBLIC, v_catalog, v_monitor, v_internal";
+			dosql( $dbh, $searchpath );
+		}
+
 		# Vertica has no UUID-generation capability...
-		eval {
-			my $guid = Data::GUID -> new;
-			$uuid = $guid -> as_string;
-		};
-		if( $@ ) {
+		if( is_loaded( 'Data::GUID' ) ) {
+			eval {
+				my $guid = Data::GUID -> new;
+				$uuid = $guid -> as_string;
+			};
+		}
+		if( not( defined( $uuid ) and length( $uuid ) ) ) {
 			$uuid = getsqlvalue( $dbh, "SELECT HASH( SYSDATE() )" );
 		}
 	} else {
@@ -4831,7 +4975,7 @@ sub applyschema( $$$$;$ ) { # {{{
 	} elsif( 'mysql' eq $engine ) {
 		$availabletables = getsqlvalues( $dbh, "SHOW TABLES" );
 	}
-	warn( "Unable to retrieve list of tables for database `$db`" . ( defined( $dbh -> errstr() ) ? ': ' . $dbh -> errstr() : '' ) . "\n" ) unless( scalar( $availabletables ) );
+	warn( "\n$warning Unable to retrieve list of tables for database `$db`" . ( defined( $dbh -> errstr() ) ? ': ' . $dbh -> errstr() : '' ) . "\n" ) unless( scalar( $availabletables ) );
 
 	#
 	# Populate tracking tables, if necessary # {{{
@@ -5126,7 +5270,7 @@ SQL
 			} else {
 				#if( not( /^mysql$/ ~~ @{ $availabledatabases } ) )
 				if( not( qr/^$systemdb$/ |M| \@{ $availabledatabases } ) ) {
-					warn( "`$systemdb` database does not appear to exist.  Detected databases were:\n" );
+					warn( "\n$failed `$systemdb` database does not appear to exist.  Detected databases were:\n" );
 					foreach my $database ( @{ $availabledatabases } ) {
 						warn( "\t$database\n" );
 					}
@@ -5146,7 +5290,7 @@ SQL
 				die( $systemerror ."\n" ) if $systemerror;
 
 				$availablesystemtables = getsqlvalues( $systemdbh, "SHOW TABLES" );
-				warn( "Unable to retrieve list of tables for database `$systemdb`" . ( defined( $systemdbh -> errstr() ) ? ': ' . $systemdbh -> errstr() : '' ) . "\n" ) unless( scalar( $availablesystemtables ) );
+				warn( "\n$warning Unable to retrieve list of tables for database `$systemdb`" . ( defined( $systemdbh -> errstr() ) ? ': ' . $systemdbh -> errstr() : '' ) . "\n" ) unless( scalar( $availablesystemtables ) );
 
 				dbclose( $systemdbh );
 
@@ -5158,12 +5302,12 @@ SQL
 					if( qr/^$table$/ |M| \@{ $availablesystemtables } ) {
 						push( @backuptables, $table );
 					} else {
-						warn( "`$table` table does not appear to exist in `$systemdb` database.\n" );
+						warn( "\n$warning `$table` table does not appear to exist in `$systemdb` database.\n" );
 						$showtables = TRUE;
 					}
 				}
 				if( $showtables ) {
-					warn( "Detected databases were:\n" );
+					warn( "$warning Detected databases were:\n" );
 					foreach my $table ( @{ $availabletables } ) {
 						warn( "\t$table\n" );
 					}
@@ -5246,6 +5390,7 @@ SQL
 	my $schmdescription = undef;
 	my $schmprevious = undef;
 	my $schmtarget = undef;
+	my $restorefile = undef;
 
 	if( 'procedure' eq $mode ) {
 		# N.B. This logic does mean that any valid SQL statements in
@@ -5292,6 +5437,27 @@ SQL
 							}
 							if( $line =~ m/Target\s+version:\s+([^\s]+)\s*/i ) {
 								$schmtarget = $1;
+							}
+							if( $line =~ m/Restore:\s+([^#]+)(?:#.*)?\s*$/i ) {
+								$restorefile = $1;
+							}
+						}
+						if( defined( $restorefile ) and length( $restorefile ) ) {
+							if( not( defined( $action_init ) ) ) {
+								warn( "!> $warning 'Restore' directive is only valid in a base initialiser - ignoring ...\n" );
+							}
+							print( "*> Found restoration directive for file '$restorefile' ...\n" );
+							if( not( -r "$schmpath/$restorefile" ) ) {
+								if( $safetyoff ) {
+									die( "Cannot read file '$schmpath/$restorefile'\n" );
+								} else {
+									warn( "!> $warning Could not read file '$schmpath/$restorefile', would abort\n" );
+								}
+							}
+							if( $safetyoff ) {
+								dbclose( $dbh );
+								dbrestore( $auth, $restorefile );
+								return( \$schmversion );
 							}
 						}
 						$schmprevious = undef if( defined( $schmprevious ) and ( $schmprevious =~ m#(?:na|n/a)#i ) );
@@ -5674,7 +5840,7 @@ SQL
 						# nothing....
 
 					} else {
-						warn( "Unknown DDL/non-DDL statement type '$type'\n" );
+						warn( "\n$warning Unknown DDL/non-DDL statement type '$type'\n" );
 					}
 				}
 
@@ -5736,7 +5902,12 @@ SQL
 					}
 
 					if( not( 'procedure' eq $mode ) ) {
-						my $sth = preparesql( $dbh, <<SQL );
+						# Vertica won't allow preparation of statements against
+						# non-existent tables...
+						if( ( $engine eq 'vertica' ) and defined( $action_init ) ) {
+							warn( "!> Cannot create prepared statements during init on Vertica\n" );
+						} else {
+							my $sth = preparesql( $dbh, <<SQL );
 INSERT INTO `$mywayactionsname` (
     `schema_id`
   , `started`
@@ -5747,20 +5918,21 @@ INSERT INTO `$mywayactionsname` (
   , `state`
 ) VALUES ( ?, ?, ?, ?, ?, ?, ? )
 SQL
-						my $error = $dbh -> errstr();
-						die( "Unable to create tracking statement handle" . ( defined( $error ) and length( $error ) ? ": " . $error . "\n" : '' ) ) unless( defined( $sth ) and $sth );
-						if( $safetyoff ) {
-							executesql( $dbh, $sth, undef,
-								   $uuid
-								,  $started
-								, 'execute'
-								,  $sql
-								,  $statement -> { 'line' }
-								,  $elapsed
-								,  $sth -> state()
-							);
+							my $error = $dbh -> errstr();
+							die( "Unable to create tracking statement handle" . ( defined( $error ) and length( $error ) ? ": " . $error . "\n" : '' ) ) unless( defined( $sth ) and $sth );
+							if( $safetyoff ) {
+								executesql( $dbh, $sth, undef,
+									   $uuid
+									,  $started
+									, 'execute'
+									,  $sql
+									,  $statement -> { 'line' }
+									,  $elapsed
+									,  $sth -> state()
+								);
+							}
+							$sth -> finish();
 						}
-						$sth -> finish();
 					} else { # ( 'procedure' eq $mode )
 						if( $safetyoff ) {
 							my $started = getsqlvalue( $dbh, "SELECT `sqlstarted` FROM `$mywayprocsname` WHERE `id` = '$uuid'" );
@@ -5934,13 +6106,13 @@ SQL
 sub main( @ ) { # {{{
 	my( @argv ) = @_;
 
-	my $port = PORT;
+	my $port; # = PORT;
 	my $marker = MARKER;
 	my $odbcok = grep( /ODBC/i, DBI -> available_drivers );
 	my $engine;
 
 	#
-	# Populate command-line arguments # {{{
+	# Populate command-line arguments and show help # {{{
 	#
 
 	my( $action_backup, $action_restore, $action_init );
@@ -5964,6 +6136,7 @@ sub main( @ ) { # {{{
 
 	Getopt::Long::Configure( 'gnu_getopt' );
 	Getopt::Long::Configure( 'no_bundling' );
+	Getopt::Long::Configure( 'no_ignore_case' );
 	eval { GetOptionsFromArray ( \@argv,
 	  'b|backup:s'					=> \$action_backup
 	,   'lock|lock-database|lock-databases!'	=> \$lock
@@ -5991,6 +6164,9 @@ sub main( @ ) { # {{{
 
 	,   'clear-metadata!'				=> \$clear
 	,   'force!'					=> \$force
+	, 'a|allow-unsafe-operations|allow-unsafe!'	=> \$allowunsafeoperations
+
+	, 'P|port=i'					=> \$port
 
 	,   'mysql-compat!'				=> \$compat
 	,   'mysql-relaxed|relaxed!'			=> \$relaxed
@@ -6115,6 +6291,11 @@ sub main( @ ) { # {{{
 	} else {
 		$force = FALSE;
 	}
+	if( defined( $allowunsafeoperations ) and $allowunsafeoperations ) {
+		$allowunsafeoperations = TRUE;
+	} else {
+		$allowunsafeoperations = FALSE;
+	}
 	if( defined( $keepbackups ) and $keepbackups ) {
 		$keepbackups = TRUE;
 	} else {
@@ -6168,8 +6349,10 @@ sub main( @ ) { # {{{
 	}
 	if( defined( $unsafe ) and $unsafe ) {
 		$unsafe = TRUE;
+		$tokenise = FALSE;
 	} else {
 		$unsafe = FALSE;
+		$tokenise = TRUE;
 	}
 
 	if( defined( $lock ) and $lock ) {
@@ -6197,6 +6380,69 @@ sub main( @ ) { # {{{
 		$ok = FALSE;
 	}
 
+	if( not( defined( $odbcdsn ) ) ) {
+		if( not( defined( $port ) and $port > 0 ) ) {
+			$port = PORT;
+		}
+	} else {
+		my $output = FALSE;
+
+		$tokenise = FALSE;
+
+		if( not( defined( $port ) and $port > 0 ) ) {
+			if( $odbcdsn =~ m/Port=([^;]+)(?:;|$)/i ) {
+				print( "\n" ) unless( $output );
+				print( "=> Using port `$1` from supplied DSN ...\n" ) unless( $quiet or $silent );
+				$port = $1;
+				$output = TRUE;
+			} else {
+				$port = VERTICAPORT;
+			}
+		}
+		if( not( defined( $host ) and length( $host ) ) ) {
+			if( $odbcdsn =~ m/ServerName=([^;]+)(?:|;$)/i ) {
+				print( "\n" ) unless( $output );
+				print( "=> Using host `$1` from supplied DSN ...\n" ) unless( $quiet or $silent );
+				$host = $1;
+				$output = TRUE;
+			} else {
+				$ok = FALSE;
+			}
+		}
+		if( not( defined( $user ) and length( $user ) ) ) {
+			if( $odbcdsn =~ m/UserName=([^;]+)(?:;|$)/i ) {
+				print( "\n" ) unless( $output );
+				print( "=> Using username `$1` from supplied DSN ...\n" ) unless( $quiet or $silent );
+				$user = $1;
+				$output = TRUE;
+			} else {
+				$ok = FALSE;
+			}
+		}
+		if( not( defined( $pass ) and length( $pass ) ) ) {
+			if( $odbcdsn =~ m/Password=([^;]+)(?:;|$)/i ) {
+				print( "\n" ) unless( $output );
+				print( "=> Using password `$1` from supplied DSN ...\n" ) unless( $quiet or $silent );
+				$pass = $1;
+				$output = TRUE;
+			} else {
+				$ok = FALSE;
+			}
+		}
+		if( not( defined( $db ) and length( $db ) ) ) {
+			if( $odbcdsn =~ m/Database=([^;]+)(?:;|$)/i ) {
+				print( "\n" ) unless( $output );
+				print( "=> Using database `$1` from supplied DSN ...\n" ) unless( $quiet or $silent );
+				$db = $1;
+			} else {
+				$ok = FALSE;
+				$output = TRUE;
+			}
+		}
+
+		print( "\n" ) if( $output );
+	}
+
 	#undef( $odbcdsn ) unless( defined( $odbcdsn ) and length( $odbcdsn ) );
 	undef( $user ) unless( defined( $user ) and length( $user ) );
 	undef( $pass ) unless( defined( $pass ) and length( $pass ) );
@@ -6209,6 +6455,7 @@ sub main( @ ) { # {{{
 
 	if( defined( $odbcdsn ) ) {
 		$ok = FALSE if( not( $odbcok ) );
+		$ok = FALSE if( not( $vschm ) );
 		$ok = FALSE if( $action_backup );
 		$ok = FALSE if( $lock );
 		$ok = FALSE if( $keeplock );
@@ -6224,9 +6471,9 @@ sub main( @ ) { # {{{
 		$ok = FALSE if( $keepbackups );
 		$ok = FALSE if( $compat );
 		$ok = FALSE if( $relaxed );
-		$ok = FALSE if( $user );
-		$ok = FALSE if( $pass );
-		$ok = FALSE if( $host );
+		#$ok = FALSE if( $user );
+		#$ok = FALSE if( $pass );
+		#$ok = FALSE if( $host );
 		#$ok = FALSE if( $db );
 	}
 
@@ -6235,17 +6482,19 @@ sub main( @ ) { # {{{
 		my $length = length( $myway ) + length( "Usage:  " );
 		#	                              2         3         4         5         6         7         8
 		#	                           7890123456789012345678901234567890123456789012345678901234567890
-		if( $odbcok and ( defined( $odbcdsn ) or ( $syntax eq 'vertica' ) ) ) {
+		if( defined( $odbcdsn ) or ( $syntax eq 'vertica' ) ) {
 			print(       "Usage: $myway --dsn \"ODBC DSN\" [--database <schema>] ...\n" );
 			print( ( " " x $length ) . "<--init [version]|[--migrate|--check] ...\n" );
 			print( ( " " x $length ) . "<--scripts <directory>|--file <schema>> [[:syntax:]]\n" );
+			print( ( " " x $length ) . "[--vertica-schema <schema name>]\n" );
 			print( ( " " x $length ) . "[--clear-metadata] [--dry-run] [--force] [--debug] [--verbose]\n" );
-			print( "\n" );
-			print( ( " " x $length ) . "syntax:            --syntax <mysql|vertica>\n" );
 			print( "\n" );
 			print( ( " " x $length ) . "ODBC DSN example:  Driver=libverticaodbc.so;Database=db;ServerName=localhost;Port=5433;UserName=x;Password=y\n" );
 			print( "\n" );
-		} elsif( not(defined(  $odbcdsn ) ) ) {
+			print( ( " " x $length ) . "syntax:            --syntax <mysql|vertica>\n" );
+			print( "\n" );
+			print( ( " " x $length ) . "--vertica-schema - Specify Vertica database/schema name\n" );
+		} else {
 			print(       "Usage: $myway <--username <user> --password <passwd> --host <node> ...\n" ) if( $odbcok );
 			print( ( " " x $length ) . " --database <db>> | <--dsn <dsn>> [[:syntax:]] ...\n" ) if( $odbcok );
 			print(       "Usage: $myway -u <username> -p <password> -h <host> -d <database> ...\n" ) if( not( $odbcok ) );
@@ -6281,6 +6530,7 @@ sub main( @ ) { # {{{
 			print( ( " " x $length ) . "--keep-backup    - Copy backups to a local directory on exit\n" );
 		}
 		{
+			print( "\n" );
 			print( ( " " x $length ) . "--clear-metadata - Remove all {my,fly}way metadata tables\n" );
 			print( ( " " x $length ) . "--force          - Allow a database to be re-initialised or\n" );
 			print( ( " " x $length ) . "                   ignore previous and target versions when\n" );
@@ -6289,6 +6539,13 @@ sub main( @ ) { # {{{
 			print( ( " " x $length ) . "--dry-run        - Validate but do not execute schema SQL\n" );
 			print( ( " " x $length ) . "--debug          - Output copious debugging statements\n" );
 			print( ( " " x $length ) . "--verbose        - Provide more detailed status information\n" );
+		}
+		if( defined( $odbcdsn ) or ( $syntax eq 'vertica' ) ) {
+			if( not( defined( $odbcok ) and $odbcok ) ) {
+				print( "\n" );
+				print( "WARNING: Could not load DBD::ODBC module - ODBC functionality not available\n" );
+				print( "\n" );
+			}
 		}
 		exit( 0 );
 	} elsif( not( $ok ) ) {
@@ -6325,18 +6582,19 @@ sub main( @ ) { # {{{
 			warn( "Cannot specify argument '--keep-backup' with option '--dsn'\n" ) if( $keepbackups );
 			warn( "Cannot specify argument '--mysql-compat' with option '--dsn'\n" ) if( $compat );
 			warn( "Cannot specify argument '--mysql-relaxed' with option '--dsn'\n" ) if( $relaxed );
-			warn( "Cannot specify argument '--user' with option '--dsn'\n" ) if( defined( $user ) );
-			warn( "Cannot specify argument '--password' with option '--dsn'\n" ) if( defined( $pass ) );
-			warn( "Cannot specify argument '--host' with option '--dsn'\n" ) if( defined( $host ) );
+			#warn( "Cannot specify argument '--user' with option '--dsn'\n" ) if( defined( $user ) );
+			#warn( "Cannot specify argument '--password' with option '--dsn'\n" ) if( defined( $pass ) );
+			#warn( "Cannot specify argument '--host' with option '--dsn'\n" ) if( defined( $host ) );
 			#warn( "Cannot specify argument '--database' with option '--dsn'\n" ) if( defined( $db ) );
+			warn( "Required argument '--vertica-schema' not specified\n" ) unless( defined( $vschm ) );
 		} else {
 			warn( "Argument '--syntax' must be 'mysql' unless using ODBC\n" ) unless( $syntax eq 'mysql' );
 			warn( "Cannot specify argument '--vertica-schema' unless option '--syntax=vertica' is specified\n" ) if( defined( $vschm ) );
-			warn( "Required argument '--user' not specified\n" ) unless( defined( $user ) );
-			warn( "Required argument '--password' not specified\n" ) unless( defined( $pass ) );
-			warn( "Required argument '--host' not specified\n" ) unless( defined( $host ) );
-			warn( "Required argument '--database' not specified\n" ) unless( defined( $db ) );
 		}
+		warn( "Required argument '--user' not specified\n" ) unless( defined( $user ) );
+		warn( "Required argument '--password' not specified\n" ) unless( defined( $pass ) );
+		warn( "Required argument '--host' not specified\n" ) unless( defined( $host ) );
+		warn( "Required argument '--database' not specified\n" ) unless( defined( $db ) );
 		warn( "Required argument '--schema' or '--schemata' not specified\n" ) unless( defined( $file ) or ( @paths ) or defined( $action_backup ) or defined( $action_restore ) );
 		warn( "Command '--restore' takes only a filename as the single argument\n" ) if( defined( $action_restore ) );
 		warn( "... additionally, Getopt failed with '$getoptout'\n" ) if( defined( $getoptout ) );
@@ -6389,8 +6647,11 @@ sub main( @ ) { # {{{
 	};
 
 	if( defined( $action_restore ) and length( $action_restore ) ) {
-		dbrestore( $auth, $action_restore );
-		die( "Datbase restoration failed for file '$action_restore'\n" );
+		if( dbrestore( $auth, $action_restore ) ) {
+			die( "Datbase restoration failed for file '$action_restore'\n" );
+		} else {
+			exit( 0 );
+		}
 	}
 
 	if( defined( $action_backup ) ) {
@@ -6464,7 +6725,7 @@ sub main( @ ) { # {{{
 					die( $error ."\n" ) if $error;
 
 					if( not ( dosql( $dbh, "FLUSH TABLES WITH READ LOCK" ) ) ) {
-						warn( "$warning Failed to globally lock all instance databases' tables\n" );
+						warn( "\n$warning Failed to globally lock all instance databases' tables\n" );
 						$lock = FALSE;
 						$keeplock = FALSE;
 					} else {
@@ -6497,10 +6758,10 @@ sub main( @ ) { # {{{
 						( $rc, $sig, $core ) = ( $? >> 8, $? & 127, $? & 128 );
 
 						if( $core ) {
-							warn( "$fatal backup process $firstchildpidorzero core-dumped\n" );
+							warn( "\n$fatal backup process $firstchildpidorzero core-dumped\n" );
 							kill( -15, $secondchildpidorzero ) if( $secondchildpidorzero );
 						} elsif( 9 == $sig ) {
-							warn( "$warning backup process $firstchildpidorzero was KILLed\n" );
+							warn( "\n$warning backup process $firstchildpidorzero was KILLed\n" );
 							kill( -15, $secondchildpidorzero ) if( $secondchildpidorzero );
 						} else {
 							pwarn( "backup process $firstchildpidorzero returned $rc" . ( $sig ? " after signal $sig" : '' ) ) unless( 0 == $rc );
@@ -6517,9 +6778,9 @@ sub main( @ ) { # {{{
 						my( $sig, $core );
 						( $rc, $sig, $core ) = ( $? >> 8, $? & 127, $? & 128 );
 						if( $core ) {
-							warn( "$fatal lock process $secondchildpidorzero core-dumped\n" );
+							warn( "\n$fatal lock process $secondchildpidorzero core-dumped\n" );
 						} elsif( 9 == $sig ) {
-							warn( "$warning lock process $secondchildpidorzero was KILLed\n" );
+							warn( "\n$warning lock process $secondchildpidorzero was KILLed\n" );
 						} else {
 							pwarn( "lock process $secondchildpidorzero returned $rc" . ( $sig ? " after signal $sig" : '' ) );
 						}
@@ -6558,7 +6819,7 @@ sub main( @ ) { # {{{
 		} else { # $lock
 			if( not( $keeplock ) ) {
 				if( not ( dosql( $dbh, "FLUSH TABLES WITH READ LOCK" ) ) ) {
-					warn( "$warning Failed to lock tables transaction\n" );
+					warn( "\n$warning Failed to lock tables transaction\n" );
 					$lock = FALSE;
 					$keeplock = FALSE;
 					$dbh -> disconnect;
@@ -6732,12 +6993,12 @@ sub main( @ ) { # {{{
 					if( not( -d $singlepath ) ) {
 						$singlepath = undef;
 						$okay = FALSE;
-						warn( "$fatal Cannot resolve directory name for path '$singlefile'\n" );
+						warn( "\n$fatal Cannot resolve directory name for path '$singlefile'\n" );
 					}
 				#}
 				if( defined( $singlepath ) and not( $singlepath eq $path ) ) {
 					$okay = FALSE;
-					warn( "$fatal Directory path for file '$singlefile' does not fall within detected common directory '$path'\n" );
+					warn( "\n$fatal Directory path for file '$singlefile' does not fall within detected common directory '$path'\n" );
 				}
 
 				if( basename( $singlefile ) =~ m/\.metadata$/ ) {
@@ -6756,16 +7017,26 @@ sub main( @ ) { # {{{
 		} else {
 			#@files = i3_keysort { ( my $version = $_ ) =~ s/^V([\d.])+__.*$/$1/; return( split( /\./, $version ) ); } @{ $target };
 			#my @sortedfiles = sort { ( $a =~ /^V([\d.]+)__/ )[ 0 ] <=> ( $b =~ /^V([\d.]+)__/ )[ 0 ] } @{ $target };
+			my $shouldsort = TRUE;
+
                         foreach my $index ( 0 .. scalar( @{ $target } ) ) {
                                 my $file = @{ $target }[ $index ];
                                 if( not( length( $file ) ) or ( $file =~ m/^\s*$/ ) ) {
                                         delete @{ $target }[ $index ];
                                 } else {
                                         my $version = ( $file  =~ /V([\d.]+)__/ )[ 0 ];
-                                        warn( "$warning Target '$file' has invalid name without an identifiable version" ) unless ( defined( $version ) and length( $version ) );
+					if( not( defined( $version ) and length( $version ) ) ) {
+						warn( "\n$warning Target '$file' has invalid name without an identifiable version\n" );
+						warn( "$warning Relying on filesystem sorting only - schema may be applied in an undefined order\n" );
+						$shouldsort = FALSE;
+					}
                                 }
                         }
-                        @files = sort { versioncmp( ( $a =~ /V([\d.]+)__/ )[ 0 ], ( $b =~ /V([\d.]+)__/ )[ 0 ] ) } @{ $target };
+			if( $shouldsort ) {
+				@files = sort { versioncmp( ( $a =~ /V([\d.]+)__/ )[ 0 ], ( $b =~ /V([\d.]+)__/ )[ 0 ] ) } @{ $target };
+			} else {
+				@files = @{ $target };
+			}
 		}
 	}
 
@@ -6819,7 +7090,11 @@ sub main( @ ) { # {{{
 		if( $syntax eq 'mysql' ) {
 			dosql( $dbh, "CREATE DATABASE IF NOT EXISTS `$db`" ) or die( "Failed to create database: " . $dbh -> errstr() . "\n" );
 		} elsif( $syntax eq 'vertica' ) {
-			dosql( $dbh, "CREATE SCHEMA IF NOT EXISTS \"$db\"" ) or die( "Failed to create database: " . $dbh -> errstr() . "\n" );
+			if( defined( $vschm ) and length( $vschm ) ) {
+				dosql( $dbh, "CREATE SCHEMA IF NOT EXISTS \"$vschm\"" ) or die( "Failed to create Vertica schema '$vschm': " . $dbh -> errstr() . "\n" );
+			} elsif( defined( $db ) and length( $db ) ) {
+				dosql( $dbh, "CREATE SCHEMA IF NOT EXISTS \"$db\"" ) or die( "Failed to create Vertica schema '$db': " . $dbh -> errstr() . "\n" );
+			}
 		}
 
 		print( "\n=> Disconnecting from database.\n" ) unless( $quiet or $silent );
@@ -6837,11 +7112,31 @@ sub main( @ ) { # {{{
 	my $dbh;
 	my $error = dbopen( \$dbh, $dsn, $user, $pass, $strict, { RaiseError => 0, PrintError => 0 } );
 	die( $fatal . ' ' . $error . "\n" . ' ' x length( $fatal ) . "(Databases will be auto-created on --init when not in dry-run mode)\n" ) if $error;
+
 	# Apparently '17' (SQL_DBMS_NAME) canonically returns the database
 	# instance vendor...
 	$engine = lc( $dbh -> get_info( 17 ) );
-	if( 'vertica' eq $engine ) {
+	if( 'vertica database' eq $engine ) {
+		if( VERTICAODBCISBROKEN ) {
+			print( "*> WARNING: The ODBC interface to Vertica is HORRIBLY BROKEN <*\n" );
+			print( "*>          It appears to be able to be replied upon ONLY so <*\n" );
+			print( "*>          long as ALL SQL statements are 100% correct, and <*\n" );
+			print( "*>          entirely syntactically valid!                    <*\n\n" );
+		}
 		print( "-> Successfully connected to Vertica database instance\n" );
+		$engine = 'vertica';
+
+		my $path;
+		if( defined( $vschm ) and length( $vschm ) ) {
+			$path = $vschm;
+		} elsif( defined( $db ) and length( $db ) ) {
+			$path = $db;
+		}
+		if( defined( $path ) and length( $path ) ) {
+			print( "\n=> Setting Vertica SEARCH_PATH to include `$path` ...\n" ) unless( $quiet or $silent );
+			$searchpath = "SET SEARCH_PATH TO \"$path\", " . ( ( defined( $user ) and length( $user ) ) ? "\"$user\", " : '' ) . "PUBLIC, v_catalog, v_monitor, v_internal";
+			dosql( $dbh, $searchpath );
+		}
 	} elsif( 'mysql' eq $engine ) {
 		print( "-> Successfully connected to MySQL database instance\n" );
 	} else {
@@ -6859,6 +7154,8 @@ sub main( @ ) { # {{{
 	# generated?) documentation also suggests specfying the column also,
 	# which is hopefully simply an oversight...
 	if( $clear ) { # and $safetyoff
+		my $flag = $allowunsafeoperations;
+		$allowunsafeoperations = TRUE;
 		if( 'procedure' eq $mode ) {
 			dosql( $dbh, "DROP TABLE IF EXISTS " . ( ( 'vertica' eq $engine ) ? "\"$db\"." : '' ) . "`$mywayprocsname`" );
 		} else {
@@ -6866,6 +7163,7 @@ sub main( @ ) { # {{{
 			dosql( $dbh, "DROP TABLE IF EXISTS " . ( ( 'vertica' eq $engine ) ? "\"$db\"." : '' ) . "`$mywayactionsname`" );
 			dosql( $dbh, "DROP TABLE IF EXISTS " . ( ( 'vertica' eq $engine ) ? "\"$db\"." : '' ) . "`$mywaytablename`" );
 		}
+		$allowunsafeoperations = $flag;
 	}
 
 	my @tables;
@@ -6912,7 +7210,9 @@ sub main( @ ) { # {{{
 		} else {
 			print( "\n=> Ensuring that $name `$tname` table exists ...\n" ) unless( $quiet or $silent);
 			if( 'vertica' eq $engine ) {
-				if( defined( $db ) ) {
+				if( defined( $vschm ) and length( $vschm ) ) {
+					$ddl =~ s/__SCHEMA__/\"$vschm\"./g;
+				} elsif( defined( $db ) and length( $db ) ) {
 					$ddl =~ s/__SCHEMA__/\"$db\"./g;
 				} else {
 					$ddl =~ s/__SCHEMA__//g;
@@ -6966,7 +7266,8 @@ sub main( @ ) { # {{{
 					my $st = "DESCRIBE `$tname`";
 					my $sth = executesql( $dbh, undef, $st );
 					if( not( defined( $sth ) and $sth ) ) {
-						warn( "Unable to create statement handle to execute '$st': " . $dbh -> errstr() . "\n" );
+						my $errstr = $dbh -> errstr();
+						warn( "\n$failed Unable to create statement handle to execute '$st'" . ( defined( $errstr ) and length( $errstr ) ? ": " . $errstr : '' ) . "\n" );
 					} else {
 						my $foundexecutionstarted = FALSE;
 
@@ -7013,7 +7314,8 @@ sub main( @ ) { # {{{
 					my $st = "DESCRIBE `$tname`";
 					my $sth = executesql( $dbh, undef, $st );
 					if( not( defined( $sth ) and $sth ) ) {
-						warn( "Unable to create statement handle to execute '$st': " . $dbh -> errstr() . "\n" );
+						my $errstr = $dbh -> errstr();
+						warn( "\n$failed Unable to create statement handle to execute '$st'" . ( defined( $errstr ) and length( $errstr ) ? ": " . $errstr : '' ) . "\n" );
 					} else {
 						my $foundoldstatementtype = FALSE;
 
@@ -7084,6 +7386,7 @@ sub main( @ ) { # {{{
 	$variables -> { 'strict' }    = $strict;
 	$variables -> { 'tmpdir' }    = $tmpdir;
 	$variables -> { 'unsafe' }    = $unsafe;
+	$variables -> { 'vschm' }     = $vschm;
 
 	my $version = undef;
 
@@ -7110,7 +7413,7 @@ sub main( @ ) { # {{{
 							die( "applyschema() failed\n" );
 						}
 					} else {
-						warn( "applyschema() returned invalid data '$version':\n" );
+						warn( "\n$fatal applyschema() returned invalid data '$version':\n" );
 						print Data::Dumper -> Dump( [ $version ], [ qw( *version ) ] );
 						die( "applyschema() returned invalid response\n" );
 					}
@@ -7121,12 +7424,13 @@ sub main( @ ) { # {{{
 					#die( "Aborted\n" );
 					#disable diagnostics;
 					die( "$fatal " . $@ . "\n" );
+
 					# Unreachable
 					#enable diagnostics;
 				}
 				$variables -> { 'first' } = FALSE if( $variables -> { 'first' } );
 			} else {
-				warn( "$warning Cannot read from file '$item' - skipping\n" );
+				warn( "\n$warning Cannot read from file '$item' - skipping\n" );
 			}
 		}
 	} else {
@@ -7139,6 +7443,7 @@ sub main( @ ) { # {{{
 			#die( "Aborted\n" );
 			#disable diagnostics;
 			die( "$fatal " . $@ . "\n" );
+
 			# Unreachable
 			#enable diagnostics;
 		}
