@@ -3965,7 +3965,7 @@ sub dbdump( $;$$$$ ) { # {{{
 			 . ' --disable-keys --dump-date --events --flush-logs'
 			 . ' --flush-privileges --hex-blob'
 			 . ' --include-master-host-port --no-autocommit'
-			 . ' --order-by-primary --quote-names'
+			 . ' --order-by-primary --quick --quote-names'
 			 . ' --routines --set-charset --single-transaction'
 			 . ' --triggers --tz-utc'
 			 ;
@@ -6141,7 +6141,9 @@ sub main( @ ) { # {{{
 	  'b|backup:s'					=> \$action_backup
 	,   'lock|lock-database|lock-databases!'	=> \$lock
 	,   'keep-lock!'				=> \$keeplock
-	,   'small|small-database|small-dataset!'	=> \$small
+	,   'small|small-database|small-dataset'
+	.   'trans|transaction|transactional'
+	.   'single-transaction!'			=> \$small
 	,   'compress:s'				=> \$compress
 	,   'split|separate-files!'			=> \$split
 	,   'skip-metadata!'				=> \$skipmeta
@@ -6504,7 +6506,8 @@ sub main( @ ) { # {{{
 			print( ( " " x $length ) . "[[:mode:]] [--mysql-compat] [--no-backup|--keep-backup] ...\n" );
 			print( ( " " x $length ) . "[--clear-metadata] [--dry-run] [--force] [--debug] [--verbose]\n" );
 			print( "\n" );
-			print( ( " " x $length ) . "backup options:   [--compress [:scheme:]] [--small-dataset]\n" );
+			#print( ( " " x $length ) . "backup options:   [--compress [:scheme:]] [--small-dataset]\n" );
+			print( ( " " x $length ) . "backup options:   [--compress [:scheme:]] [--transactional]\n" );
 			print( ( " " x $length ) . "                  [--lock [--keep-lock]] [--separate-files]\n" );
 			print( ( " " x $length ) . "                  [--skip-metadata] [--extended-insert]\n" );
 			print( ( " " x $length ) . "scheme:           <gzip|bzip2|xz|lzma>\n" );
@@ -6518,7 +6521,8 @@ sub main( @ ) { # {{{
 			print( ( " " x $length ) . "--mysql-relaxed  - Do not operate in STRICT mode\n" );
 			print( "\n" );
 			print( ( " " x $length ) . "--compress       - Compress backups [using <scheme> compression]\n" );
-			print( ( " " x $length ) . "--small-dataset  - Optimise for tables of less than 1GB in size\n" );
+			#print( ( " " x $length ) . "--small-dataset  - Optimise for tables of less than 1GB in size\n" );
+			print( ( " " x $length ) . "--transactional  - Don't lock transactional tables\n" );
 			print( ( " " x $length ) . "--lock           - Lock instance for duration of backup\n" );
 			print( ( " " x $length ) . "--keep-lock      - Keep lock for up to 24 hours following backup\n" );
 			print( "\n" );
@@ -6569,7 +6573,8 @@ sub main( @ ) { # {{{
 			warn( "Cannot specify argument '--backup' with option '--dsn'\n" ) if( defined( $action_backup ) );
 			warn( "Cannot specify argument '--lock' with option '--dsn'\n" ) if( $lock );
 			warn( "Cannot specify argument '--keep-lock' with option '--dsn'\n" ) if( $keeplock );
-			warn( "Cannot specify argument '--small-dataset' with option '--dsn'\n" ) if( $small );
+			#warn( "Cannot specify argument '--small-dataset' with option '--dsn'\n" ) if( $small );
+			warn( "Cannot specify argument '--transactional' with option '--dsn'\n" ) if( $small );
 			warn( "Cannot specify argument '--compress' with option '--dsn'\n" ) if( defined( $compress ) );
 			warn( "Cannot specify argument '--separate-files' with option '--dsn'\n" ) if( $split );
 			warn( "Cannot specify argument '--skip-metadata' with option '--dsn'\n" ) if( $skipmeta );
@@ -6841,10 +6846,10 @@ sub main( @ ) { # {{{
 		my $success;
 		#if( defined( $location ) ) {
 			my $options = {
-				  'compress'	=> $compress
-				, 'small'	=> $small
-				, 'skipmeta'	=> $skipmeta
-				, 'extinsert'	=> $extinsert
+				  'compress'		=> $compress
+				, 'transactional'	=> $small
+				, 'skipmeta'		=> $skipmeta
+				, 'extinsert'		=> $extinsert
 			};
 			if( defined( $db ) and length( $db ) ) {
 				if( not( $split ) or not( $availabletables and scalar( @{ $availabletables } ) ) ) {
