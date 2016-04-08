@@ -4109,6 +4109,18 @@ sub dbrestore( $$ ) { # {{{
 	die( "Cannot locate 'mysql' binary\n" ) unless( defined( $mysql ) and -x $mysql );
 	die( "Cannot read file '$file'\n" ) unless( -r $file );
 
+	my $decompress;
+	if( $file =~ /\.bz2$/ ) {
+		$decompress = 'bunzip2 -cdq';
+	} elsif( $file =~ /\.gz$/ ) {
+		$decompress = 'gunzip -cq';
+	} elsif( $file =~ /\.xz$/ ) {
+		$decompress = 'unxz -cdq';
+	} elsif( $file =~ /\.lzma$/ ) {
+		$decompress = 'unlzma -cdq';
+	}
+	pdebug( "Will decompress data with command '$decompress'" ) if( defined( $decompress) and length( $decompress ) );
+
 	# To resolve bugs.mysql.com/69970, any instance of:
 	#
 	#   /*!40000 DROP DATABASE IF EXISTS `mysql`*/;
@@ -4124,19 +4136,19 @@ sub dbrestore( $$ ) { # {{{
 	#   /*!50106 SET GLOBAL SLOW_QUERY_LOG=@OLD_SLOW_QUERY_LOG*/;
 	#
 
-	my $decompress;
-	if( $file =~ /\.bz2$/ ) {
-		$decompress = 'bunzip2 -cdq';
-	} elsif( $file =~ /\.gz$/ ) {
-		$decompress = 'gunzip -cq';
-	} elsif( $file =~ /\.xz$/ ) {
-		$decompress = 'unxz -cdq';
-	} elsif( $file =~ /\.lzma$/ ) {
-		$decompress = 'unlzma -cdq';
+	my $fixdrop = <<'EOF';
+sed -u '/^\/\*\!40000 DROP DATABASE IF EXISTS \`mysql\`\*\/;$/s|^.*$|/*!50106 SET @OLD_GENERAL_LOG=@@GENERAL_LOG*/;\n/*!50106 SET GLOBAL GENERAL_LOG=0*/;\n/*!50106 SET @OLD_SLOW_QUERY_LOG=@@SLOW_QUERY_LOG*/;\n/*!50106 SET GLOBAL SLOW_QUERY_LOG=0*/;\n/*!40000 DROP DATABASE IF EXISTS `mysql`*/;\n/*!50106 SET GLOBAL GENERAL_LOG=@OLD_GENERAL_LOG*/;\n/*!50106 SET GLOBAL SLOW_QUERY_LOG=@OLD_SLOW_QUERY_LOG*/;|'
+EOF
+	chomp( $fixdrop );
+	my $verbose = '';
+	if( $verbosity > 0 ) {
+		$verbose = '-v';
 	}
-	pdebug( "Will decompress data with command '$decompress'" ) if( defined( $decompress) and length( $decompress ) );
+	if( DEBUG or ( $verbosity > 2 ) ) {
+		$verbose = '-v -v -v';
+	}
+	my $command = '"' . $file . ( defined( $decompress ) ? '" | ' . $decompress : '"' ) . ' | ' . $fixdrop . ' | { ' . $mysql . " -u $user -p$password -h $host $verbose 2>&1 ; }";
 
-	my $command;
 	if( which( 'pv' ) ) {
 		my ( $columns, $rows );
 		$columns = $rows = '';
@@ -4146,11 +4158,11 @@ sub dbrestore( $$ ) { # {{{
 		if( defined( $ENV{ 'LINES' } ) and $ENV{ 'LINES' } ) {
 			$rows = ' -H ' . $ENV{ 'LINES' };
 		}
-		$command = 'pv -e -p -t -r -a -b -c ' . $columns . $rows . ' -N "' . basename( $file ) . '" "' . $file . ( defined( $decompress ) ? '" | ' . $decompress : '"' ) . ' | { ' . $mysql . " -u $user -p$password -h $host 2>&1 ; }"
+		$command = 'pv -e -p -t -r -a -b -c ' . $columns . $rows . ' -N "' . basename( $file ) . '" ' . $command;
 	} else {
 		warn( "$warning Cannot locate 'pv' executable: only errors will be reported\n\n" );
 
-		$command = 'cat "' . basename( $file ) . '" "' . $file . ( defined( $decompress ) ? '" | ' . $decompress : '"' ) . ' | { ' . $mysql . " -u $user -p$password -h $host 2>&1 ; }"
+		$command = 'cat ' . $command;
 	}
 	pdebug( "Restore command is '$command'" );
 	#exec( $command ) or die( "Failed to execute 'pv' in order to monitor data restoration: $!\n" );
