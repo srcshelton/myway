@@ -4135,6 +4135,17 @@ sub dbrestore( $$ ) { # {{{
 	#   /*!50106 SET GLOBAL GENERAL_LOG=@OLD_GENERAL_LOG*/;
 	#   /*!50106 SET GLOBAL SLOW_QUERY_LOG=@OLD_SLOW_QUERY_LOG*/;
 	#
+	# Update: We then hit bugs.mysql.com/58116 where the line:
+	#
+	#   /*!50106 SET GLOBAL SLOW_QUERY_LOG=@OLD_SLOW_QUERY_LOG*/;
+	#
+	# results in:
+	#
+	#   ERROR 1146 (42S02) at line 59529: Table 'mysql.slow_log' doesn't exist
+	#
+	# ... which means that the fnial statement needs to be re-inserted at
+	# the end of the file, somehow <sigh>
+	#
 
 	my $fixdrop = <<'EOF';
 sed -u '/^\/\*\!40000 DROP DATABASE IF EXISTS `mysql`\*\/;\?$/s|^.*$|/*!50106 SET @OLD_GENERAL_LOG=@@GENERAL_LOG*/;\n/*!50106 SET GLOBAL GENERAL_LOG=0*/;\n/*!50106 SET @OLD_SLOW_QUERY_LOG=@@SLOW_QUERY_LOG*/;\n/*!50106 SET GLOBAL SLOW_QUERY_LOG=0*/;\n/*!40000 DROP DATABASE IF EXISTS `mysql`*/;\n/*!50106 SET GLOBAL GENERAL_LOG=@OLD_GENERAL_LOG*/;\n/*!50106 SET GLOBAL SLOW_QUERY_LOG=@OLD_SLOW_QUERY_LOG*/;|'
