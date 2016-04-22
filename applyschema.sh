@@ -213,6 +213,8 @@ function main() {
 
 	(( std_TRACE )) && set -o xtrace
 
+	local -l syntax
+
 	# We're going to eval our config file sections - hold onto your hats!
 	eval "${defaults}"
 	eval "${hosts}"
@@ -222,7 +224,7 @@ function main() {
 		# Run the block below in a sub-shell so that we don't have to
 		# manually sanitise the environment on each iteration.
 		#
-		( # ) # <- Syntax highlight fail
+		(
 
 		if [[ -n "${dblist:-}" ]] && ! grep -q ",${db}," <<<",${dblist},"; then
 			(( silent )) || info "Skipping deselected database '${db}' ..."
@@ -307,6 +309,10 @@ function main() {
 		else
 			die "Neither 'host' nor 'cluster' membership is defined for database '${db}' in '${filename}'"
 		fi
+		if [[ -n "${syntax:-}" && "${syntax}" == "vertica" && -z "${dsn:-}" ]]; then
+			die "'dsn' is a mandatory parameter when 'syntax' is set to '${syntax}'"
+		fi
+
 		debug "Attempting to resolve host '${host}' ..."
 		if (( std_DEBUG )); then
 			debug "Not performing host resolution in DEBUG mode - skipping"
@@ -317,24 +323,58 @@ function main() {
 		local -a params=( -u "${dbadmin}" -p "${passwd}" -h "${host}" -d "${db}" )
 		local -a extraparams
 		local option
+
+		if [[ -n "${dsn:-}" ]]; then
+			case "${syntax:-}" in
+				vertica)
+					params=( --syntax ${syntax} --dsn "${dsn}" )
+					if ! grep -Eiq '(^|;)username=([^;]+)(;|$)' <<<"${dsn}"; then
+						params+=( -u "${dbadmin}" )
+					fi
+					if ! grep -Eiq '(^|;)password=([^;]+)(;|$)' <<<"${dsn}"; then
+						params+=( -h "${passwd}" )
+					fi
+					if ! grep -Eiq '(^|;)servername=([^;]+)(;|$)' <<<"${dsn}"; then
+						params+=( -h "${host}" )
+					fi
+					if ! grep -Eiq '(^|;)database=([^;]+)(;|$)' <<<"${dsn}"; then
+						params+=( -d "${db}" )
+					fi
+					if [[ -n "${schema:-}" ]]; then
+						params+=( --vertica-schema "${schema}" )
+					else
+						warn "No 'schema' value specified for Vertica database - unless 'SEARCH_PATH' is set appropraitely, statements may fail"
+					fi
+					;;
+				'')
+					die "'syntax' is a mandatory parameter when a DSN is used"
+					;;
+				*)
+					die "Unknown database type '${syntax:-}'"
+					;;
+			esac
+		fi
+
 		for option in force verbose warn debug quiet silent; do
 			eval echo "\${options_${option}:-}" | grep -Eq "${truthy}" && params+=( --${option} )
 		done
-		for option in compat relaxed; do
-			eval echo "\${mysql_${option}:-}" | grep -Eq "${truthy}" && params+=( --mysql-${option} )
-		done
-		if grep -Eq "${falsy}" <<<"${backups:-}"; then
-			params+=( --no-backup )
-		else
-			[[ -n "${backups_compress:-}" ]] && params+=( --compress "${backups_compress}" )
-			grep -Eq "${truthy}" <<<"${backups_transactional:-}" && params+=( --transactional )
-			grep -Eq "${truthy}" <<<"${backups_lock:-}" && params+=( --lock )
-			grep -Eq "${truthy}" <<<"${backups_keeplock:-}" && params+=( --keep-lock )
-			grep -Eq "${truthy}" <<<"${backups_separate:-}" && params+=( --separate-files )
-			grep -Eq "${truthy}" <<<"${backups_skipmeta:-}" && params+=( --skip-metadata )
-			grep -Eq "${truthy}" <<<"${backups_extended:-}" && params+=( --extended-insert )
+		if [[ "${syntax:-}" != "vertica" ]]; then
+			for option in compat relaxed; do
+				eval echo "\${mysql_${option}:-}" | grep -Eq "${truthy}" && params+=( --mysql-${option} )
+			done
+			if grep -Eq "${falsy}" <<<"${backups:-}"; then
+				params+=( --no-backup )
+			else
+				[[ -n "${backups_compress:-}" ]] && params+=( --compress "${backups_compress}" )
+				grep -Eq "${truthy}" <<<"${backups_transactional:-}" && params+=( --transactional )
+				grep -Eq "${truthy}" <<<"${backups_lock:-}" && params+=( --lock )
+				grep -Eq "${truthy}" <<<"${backups_keeplock:-}" && params+=( --keep-lock )
+				grep -Eq "${truthy}" <<<"${backups_separate:-}" && params+=( --separate-files )
+				grep -Eq "${truthy}" <<<"${backups_skipmeta:-}" && params+=( --skip-metadata )
+				grep -Eq "${truthy}" <<<"${backups_extended:-}" && params+=( --extended-insert )
 
-			grep -Eq "${truthy}" <<<"${backups_keep:-}" && params+=( --keep-backup )
+				grep -Eq "${truthy}" <<<"${backups_keep:-}" && params+=( --keep-backup )
+			fi
 		fi
 		grep -Eq "${truthy}" <<<"${parser_trustname:-}" && params+=( --trust-filename )
 		grep -Eq "${truthy}" <<<"${parser_allowdrop:-}" && params+=( --allow-unsafe )
