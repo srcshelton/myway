@@ -5671,6 +5671,13 @@ SQL
 								$schmtarget = $1;
 							} elsif( $line =~ m/Restore:\s+([^#]+)(?:#.*)?\s*$/i ) {
 								$restorefile = $1;
+							} elsif( $line =~ m/Engine:\s+([^#]+)(?:#.*)?\s*$/i ) {
+								my $requiredengine = $1;
+								if( not( $engine eq $requiredengine ) ) {
+									warn( "!> Metadata in file '$schmfile' requires database engine '$requiredengine' but the current connection reports a '$engine' back-end\n" );
+									dbclose( \$dbh );
+									return( FALSE );
+								}
 							} elsif( $line =~ m/Environment:\s+(!)?\s*([^\s]+)\s*/i ) {
 								$environment = '' unless( defined( $environment ) );
 								my $invert = $1 if( defined( $1 ) and length( $1 ) );
