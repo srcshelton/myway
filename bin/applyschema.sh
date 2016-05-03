@@ -24,6 +24,7 @@ std_DEBUG="${DEBUG:-0}"
 std_TRACE="${TRACE:-0}"
 
 SCRIPT="myway.pl"
+COMPATIBLE="1.1.2"
 
 # Override `die` to return '2' on fatal error...
 function die() {
@@ -68,6 +69,11 @@ function main() {
 		"available"
 	# Alternatively...
 	# eval "$( source "${std_LIBPATH}/${std_LIB}" 2>/dev/null ; std::requires --path "perl" ) -c ${myway}" || die "${myway} is failing to compile - please confirm that all required perl modules are available"
+
+	local version="$( ${myway} --version 2>/dev/null | rev | cut -d' '  -f 1 | rev )"
+	if [[ "${version}" != "${COMPATIBLE}" ]]; then
+		die "$( basename "${0}" ) is compatible only with ${SCRIPT} version ${COMPATIBLE} - found version ${version} at '${myway}'"
+	fi
 
 	local -i novsort=0
 	if ! sort -V <<<"" >/dev/null 2>&1; then
@@ -194,7 +200,7 @@ function main() {
 		exit 0
 	fi
 
-	local -i rc=0
+	local -i result rc=0
 
 	debug "Establishing lock ..."
 
@@ -207,6 +213,8 @@ function main() {
 
 	(( std_TRACE )) && set -o xtrace
 
+	local -l syntax
+
 	# We're going to eval our config file sections - hold onto your hats!
 	eval "${defaults}"
 	eval "${hosts}"
@@ -216,7 +224,7 @@ function main() {
 		# Run the block below in a sub-shell so that we don't have to
 		# manually sanitise the environment on each iteration.
 		#
-		( # ) # <- Syntax highlight fail
+		(
 
 		if [[ -n "${dblist:-}" ]] && ! grep -q ",${db}," <<<",${dblist},"; then
 			(( silent )) || info "Skipping deselected database '${db}' ..."
@@ -301,6 +309,10 @@ function main() {
 		else
 			die "Neither 'host' nor 'cluster' membership is defined for database '${db}' in '${filename}'"
 		fi
+		if [[ -n "${syntax:-}" && "${syntax}" == "vertica" && -z "${dsn:-}" ]]; then
+			die "'dsn' is a mandatory parameter when 'syntax' is set to '${syntax}'"
+		fi
+
 		debug "Attempting to resolve host '${host}' ..."
 		if (( std_DEBUG )); then
 			debug "Not performing host resolution in DEBUG mode - skipping"
@@ -311,23 +323,62 @@ function main() {
 		local -a params=( -u "${dbadmin}" -p "${passwd}" -h "${host}" -d "${db}" )
 		local -a extraparams
 		local option
-		for option in force verbose warn debug quiet silent; do
-			eval echo "\${options_${option}}" | grep -Eq "${truthy}" && params+=( --${option} )
-		done
-		for option in compat relaxed; do
-			eval echo "\${mysql_${option}}" | grep -Eq "${truthy}" && params+=( --mysql-${option} )
-		done
-		if grep -Eq "${falsy}" <<<"${backups:-}"; then
-			params+=( --no-backup )
-		else
-			grep -Eq "${truthy}" <<<"${backups_keep:-}" && params+=( --keep-backup )
-			grep -Eq "${truthy}" <<<"${backups_separate:-}" && params+=( --separate-files )
-			grep -Eq "${truthy}" <<<"${backups_small:-}" && params+=( --separate-files )
-			[[ -n "${backups_compress:-}" ]] && params+=( --compress "${backups_compress}" )
-			grep -Eq "${truthy}" <<<"${backups_lock:-}" && params+=( --lock )
-			grep -Eq "${truthy}" <<<"${backups_keeplock:-}" && params+=( --keep-lock )
 
+		if [[ -n "${dsn:-}" ]]; then
+			case "${syntax:-}" in
+				vertica)
+					params=( --syntax ${syntax} --dsn "${dsn}" )
+					if ! grep -Eiq '(^|;)username=([^;]+)(;|$)' <<<"${dsn}"; then
+						params+=( -u "${dbadmin}" )
+					fi
+					if ! grep -Eiq '(^|;)password=([^;]+)(;|$)' <<<"${dsn}"; then
+						params+=( -h "${passwd}" )
+					fi
+					if ! grep -Eiq '(^|;)servername=([^;]+)(;|$)' <<<"${dsn}"; then
+						params+=( -h "${host}" )
+					fi
+					if ! grep -Eiq '(^|;)database=([^;]+)(;|$)' <<<"${dsn}"; then
+						params+=( -d "${db}" )
+					fi
+					if [[ -n "${schema:-}" ]]; then
+						params+=( --vertica-schema "${schema}" )
+					else
+						warn "No 'schema' value specified for Vertica database - unless 'SEARCH_PATH' is set appropraitely, statements may fail"
+					fi
+					;;
+				'')
+					die "'syntax' is a mandatory parameter when a DSN is used"
+					;;
+				*)
+					die "Unknown database type '${syntax:-}'"
+					;;
+			esac
 		fi
+
+		for option in force verbose warn debug quiet silent; do
+			eval echo "\${options_${option}:-}" | grep -Eq "${truthy}" && params+=( --${option} )
+		done
+		if [[ "${syntax:-}" != "vertica" ]]; then
+			for option in compat relaxed; do
+				eval echo "\${mysql_${option}:-}" | grep -Eq "${truthy}" && params+=( --mysql-${option} )
+			done
+			if grep -Eq "${falsy}" <<<"${backups:-}"; then
+				params+=( --no-backup )
+			else
+				[[ -n "${backups_compress:-}" ]] && params+=( --compress "${backups_compress}" )
+				grep -Eq "${truthy}" <<<"${backups_transactional:-}" && params+=( --transactional )
+				grep -Eq "${truthy}" <<<"${backups_lock:-}" && params+=( --lock )
+				grep -Eq "${truthy}" <<<"${backups_keeplock:-}" && params+=( --keep-lock )
+				grep -Eq "${truthy}" <<<"${backups_separate:-}" && params+=( --separate-files )
+				grep -Eq "${truthy}" <<<"${backups_skipmeta:-}" && params+=( --skip-metadata )
+				grep -Eq "${truthy}" <<<"${backups_extended:-}" && params+=( --extended-insert )
+
+				grep -Eq "${truthy}" <<<"${backups_keep:-}" && params+=( --keep-backup )
+			fi
+		fi
+		grep -Eq "${truthy}" <<<"${parser_trustname:-}" && params+=( --trust-filename )
+		grep -Eq "${truthy}" <<<"${parser_allowdrop:-}" && params+=( --allow-unsafe )
+		[[ -n "${version_max:-}" ]] && params+=( --target-limit "${version_max}" )
 
 		# Initialise databases first, as they must be present before
 		# Stored Procedures are loaded.
@@ -343,32 +394,41 @@ function main() {
 		if [[ -n "${extra[*]:-}" ]]; then
 			extraparams+=( "${extra[@]}" )
 		fi
+		if (( dryrun )); then
+			extraparams+=( "--dry-run" )
+		fi
 
 		debug "About to prepare schema: '${myway} ${params[*]} ${extraparams[*]}'"
 		local -i allowfail=0
-		if (( ! dryrun )); then
+		if (( dryrun )); then
+			allowfail=1
+			keepgoing=1
+		else
 			if mysql -u "${dbadmin}" -p"${passwd}" -h "${host}" "${db}" <<<'QUIT' >/dev/null 2>&1; then
 				# We may still have an empty database with no
 				# metadata tracking tables...
 				allowfail=1
 			fi
-			if (( silent )); then
-				${myway} "${params[@]}" "${extraparams[@]}" --init >/dev/null 2>&1
-			elif (( quiet )); then
-				${myway} "${params[@]}" "${extraparams[@]}" --init 2>&1 >/dev/null | grep -Ev --line-buffered "${silentfilter}"
+		fi
+		if (( silent )); then
+			${myway} "${params[@]}" "${extraparams[@]}" --init >/dev/null 2>&1
+		elif (( quiet )); then
+			# Loses return code to grep :(
+			#${myway} "${params[@]}" "${extraparams[@]}" --init 2>&1 >/dev/null | grep -Ev --line-buffered "${silentfilter}"
+			${myway} "${params[@]}" "${extraparams[@]}" --init 2>&1 >/dev/null
+		else
+			${myway} "${params[@]}" "${extraparams[@]}" --init
+		fi
+		result=${?}
+		if (( ${result} )); then
+			if (( allowfail )); then
+				info "Initialisation of database '${db}' (${myway} ${params[*]} ${extraparams[*]} --init) expected failure: ${result}"
 			else
-				${myway} "${params[@]}" "${extraparams[@]}" --init
-			fi
-			if (( ${?} )); then
-				if (( allowfail )); then
-					info "Initialisation of database '${db}' (${myway} ${params[*]} ${extraparams[*]}) expected failure: ${?}"
+				if (( keepgoing )); then
+					warn "Initialisation of database '${db}' (${myway} ${params[*]} ${extraparams[*]} --init) failed: ${result}"
+					rc=1
 				else
-					if (( keepgoing )); then
-						warn "Initialisation of database '${db}' (${myway} ${params[*]} ${extraparams[*]}) failed: ${?}"
-						rc=1
-					else
-						die "Initialisation of database '${db}' (${myway} ${params[*]} ${extraparams[*]}) failed: ${?}"
-					fi
+					die "Initialisation of database '${db}' (${myway} ${params[*]} ${extraparams[*]} --init) failed: ${result}"
 				fi
 			fi
 		fi
@@ -402,23 +462,27 @@ function main() {
 				if [[ -n "${extra[*]:-}" ]]; then
 					extraparams+=( "${extra[@]}" )
 				fi
+				if (( dryrun )); then
+					extraparams+=( "--dry-run" )
+				fi
 
 				debug "About to apply Stored Procedures: ${myway} ${params[*]} ${procparams[*]} ${extraparams[*]} ${extra[*]:-}"
-				if (( ! dryrun )); then
-					if (( silent )); then
-						${myway} "${params[@]}" "${procparams[@]}" "${extraparams[@]}" >/dev/null 2>&1
-					elif (( quiet )); then
-						${myway} "${params[@]}" "${procparams[@]}" "${extraparams[@]}" 2>&1 >/dev/null | grep -Ev --line-buffered "${silentfilter}"
-					else
-						${myway} "${params[@]}" "${procparams[@]}" "${extraparams[@]}"
-					fi
+				if (( silent )); then
+					${myway} "${params[@]}" "${procparams[@]}" "${extraparams[@]}" >/dev/null 2>&1
+				elif (( quiet )); then
+					# Loses return code to grep :(
+					#${myway} "${params[@]}" "${procparams[@]}" "${extraparams[@]}" 2>&1 >/dev/null | grep -Ev --line-buffered "${silentfilter}"
+					${myway} "${params[@]}" "${procparams[@]}" "${extraparams[@]}" 2>&1 >/dev/null
+				else
+					${myway} "${params[@]}" "${procparams[@]}" "${extraparams[@]}"
 				fi
-				if (( ${?} )); then
+				result=${?}
+				if (( ${result} )); then
 					if (( keepgoing )); then
-						warn "Loading of stored procedures to database '${db}' (${myway} ${params[*]} ${procparams[*]} ${extraparams[*]}${extra[*]:+ ${extra[*]}}) failed: ${?}"
+						warn "Loading of stored procedures to database '${db}' (${myway} ${params[*]} ${procparams[*]} ${extraparams[*]}${extra[*]:+ ${extra[*]}}) failed: ${result}"
 						rc=1
 					else
-						die "Loading of stored procedures to database '${db}' (${myway} ${params[*]} ${extraparams[*]}${extra[*]:+ ${extra[*]}}) failed: ${?}"
+						die "Loading of stored procedures to database '${db}' (${myway} ${params[*]} ${extraparams[*]}${extra[*]:+ ${extra[*]}}) failed: ${result}"
 					fi
 				fi
 			done
@@ -437,23 +501,27 @@ function main() {
 		if [[ -n "${extra[*]:-}" ]]; then
 			extraparams+=( "${extra[@]}" )
 		fi
+		if (( dryrun )); then
+			extraparams+=( "--dry-run" )
+		fi
 
-		debug "About to apply schema: '${myway} ${params[@]} ${extraparams[@]}'"
-		if (( ! dryrun )); then
-			if (( silent )); then
-				${myway} "${params[@]}" "${extraparams[@]}" >/dev/null 2>&1
-			elif (( quiet )); then
-				${myway} "${params[@]}" "${extraparams[@]}" 2>&1 >/dev/null | grep -Ev --line-buffered "${silentfilter}"
+		debug "About to apply schema: '${myway} ${params[*]} ${extraparams[*]}'"
+		if (( silent )); then
+			${myway} "${params[@]}" "${extraparams[@]}" >/dev/null 2>&1
+		elif (( quiet )); then
+			# Loses return code to grep :(
+			#${myway} "${params[@]}" "${extraparams[@]}" 2>&1 >/dev/null | grep -Ev --line-buffered "${silentfilter}"
+			${myway} "${params[@]}" "${extraparams[@]}" 2>&1 >/dev/null
+		else
+			${myway} "${params[@]}" "${extraparams[@]}"
+		fi
+		result=${?}
+		if (( ${result} )); then
+			if (( keepgoing )); then
+				warn "Migration of database '${db}' (${myway} ${params[*]} ${extraparams[*]}) failed: ${result}"
+				rc=1
 			else
-				${myway} "${params[@]}" "${extraparams[@]}"
-			fi
-			if (( ${?} )); then
-				if (( keepgoing )); then
-					warn "Initialisation of database '${db}' (${myway} ${params[*]} ${extraparams[*]}) failed: ${?}"
-					rc=1
-				else
-					die "Initialisation of database '${db}' (${myway} ${params[*]} ${extraparams[*]}) failed: ${?}"
-				fi
+				die "Migration of database '${db}' (${myway} ${params[*]} ${extraparams[*]}) failed: ${result}"
 			fi
 		fi
 
@@ -463,7 +531,7 @@ function main() {
 
 		) # <- Syntax highlight fail
 
-		local -i result=${?}
+		result=${?}
 		if (( 2 == result )); then
 			# Sub-shell called die
 			rc=1

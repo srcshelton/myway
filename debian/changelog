@@ -1,3 +1,9 @@
+db-tools (1.1.2-1) stable; urgency=low
+
+  * See `git log`
+
+ -- Stuart Shelton <stuart@elitebook-8570w>  Tue, 03 May 2016 11:58:28 +0100
+
 db-tools (0.0.1-1) stable; urgency=low
 
   * Initial release

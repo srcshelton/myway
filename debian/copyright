@@ -3,5 +3,5 @@ Upstream-Name: db-tools
 Source: <url://example.com>
 
 Files: *
-Copyright: 2015 Stuart Shelton <stuart.shelton@hpe.com>
-License:
+Copyright: 2014-2016 Stuart Shelton <stuart.shelton@hpe.com>
+License: GPL-2
