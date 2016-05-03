@@ -1,11 +1,11 @@
 Source: dbtools
 Section: database
 Priority: extra
-Maintainer: Ian Thebridge <ian.thebridge@hp.com>
+Maintainer: Stuart Shelton <stuart.shelton@hpe.com>
 Build-Depends: debhelper (>= 8.0.0)
 Standards-Version: 3.9.2
 
 Package: dbtools
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}
+Depends: ${misc:Depends}
 Description: A collection of database management tools 

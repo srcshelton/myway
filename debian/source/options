@@ -1,1 +1,1 @@
-tar-ignore = "tools/*.conf"
+tar-ignore = "conf/*.example.conf"

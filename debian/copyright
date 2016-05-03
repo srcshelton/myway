@@ -1,8 +1,7 @@
 Format: http://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: dbtools
-Source: <url://example.com>
+Source: <https://github.com/hpe-idol/myway>
 
 Files: *
-Copyright: 2015 Ian Thebridge <ian.thebridge@hp.com>
-License:
-
+Copyright: 2014-2016 Stuart Shelton <stuart.shelton@hpe.com>
+License: GPL-2, MIT
