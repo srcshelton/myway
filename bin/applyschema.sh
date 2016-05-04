@@ -26,6 +26,13 @@ std_TRACE="${TRACE:-0}"
 SCRIPT="myway.pl"
 COMPATIBLE="1.1.2"
 
+# We want to be able to debug applyschema.sh without debugging myway.pl...
+if [[ -n "${MYDEBUG:-}" ]]; then
+	DEBUG="${MYDEBUG:-0}"
+else
+	unset DEBUG
+fi
+
 # Override `die` to return '2' on fatal error...
 function die() {
 	[[ -n "${*:-}" ]] && std_DEBUG=1 std::log >&2 "FATAL: " "${*}"
@@ -465,6 +472,8 @@ function main() {
 				if (( dryrun )); then
 					extraparams+=( "--dry-run" )
 				fi
+
+				(( silent )) || info "Launching '${SCRIPT}' with path '${path}' to update Stored Procedures for database '${db}' ..."
 
 				debug "About to apply Stored Procedures: ${myway} ${params[*]} ${procparams[*]} ${extraparams[*]} ${extra[*]:-}"
 				if (( silent )); then
