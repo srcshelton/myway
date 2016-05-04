@@ -2228,7 +2228,7 @@ no if ( $] >= 5.02 ), warnings => 'experimental::autoderef';
 # ... in actual fact, diagnostics causes more problems than it solves.  It does
 # appear to be, in reality, quite silly.
 
-use constant VERSION     =>  "1.1.2";
+use constant VERSION     =>  "1.1.2.1";
 
 use constant TRUE        =>  1;
 use constant FALSE       =>  0;
@@ -3792,9 +3792,9 @@ sub dbdump( $;$$$$ ) { # {{{
 					foreach my $entry ( @{ $errors } ) {
 						my( $dir, $message ) = %{ $entry };
 						if( length( $message ) ) {
-							print STDERR "Error creating directory '$dir': $message";
+							print STDERR "Error creating directory '$dir': $message\n";
 						} else {
-							print STDERR "make_path general error: $message";
+							print STDERR "make_path general error: $message\n";
 						}
 					}
 					return( undef );
@@ -3818,9 +3818,9 @@ sub dbdump( $;$$$$ ) { # {{{
 				foreach my $entry ( @{ $errors } ) {
 					my( $dir, $message ) = %{ $entry };
 					if( length( $message ) ) {
-						print STDERR "Error creating directory '$dir': $message";
+						print STDERR "Error creating directory '$dir': $message\n";
 					} else {
-						print STDERR "make_path general error: $message";
+						print STDERR "make_path general error: $message\n";
 					}
 				}
 				return( undef );
@@ -4077,19 +4077,31 @@ sub dbdump( $;$$$$ ) { # {{{
 			touch( $output );
 		};
 		if( $@ ) {
-			die( "$fatal $@\n" );
+			( my $error = $@ ) =~ s/ at .+ line \d+\.$//;
+			die( "$fatal $error\n" );
 		}
 
 		pdebug( "Shell-command is: '$command'" );
-		my $result = qx( $command );
+		my $result = qx( $command 2>&1 );
+		my( $rc, $sig, $core ) = ( $? >> 8, $? & 127, $? & 128 );
+		pdebug( "Command completed with return-code $rc, signal $sig, core-dump $core" );
+		pdebug( "Output:\n$result" );
+
 		if( not( defined( $result ) ) ) {
 			warn( "$failed Unable to launch external process: $!\n" );
 			return( undef );
 		}
-		if( $? ) {
-			warn( "$failed Database dump failed: $?\n" ) ;
+		if( $rc ) {
+			warn( "$failed Database dump failed: $rc\n" ) ;
 			return( undef );
 		}
+		# Unfortunately, mysqldump appears to also throw errors but
+		# then exit successfully :(
+		if( ( $result =~ m/mysqldump:\s+Couldn.t execute'/ ) or ( $result =~ m/\s+\(\d{4}\)$/ ) ) {
+			warn( "$failed Database dump failed: $rc\n$result\n" ) ;
+			return( undef );
+		}
+
 		#return( $result );
 		return( TRUE );
 
@@ -7235,8 +7247,15 @@ sub main( @ ) { # {{{
 						next if( qr/^$database$/ |M| [ 'information_schema', 'performance_schema' ] );
 						print( "\n*> Backing up database `$database` to '" . ( length( $location ) ? "$location/" : '' ) . "$database.sql' ...\n" );
 						my $databasesuccess = dbdump( $auth, $database, $location, "$database.sql", $options );
-						$success += $databasesuccess;
-						print( "!> Database `$database` failed to backup: $databasesuccess\n" ) if( not( $databasesuccess ) );
+						if( defined( $databasesuccess ) and $databasesuccess ) {
+							$success += $databasesuccess;
+						} else {
+							if( defined( $databasesuccess ) ) {
+								print( "!> Database `$database` failed to backup: $databasesuccess\n" );
+							} else {
+								print( "!> Database `$database` failed to backup\n" );
+							}
+						}
 					}
 				}
 			}
@@ -7857,9 +7876,9 @@ sub main( @ ) { # {{{
 				foreach my $entry ( @{ $errors } ) {
 					my( $dir, $message ) = %{ $entry };
 					if( length( $message ) ) {
-						print STDERR "Error creating directory '$dir': $message";
+						print STDERR "Error creating directory '$dir': $message\n";
 					} else {
-						print STDERR "make_path general error: $message";
+						print STDERR "make_path general error: $message\n";
 					}
 				}
 				return( undef );

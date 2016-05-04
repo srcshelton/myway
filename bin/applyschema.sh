@@ -70,7 +70,7 @@ function main() {
 	# Alternatively...
 	# eval "$( source "${std_LIBPATH}/${std_LIB}" 2>/dev/null ; std::requires --path "perl" ) -c ${myway}" || die "${myway} is failing to compile - please confirm that all required perl modules are available"
 
-	local version="$( ${myway} --version 2>/dev/null | rev | cut -d' '  -f 1 | rev )"
+	local version="$( ${myway} --version 2>/dev/null | rev | cut -d' '  -f 1 | rev | cut -d'.' -f 1-3 )"
 	if [[ "${version}" != "${COMPATIBLE}" ]]; then
 		die "$( basename "${0}" ) is compatible only with ${SCRIPT} version ${COMPATIBLE} - found version ${version} at '${myway}'"
 	fi
