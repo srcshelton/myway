@@ -2228,7 +2228,7 @@ no if ( $] >= 5.02 ), warnings => 'experimental::autoderef';
 # ... in actual fact, diagnostics causes more problems than it solves.  It does
 # appear to be, in reality, quite silly.
 
-use constant VERSION     =>  "1.1.2.1";
+use constant VERSION     =>  "1.1.2.2";
 
 use constant TRUE        =>  1;
 use constant FALSE       =>  0;
@@ -4125,11 +4125,14 @@ sub dbrestore( $$ ) { # {{{
 	return( undef ) unless( defined( $auth -> { 'user' } ) and length( $auth -> { 'user' } ) );
 	return( undef ) unless( defined( $auth -> { 'password' } ) and length( $auth -> { 'password' } ) );
 	return( undef ) unless( defined( $auth -> { 'host' } ) and length( $auth -> { 'host' } ) );
+	return( undef ) unless( defined( $auth -> { 'port' } ) and length( $auth -> { 'port' } ) );
 	return( undef ) unless( defined( $file ) );
 
 	my $user = $auth -> { 'user' };
 	my $password = $auth -> { 'password' };
 	my $host = $auth -> { 'host' };
+	my $port = $auth -> { 'port' };
+	my $database = $auth -> { 'database' } if( defined( $auth -> { 'database' } ) and length( $auth -> { 'database' } ) );
 
 	my $mysql = which( 'mysql' );
 
@@ -4185,7 +4188,12 @@ EOF
 	if( DEBUG or ( $verbosity > 2 ) ) {
 		$verbose = '-v -v -v';
 	}
-	my $command = '"' . $file . ( defined( $decompress ) ? '" | ' . $decompress : '"' ) . ' | ' . $fixdrop . ' | { ' . $mysql . " -u $user -p$password -h $host $verbose 2>&1 ; }";
+	my $command = '"' . $file . ( defined( $decompress ) ? '" | ' . $decompress : '"' );
+	$command .= ' | ' . $fixdrop;
+	$command .= ' | { ' . $mysql . " -u $user -p$password -h $host ";
+	$command .= "'$database' " if( defined( $database ) );
+	$command .= "$verbose " if( defined( $verbose ) );
+	$command .= '2>&1 ; }';
 
 	if( which( 'pv' ) ) {
 		my ( $columns, $rows );
@@ -4203,6 +4211,27 @@ EOF
 		$command = 'cat ' . $command;
 	}
 	pdebug( "Restore command is '$command'" );
+
+	if( defined( $database ) ) {
+		# I can't imagine that this will change any time soon, but I
+		# guess it's not impossible that at some future time `maria`
+		# is the system database... ?
+		my $systemdb = 'mysql';
+
+		print( "\n=> Connecting to database `$systemdb` ...\n" );
+		my $systemdsn = "DBI:mysql:database=$systemdb;host=$host;port=$port";
+		my $systemdbh;
+		my $systemerror = dbopen( \$systemdbh, $systemdsn, $user, $password );
+		die( $systemerror ."\n" ) if $systemerror;
+
+		print( "=> Creating database `$systemdb` if necessary ...\n" );
+		die( "$fatal Database creation error\n" ) if( not( dosql( \$systemdbh, "CREATE DATABASE IF NOT EXISTS `$database`" ) ) );
+
+		#dbclose( $systemdbh );
+		print( "=> Complete - disconnecting from database ...\n" );
+		$systemdbh -> disconnect;
+	}
+
 	#exec( $command ) or die( "Failed to execute 'pv' in order to monitor data restoration: $!\n" );
 	system( $command );
 	if( -1 == $? ) {
