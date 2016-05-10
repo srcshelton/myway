@@ -2228,7 +2228,7 @@ no if ( $] >= 5.02 ), warnings => 'experimental::autoderef';
 # ... in actual fact, diagnostics causes more problems than it solves.  It does
 # appear to be, in reality, quite silly.
 
-use constant VERSION     =>  "1.1.2.2";
+use constant VERSION     =>  "1.1.2.3";
 
 use constant TRUE        =>  1;
 use constant FALSE       =>  0;
@@ -4857,19 +4857,21 @@ sub applyschema( $$$$;$ ) { # {{{
 					}
 				} elsif( $okay ) {
 					$okay = FALSE;
-					warn( "!> Metadata contains non-comment code which will be executed once for every specified file\n" );
+					warn( "!> Metadata contains non-comment code which will be executed before procedure definitions are processed\n" ) if( $first );
 				}
 			}
 		}
 
-		if( not( defined( $procedureversion ) and length( $procedureversion ) ) and defined( $marker ) and length( $marker ) ) {
+		if( not( defined( $procedureversion ) and length( $procedureversion ) ) ) {
 			$procedureversion = $1 if( dirname( $file ) =~ m/^(?:.*?)(_v\d+_\d+(_\d+)?)$/ );
 			if( defined( $procedureversion ) ) {
-				$procedureversion .= '` ';
-				if( $pretend ) {
-					print( "*> Would adjust Stored Procedure names with version string '$procedureversion' from path\n" );
-				} else {
-					print( "*> Adjusting Stored Procedure names with version string '$procedureversion' from path\n" ) unless( $quiet or $silent );
+				if( defined( $marker ) and length( $marker ) ) {
+					$procedureversion .= '` ';
+					if( $pretend ) {
+						print( "*> Would adjust Stored Procedure names with version string '$procedureversion' from path\n" );
+					} else {
+						print( "*> Adjusting Stored Procedure names with version string '$procedureversion' from path\n" ) unless( $quiet or $silent );
+					}
 				}
 			} else {
 				if( $force ) {
@@ -4883,7 +4885,7 @@ sub applyschema( $$$$;$ ) { # {{{
 				}
 			}
 		}
-		if( $procedureversion =~ m/_v(\d+_\d+)_\d+/ ) {
+		if( defined( $procedureversion ) and ( $procedureversion =~ m/_v(\d+_\d+)_\d+/ ) ) {
 			( my $version = $1 ) =~ s/_/./g;
 			$procedureversion =~ m/_v\d+_\d+_(\d+)/;
 			my $hotfix = $1;
@@ -5668,18 +5670,31 @@ SQL
 	my $executed = 0;
 
 	if( 'procedure' eq $mode ) {
-		# N.B. This logic does mean that any valid SQL statements in
-		#      a given metadata file will be executed for /every/
-		#      stored procedure within a given directory... the
-		#      intention is that metadata should contain comments only
-		#      (see warning above).
 		my @entries;
-		foreach my $entry ( $metadata -> { 'entries' } ) {
-			push( @entries, @{ $entry } );
+
+		if( $first ) {
+			foreach my $entry ( $metadata -> { 'entries' } ) {
+				push( @entries, @{ $entry } );
+			}
+		} else {
+			# Each $entry[] consists of: %{ @entry (text of statement), $line, $type (comment|statement) }
+			my @procedurecomments = ();
+			foreach my $entry ( $metadata -> { 'entries' } ) {
+				foreach my $statement ( @{ $entry } ) {
+					if( not( 'statement' eq $statement -> { 'type' } ) ) {
+						push( @procedurecomments, $statement );
+					}
+				}
+
+			}
+			push( @entries, @procedurecomments );
+			$metadata -> { 'entries' } = \@procedurecomments;
 		}
+
 		foreach my $entry ( $data -> { 'entries' } ) {
 			push( @entries, @{ $entry } );
 		}
+
 		$data -> { 'entries' } = \@entries;
 	}
 
@@ -5740,19 +5755,29 @@ SQL
 						if( defined( $restorefile ) and length( $restorefile ) ) {
 							if( not( defined( $action_init ) ) ) {
 								warn( "!> $warning 'Restore' directive is only valid in a base initialiser - ignoring ...\n" );
-							}
-							print( "*> Found restoration directive for file '$restorefile' ...\n" );
-							if( not( -r "$schmpath/$restorefile" ) ) {
-								if( $safetyoff ) {
-									die( "Cannot read file '$schmpath/$restorefile'\n" );
+							} else {
+								print( "*> Found restoration directive for file '$restorefile' ...\n" );
+
+								# $restorefile may be relative or absolute...
+								if( -s ( realpath( "$schmpath/$restorefile" ) or realpath( $restorefile ) ) ) {
+									if( -s realpath( "$schmpath/$restorefile" ) ) {
+										$restorefile = realpath( "$schmpath/$restorefile" );
+										print( "*> Using file location '$restorefile' ...\n" );
+									} else {
+										$restorefile = realpath( $restorefile );
+									}
 								} else {
-									warn( "!> $warning Could not read file '$schmpath/$restorefile', would abort\n" );
+									if( $safetyoff ) {
+										die( "Cannot locate file '$restorefile' from root or '$schmpath' directories\n" );
+									} else {
+										warn( "!> $warning Could not locate file '$restorefile' from root or '$schmpath' directories, would abort\n" );
+									}
 								}
-							}
-							if( $safetyoff ) {
-								dbclose( \$dbh );
-								dbrestore( $auth, $restorefile );
-								return( \$schmversion );
+								if( $safetyoff and -s $restorefile ) {
+									dbclose( \$dbh );
+									dbrestore( $auth, $restorefile );
+									return( \$schmversion );
+								}
 							}
 						}
 						$schmprevious = undef if( defined( $schmprevious ) and ( $schmprevious =~ m#(?:na|n/a)#i ) );
@@ -5915,9 +5940,9 @@ SQL
 										}
 									}
 								} elsif( $fresh ) { # and ( $first )
-									print( "*> " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " version '$schmtarget'" . ( $quiet and ( 'procedure' eq $mode ) ? " for file '$schmfile'" : '' ) . " is a fresh install\n" ) unless( $silent );
+									print( "*> " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " version '$schmtarget'" . ( ( $quiet and ( 'procedure' eq $mode ) ) ? " for file '$schmfile'" : '' ) . " is a fresh install\n" ) unless( $silent );
 								} elsif( $first ) {
-									print( "*> " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " version '$schmtarget'" . ( $quiet and ( 'procedure' eq $mode ) ? " for file '$schmfile'" : '' ) . " is a re-install\n" ) unless( $silent );
+									print( "*> " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " version '$schmtarget'" . ( ( $quiet and ( 'procedure' eq $mode ) ) ? " for file '$schmfile'" : '' ) . " is a re-install\n" ) unless( $silent );
 								}
 								if( $okay or ( 'procedure' eq $mode ) ) {
 									$schmversion = $schmtarget;
@@ -6956,7 +6981,7 @@ sub main( @ ) { # {{{
 		warn( "Cannot specify argument '--separate-files' without option '--backup'\n" ) if( $split and not( defined( $action_backup ) ) );
 		warn( "Cannot specify argument '--skip-metadata' without option '--backup'\n" ) if( $skipmeta and not( defined( $action_backup ) ) );
 		warn( "Cannot specify argument '--extended-insert' without option '--backup'\n" ) if( $extinsert and not( defined( $action_backup ) ) );
-		warn( "Cannot specify argument '--trust-filename' without option '--no-backup'\n" ) if( $shortcut and not( defined( $unsafe ) ) );
+		warn( "Cannot specify argument '--trust-filename' without option '--no-backup'\n" ) if( $shortcut and not( $unsafe ) );
 		warn( "Cannot specify argument '--keep-lock' without option '--lock'\n" ) if( $keeplock and not( $lock ) );
 		warn( "Cannot specify argument '--clear-metadata' without option '--force'\n" ) if( $clear and not( $force ) );
 		warn( "Cannot specify argument '--lock' with option '--database' (locks are global)\n" ) if( $lock and defined( $db ) );
@@ -7779,7 +7804,7 @@ sub main( @ ) { # {{{
 	$variables -> { 'engine' }      = $engine;
 	$variables -> { 'environment' } = $environment;
 	$variables -> { 'extinsert' }   = $extinsert;
-	$variables -> { 'first' }       =  not( 'procedure' eq $mode );
+	$variables -> { 'first' }       =  TRUE;
 	$variables -> { 'force' }       = $force;
 	$variables -> { 'limit' }       = $limit;
 	$variables -> { 'marker' }      = $marker if( $dosub );
@@ -7803,7 +7828,9 @@ sub main( @ ) { # {{{
 		@files = ( shift( @files ) ) if( defined( $action_init ) );
 
 		foreach my $item ( @files ) {
-			if( -r $item ) {
+			if( not( -s $item ) ) {
+				warn( "\n$warning Cannot read from file '$item' - skipping\n" );
+			} else {
 				print "*> Processing file '$item' ...\n" unless( $quiet or $silent );
 				eval {
 					if( defined( $version ) ) {
@@ -7843,8 +7870,6 @@ sub main( @ ) { # {{{
 					#enable diagnostics;
 				}
 				$variables -> { 'first' } = FALSE if( $variables -> { 'first' } );
-			} else {
-				warn( "\n$warning Cannot read from file '$item' - skipping\n" );
 			}
 		}
 
