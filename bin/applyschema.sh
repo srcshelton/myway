@@ -246,7 +246,8 @@ function main() {
 
 		if grep -Eq "${falsy}" <<<"${managed:-}"; then
 			(( silent )) || info "Skipping unmanaged database '${db}' ..."
-			continue
+			founddb=1
+			exit 3 # See below...
 		else
 			(( silent )) || info "Processing configuration for database '${db}' ..."
 		fi
