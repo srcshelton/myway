@@ -7873,7 +7873,7 @@ sub main( @ ) { # {{{
 			}
 		}
 
-		if( not( defined( $limit ) ) ) {
+		if( defined( $action_init ) or not( defined( $limit ) ) ) {
 			if( defined( $version ) and not( $version eq '__NOT_APPLIED__' ) ) {
 				print( "*> Database is up to date at schema version '$version'\n" ) unless( $quiet or $silent );
 			} elsif( defined( $lastversion ) ) {
