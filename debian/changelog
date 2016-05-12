@@ -1,3 +1,9 @@
+dbtools (1.1.2-7c) stable; urgency=low
+
+  * See `git log`.
+
+ -- Stuart Shelton <stuart@elitebook-8570w>  Thu, 12 May 2016 09:32:51 +0100
+
 dbtools (1.1.2-6) stable; urgency=low
 
   * See `git log`.

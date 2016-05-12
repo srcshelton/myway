@@ -4914,11 +4914,24 @@ sub applyschema( $$$$;$ ) { # {{{
 		} else {
 			if( defined( $limit ) ) {
 				my $match = $1;
-				if( not( $match eq $limit ) ) {
-					my @sortedversions = sort { versioncmp( $a, $b ) } ( $match, $limit );
+
+				my( $mcode, $mchange, $mstep, $mhotfix ) = ( $match =~ m/^([[:xdigit:]]+)(?:\.(\d+)(?:\.(\d+)(?:\.(\d+))?)?)?$/ );
+				my( $lcode, $lchange, $lstep, $lhotfix ) = ( $limit =~ m/^([[:xdigit:]]+)(?:\.(\d+)(?:\.(\d+)(?:\.(\d+))?)?)?$/ );
+				$mchange = 0 unless( defined( $mchange ) and $mchange );
+				$mstep = 0 unless( defined( $mstep ) and $mstep );
+				$mhotfix = 0 unless( defined( $mhotfix ) and $mhotfix );
+				$lchange = 0 unless( defined( $lchange ) and $lchange );
+				$lstep = 0 unless( defined( $lstep ) and $lstep );
+				$lhotfix = 0 unless( defined( $lhotfix ) and $lhotfix );
+
+				my $mv = "$mcode.$mchange.$mstep.$mhotfix";
+				my $lv = "$lcode.$lchange.$lstep.$lhotfix";
+
+				if( not( $mv eq $lv ) ) {
+					my @sortedversions = sort { versioncmp( $a, $b ) } ( $mv, $lv );
 					my $latest = pop( @sortedversions );
-					if( $latest eq $match ) {
-						warn( "!> Filename '$schmfile' has version '$match' which is higher than specified target limit '$limit'\n" );
+					if( $latest eq $mv ) {
+						warn( "!> Filename '$schmfile' has version '$mv' which is higher than specified target limit '$lv'\n" );
 						return( FALSE );
 					}
 				}
@@ -5416,13 +5429,27 @@ SQL
 				if( $schmfile =~ m/^V(.*?)__/ ) {
 					my $match = $1;
 
-					if( defined( $limit ) and not( $match eq $limit ) ) {
-						my @sortedversions = sort { versioncmp( $a, $b ) } ( $match, $limit );
-						my $latest = pop( @sortedversions );
-						if( $latest eq $match ) {
-							warn( "!> Filename '$schmfile' has version '$match' which is higher than specified target limit '$limit'\n" );
-							dbclose( \$dbh );
-							return( FALSE );
+					if( defined( $limit ) ) {
+						my( $mcode, $mchange, $mstep, $mhotfix ) = ( $match =~ m/^([[:xdigit:]]+)(?:\.(\d+)(?:\.(\d+)(?:\.(\d+))?)?)?$/ );
+						my( $lcode, $lchange, $lstep, $lhotfix ) = ( $limit =~ m/^([[:xdigit:]]+)(?:\.(\d+)(?:\.(\d+)(?:\.(\d+))?)?)?$/ );
+						$mchange = 0 unless( defined( $mchange ) and $mchange );
+						$mstep = 0 unless( defined( $mstep ) and $mstep );
+						$mhotfix = 0 unless( defined( $mhotfix ) and $mhotfix );
+						$lchange = 0 unless( defined( $lchange ) and $lchange );
+						$lstep = 0 unless( defined( $lstep ) and $lstep );
+						$lhotfix = 0 unless( defined( $lhotfix ) and $lhotfix );
+
+						my $mv = "$mcode.$mchange.$mstep.$mhotfix";
+						my $lv = "$lcode.$lchange.$lstep.$lhotfix";
+
+						if( not( $mv eq $lv ) ) {
+							my @sortedversions = sort { versioncmp( $a, $b ) } ( $mv, $lv );
+							my $latest = pop( @sortedversions );
+							if( $latest eq $mv ) {
+								warn( "!> Filename '$schmfile' has version '$mv' which is higher than specified target limit '$lv'\n" );
+								dbclose( \$dbh );
+								return( FALSE );
+							}
 						}
 					}
 
@@ -7873,7 +7900,8 @@ sub main( @ ) { # {{{
 			}
 		}
 
-		if( defined( $action_init ) or not( defined( $limit ) ) ) {
+		# FIXME: We need to be able to specify Stored Procedure numbers separately...
+		if( defined( $action_init ) or ( 'procedure' eq $mode ) or not( defined( $limit ) ) ) {
 			if( defined( $version ) and not( $version eq '__NOT_APPLIED__' ) ) {
 				print( "*> Database is up to date at schema version '$version'\n" ) unless( $quiet or $silent );
 			} elsif( defined( $lastversion ) ) {
@@ -7894,12 +7922,28 @@ sub main( @ ) { # {{{
 			} elsif( $version eq $limit ) {
 				print( "*> Database is up to date at schema version '$version'\n" ) unless( $quiet or $silent );
 			} else {
-				my @sortedversions = sort { versioncmp( $a, $b ) } ( $version, $limit );
-				my $latest = pop( @sortedversions );
-				if( $latest eq $limit ) {
-					die( "$fatal Having processed " . scalar( @files ) . " files, database schema version '$version' is still behind target version '$limit'\n" );
+				my( $vcode, $vchange, $vstep, $vhotfix ) = ( $version =~ m/^([[:xdigit:]]+)(?:\.(\d+)(?:\.(\d+)(?:\.(\d+))?)?)?$/ );
+				my( $lcode, $lchange, $lstep, $lhotfix ) = ( $limit =~ m/^([[:xdigit:]]+)(?:\.(\d+)(?:\.(\d+)(?:\.(\d+))?)?)?$/ );
+				$vchange = 0 unless( defined( $vchange ) and $vchange );
+				$vstep = 0 unless( defined( $vstep ) and $vstep );
+				$vhotfix = 0 unless( defined( $vhotfix ) and $vhotfix );
+				$lchange = 0 unless( defined( $lchange ) and $lchange );
+				$lstep = 0 unless( defined( $lstep ) and $lstep );
+				$lhotfix = 0 unless( defined( $lhotfix ) and $lhotfix );
+
+				my $sv = "$vcode.$vchange.$vstep.$vhotfix";
+				my $lv = "$lcode.$lchange.$lstep.$lhotfix";
+
+				if( $sv eq $lv ) {
+					print( "*> Database is up to date at schema version '$version'\n" ) unless( $quiet or $silent );
 				} else {
-					die( "$fatal Logic error - database schema version '$version' is ahead of target version '$limit'\n" );
+					my @sortedversions = sort { versioncmp( $a, $b ) } ( $sv, $lv );
+					my $latest = pop( @sortedversions );
+					if( $latest eq $lv ) {
+						die( "$fatal Having processed " . scalar( @files ) . " files, database schema version '$sv' is still behind target version '$lv'\n" );
+					} else {
+						die( "$fatal Logic error - database schema version '$sv' is ahead of target version '$lv'\n" );
+					}
 				}
 			}
 		}
