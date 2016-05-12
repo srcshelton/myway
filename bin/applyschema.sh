@@ -26,6 +26,13 @@ std_TRACE="${TRACE:-0}"
 SCRIPT="myway.pl"
 COMPATIBLE="1.1.2"
 
+# We want to be able to debug applyschema.sh without debugging myway.pl...
+if [[ -n "${MYDEBUG:-}" ]]; then
+	DEBUG="${MYDEBUG:-0}"
+else
+	unset DEBUG
+fi
+
 # Override `die` to return '2' on fatal error...
 function die() {
 	[[ -n "${*:-}" ]] && std_DEBUG=1 std::log >&2 "FATAL: " "${*}"
@@ -58,7 +65,7 @@ function main() {
 	local falsy="^(off|n(o)?|false|0)$"
 	local silentfilter='^((Useless|Use of|Cannot parse|!>) |\s*$)'
 
-	local filename
+	local actualpath filename
 	local lockfile="/var/lock/${NAME}.lock"
 
 	# Ensure that 'fuser' will work...
@@ -70,7 +77,7 @@ function main() {
 	# Alternatively...
 	# eval "$( source "${std_LIBPATH}/${std_LIB}" 2>/dev/null ; std::requires --path "perl" ) -c ${myway}" || die "${myway} is failing to compile - please confirm that all required perl modules are available"
 
-	local version="$( ${myway} --version 2>/dev/null | rev | cut -d' '  -f 1 | rev )"
+	local version="$( ${myway} --version 2>/dev/null | rev | cut -d' '  -f 1 | rev | cut -d'.' -f 1-3 )"
 	if [[ "${version}" != "${COMPATIBLE}" ]]; then
 		die "$( basename "${0}" ) is compatible only with ${SCRIPT} version ${COMPATIBLE} - found version ${version} at '${myway}'"
 	fi
@@ -108,7 +115,7 @@ function main() {
 				elif [[ ! -d "${1}" ]]; then
 					die "Directory ${1} does not exist"
 				else
-					path="${1}"
+					actualpath="${1}"
 				fi
 				;;
 			--locate|--whereis|--server|--host|-l)
@@ -249,7 +256,10 @@ function main() {
 		[[ -n "${dbadmin:-}" ]] || messages+=( "No database user ('dbadmin') specified for database '${db}'" )
 		[[ -n "${passwd:-}" ]] || messages+=( "No database user password ('passwd') specified for database '${db}'" )
 
-		local actualpath="${path:-}"
+		if [[ -z "${actualpath:-}" ]]; then
+			# Allow command-line parameter to override config file
+			actualpath="${path:-}"
+		fi
 		path="$( readlink -e "${actualpath:-.}" )" || die "Failed to canonicalise path '${actualpath}': ${?}"
 		actualpath=""
 
@@ -465,6 +475,8 @@ function main() {
 				if (( dryrun )); then
 					extraparams+=( "--dry-run" )
 				fi
+
+				(( silent )) || info "Launching '${SCRIPT}' with path '${path}' to update Stored Procedures for database '${db}' ..."
 
 				debug "About to apply Stored Procedures: ${myway} ${params[*]} ${procparams[*]} ${extraparams[*]} ${extra[*]:-}"
 				if (( silent )); then
