@@ -207,7 +207,7 @@ function main() {
 		exit 0
 	fi
 
-	local -i result rc=0
+	local -i result rc=0 founddb=0
 
 	debug "Establishing lock ..."
 
@@ -390,6 +390,8 @@ function main() {
 		grep -Eq "${truthy}" <<<"${parser_allowdrop:-}" && params+=( --allow-unsafe )
 		[[ -n "${version_max:-}" ]] && params+=( --target-limit "${version_max}" )
 
+		founddb=1
+
 		# Initialise databases first, as they must be present before
 		# Stored Procedures are loaded.
 		#
@@ -539,18 +541,27 @@ function main() {
 
 		debug "Load completed for database '${db}'\n"
 
+		(( founddb && !( rc ) )) && exit 3
 		(( rc )) && false || true
 
-		) # <- Syntax highlight fail
+		)
 
 		result=${?}
-		if (( 2 == result )); then
-			# Sub-shell called die
-			rc=1
-			break
-		else
-			rc+=${result}
-		fi
+		case ${result} in
+			3)
+				# Slightly non-obviously, we've found a
+				# database without hitting an error...
+				founddb=1
+				;;
+			2)
+				# Sub-shell called die
+				rc=1
+				break
+				;;
+			*)
+				rc+=${result}
+				;;
+		esac
 	done
 
 	(( std_TRACE )) && set +o xtrace
@@ -563,6 +574,9 @@ function main() {
 		# ${rc} should have recovered from the sub-shell, above...
 		if (( rc )); then
 			warn "Load completed with errors"
+		elif (( !( founddb ) )); then
+			error "Specified database(s) not present in configuration file"
+			rc=1
 		else
 			info "Load completed"
 		fi
