@@ -5478,119 +5478,120 @@ SQL
 					formatastable( \$dbh, "SELECT * FROM `$verticadb$flywaytablename` ORDER BY `version` DESC LIMIT 5", '   ' );
 				}
 			}
-			if( not( defined( $file ) ) or defined( $action_init ) ) {
+			if( not( defined( $file ) ) ) {
 				dbclose( \$dbh );
 				return( TRUE );
 			}
 
 			# }}}
 
-			# We need to perform a version-sort here, because we
-			# need to skip all files /less than or/ equal to the
-			# initialiser...
-			#
-			# FIXME: We only consider file-version here, rather
-			#        rather than meta-data versions.  We later
-			#        issue a warning if these two versions differ.
-			#
-			# Cases: {0, 0.3}; {0.1, 0.3}; {0.3, 0.3}; {0.3, 0.5}.
-			#            ^^^         ^^^         ^^^    ^^^
-			#
-			my $version = getsqlvalue( \$dbh, "SELECT `version` FROM `$verticadb$flywaytablename` WHERE `success` = '1' AND `type` = 'INIT' ORDER BY `version` DESC LIMIT 1" );
-			if( not( defined( $version ) and length( $version ) ) ) {
-				if( not( $force ) ) {
-					die( "Database has not been initialised with this tool - please re-run with '--init' and the appropriate schema-file version number.\n" );
+			if( not( defined( $action_init ) ) ) {
+				# We need to perform a version-sort here, because we
+				# need to skip all files /less than or/ equal to the
+				# initialiser...
+				#
+				# FIXME: We only consider file-version here, rather
+				#        rather than meta-data versions.  We later
+				#        issue a warning if these two versions differ.
+				#
+				# Cases: {0, 0.3}; {0.1, 0.3}; {0.3, 0.3}; {0.3, 0.5}.
+				#            ^^^         ^^^         ^^^    ^^^
+				#
+				my $version = getsqlvalue( \$dbh, "SELECT `version` FROM `$verticadb$flywaytablename` WHERE `success` = '1' AND `type` = 'INIT' ORDER BY `version` DESC LIMIT 1" );
+				if( not( defined( $version ) and length( $version ) ) ) {
+					if( not( $force ) ) {
+						die( "Database has not been initialised with this tool - please re-run with '--init' and the appropriate schema-file version number.\n" );
+					} else {
+						warn( "!> Database has not been initialised with this tool - will force-apply file '$schmfile' ...\n" );
+					}
 				} else {
-					warn( "!> Database has not been initialised with this tool - will force-apply file '$schmfile' ...\n" );
-				}
-			} else {
-				if( defined( $limit ) ) {
-					my $match = $1;
-				}
-				if( $schmfile =~ m/^V(.*?)__/ ) {
-					my $match = $1;
-
 					if( defined( $limit ) ) {
-						my( $mcode, $mchange, $mstep, $mhotfix ) = ( $match =~ m/^([[:xdigit:]]+)(?:\.(\d+)(?:\.(\d+)(?:\.(\d+))?)?)?$/ );
-						my( $lcode, $lchange, $lstep, $lhotfix ) = ( $limit =~ m/^([[:xdigit:]]+)(?:\.(\d+)(?:\.(\d+)(?:\.(\d+))?)?)?$/ );
-						$mchange = 0 unless( defined( $mchange ) and $mchange );
-						$mstep = 0 unless( defined( $mstep ) and $mstep );
-						$mhotfix = 0 unless( defined( $mhotfix ) and $mhotfix );
-						$lchange = 0 unless( defined( $lchange ) and $lchange );
-						$lstep = 0 unless( defined( $lstep ) and $lstep );
-						$lhotfix = 0 unless( defined( $lhotfix ) and $lhotfix );
+						my $match = $1;
+					}
+					if( $schmfile =~ m/^V(.*?)__/ ) {
+						my $match = $1;
 
-						my $mv = "$mcode.$mchange.$mstep.$mhotfix";
-						my $lv = "$lcode.$lchange.$lstep.$lhotfix";
+						if( defined( $limit ) ) {
+							my( $mcode, $mchange, $mstep, $mhotfix ) = ( $match =~ m/^([[:xdigit:]]+)(?:\.(\d+)(?:\.(\d+)(?:\.(\d+))?)?)?$/ );
+							my( $lcode, $lchange, $lstep, $lhotfix ) = ( $limit =~ m/^([[:xdigit:]]+)(?:\.(\d+)(?:\.(\d+)(?:\.(\d+))?)?)?$/ );
+							$mchange = 0 unless( defined( $mchange ) and $mchange );
+							$mstep = 0 unless( defined( $mstep ) and $mstep );
+							$mhotfix = 0 unless( defined( $mhotfix ) and $mhotfix );
+							$lchange = 0 unless( defined( $lchange ) and $lchange );
+							$lstep = 0 unless( defined( $lstep ) and $lstep );
+							$lhotfix = 0 unless( defined( $lhotfix ) and $lhotfix );
 
-						if( not( $mv eq $lv ) ) {
-							my @sortedversions = sort { versioncmp( $a, $b ) } ( $mv, $lv );
-							my $latest = pop( @sortedversions );
-							if( $latest eq $mv ) {
-								warn( "!> Filename '$schmfile' has version '$mv' which is higher than specified target limit '$lv'\n" );
+							my $mv = "$mcode.$mchange.$mstep.$mhotfix";
+							my $lv = "$lcode.$lchange.$lstep.$lhotfix";
+
+							if( not( $mv eq $lv ) ) {
+								my @sortedversions = sort { versioncmp( $a, $b ) } ( $mv, $lv );
+								my $latest = pop( @sortedversions );
+								if( $latest eq $mv ) {
+									warn( "!> Filename '$schmfile' has version '$mv' which is higher than specified target limit '$lv'\n" );
+									dbclose( \$dbh );
+									return( FALSE );
+								}
+							}
+						}
+
+						my @sortedversions = sort { versioncmp( $a, $b ) } ( $version, $match );
+						my $latest = pop( @sortedversions );
+						my $previous = pop( @sortedversions );
+						if( not( $force ) ) {
+							if( ( $match eq $latest ) and ( $latest eq $previous ) ) {
+								print( "=> Skipping base initialiser file '$schmfile' ...\n" ) unless( $quiet or $silent );
 								dbclose( \$dbh );
-								return( FALSE );
+								return( TRUE );
+							} elsif( $match eq $previous ) {
+								print( "=> Skipping pre-initialisation file '$schmfile' ...\n" ) unless( $silent );
+								dbclose( \$dbh );
+								return( TRUE );
 							}
 						}
 					}
+				}
 
-					my @sortedversions = sort { versioncmp( $a, $b ) } ( $version, $match );
-					my $latest = pop( @sortedversions );
-					my $previous = pop( @sortedversions );
-					if( not( $force ) ) {
-						if( ( $match eq $latest ) and ( $latest eq $previous ) ) {
-							print( "=> Skipping base initialiser file '$schmfile' ...\n" ) unless( $quiet or $silent );
+				#$schmversion = $action_init;
+				#$schmversion = $1 if( not( defined( $schmversion ) and length( $schmversion ) ) and ( $schmfile =~ m/^V(.*?)__/ ) );
+				#$schmversion = '0' unless( defined( $schmversion ) and length( $schmversion ) );
+				my $metadataversions = getsqlvalues( \$dbh, "SELECT DISTINCT(`version`) FROM `$verticadb$flywaytablename` WHERE `success` = '1'" );
+				#if( /^$schmversion$/ ~~ $metadataversions )
+				if( defined( $schmversion ) and ( qr/^$schmversion$/ |M| $metadataversions ) ) {
+					if( $pretend ) {
+						if( $force ) {
+							warn( "!> Schema version '$schmversion' has already been applied to this database - would forcibly re-apply ...\n" );
+						} else {
+							warn( "!> Schema version '$schmversion' has already been applied to this database - skipping ...\n" );
 							dbclose( \$dbh );
 							return( TRUE );
-						} elsif( $match eq $previous ) {
-							print( "=> Skipping pre-initialisation file '$schmfile' ...\n" ) unless( $silent );
+						}
+					} else { # not( $force )
+						if( $force ) {
+							warn( "!> Schema version '$schmversion' has already been applied to this database - forcibly re-applying ...\n" );
+						} else {
+							warn( "!> Schema version '$schmversion' has already been applied to this database - skipping ...\n\n" ) unless( $quiet or $silent );
 							dbclose( \$dbh );
 							return( TRUE );
 						}
 					}
 				}
-			}
 
-			#$schmversion = $action_init;
-			#$schmversion = $1 if( not( defined( $schmversion ) and length( $schmversion ) ) and ( $schmfile =~ m/^V(.*?)__/ ) );
-			#$schmversion = '0' unless( defined( $schmversion ) and length( $schmversion ) );
-			my $metadataversions = getsqlvalues( \$dbh, "SELECT DISTINCT(`version`) FROM `$verticadb$flywaytablename` WHERE `success` = '1'" );
-			#if( /^$schmversion$/ ~~ $metadataversions )
-			if( defined( $schmversion ) and ( qr/^$schmversion$/ |M| $metadataversions ) ) {
-				if( $pretend ) {
-					if( $force ) {
-						warn( "!> Schema version '$schmversion' has already been applied to this database - would forcibly re-apply ...\n" );
-					} else {
-						warn( "!> Schema version '$schmversion' has already been applied to this database - skipping ...\n" );
-						dbclose( \$dbh );
-						return( TRUE );
-					}
-				} else { # not( $force )
-					if( $force ) {
-						warn( "!> Schema version '$schmversion' has already been applied to this database - forcibly re-applying ...\n" );
-					} else {
-						warn( "!> Schema version '$schmversion' has already been applied to this database - skipping ...\n\n" ) unless( $quiet or $silent );
-						dbclose( \$dbh );
-						return( TRUE );
-					}
+				$versionrank = getsqlvalue( \$dbh, "SELECT MAX(`version_rank`) FROM `$verticadb$flywaytablename`" );
+				if( defined( $versionrank ) and $versionrank =~ m/^\d+$/ and $versionrank >= 0 ) {
+					$versionrank++;
+				} else {
+					$versionrank = 0;
 				}
-			}
+				$installedrank = getsqlvalue( \$dbh, "SELECT MAX(`installed_rank`) FROM `$verticadb$flywaytablename`" );
+				if( defined( $installedrank ) and $installedrank =~ m/^\d+$/ and $installedrank >= 0 ) {
+					$installedrank++;
+				} else {
+					$installedrank = 0;
+				}
 
-			$versionrank = getsqlvalue( \$dbh, "SELECT MAX(`version_rank`) FROM `$verticadb$flywaytablename`" );
-			if( defined( $versionrank ) and $versionrank =~ m/^\d+$/ and $versionrank >= 0 ) {
-				$versionrank++;
-			} else {
-				$versionrank = 0;
-			}
-			$installedrank = getsqlvalue( \$dbh, "SELECT MAX(`installed_rank`) FROM `$verticadb$flywaytablename`" );
-			if( defined( $installedrank ) and $installedrank =~ m/^\d+$/ and $installedrank >= 0 ) {
-				$installedrank++;
-			} else {
-				$installedrank = 0;
-			}
-
-			{
-			my $sth = preparesql( \$dbh, <<SQL );
+				{
+				my $sth = preparesql( \$dbh, <<SQL );
 INSERT INTO `$verticadb$mywaytablename` (
     `id`
   , `dbuser`
@@ -5604,28 +5605,29 @@ INSERT INTO `$verticadb$mywaytablename` (
 ) VALUES ( ?, ?, ?, ?, ?, ?, ?, ?, SYSDATE() )
 SQL
 # Unchanged: `sqlstarted`, `finished`, `status`.
-			die( "Unable to create tracking statement handle: " . $dbh -> errstr() . "\n" ) unless( defined( $sth ) and $sth );
-			my $uid = ( $ENV{ LOGNAME } or $ENV{ USER } or getpwuid( $< ) );
-			my $oshost = qx( hostname -f );
-			my $sum = qx( sha1sum \"$file\" );
-			chomp( $oshost );
-			chomp( $sum );
-			$sum =~ s/\s+.*$//;
-			if( $safetyoff ) {
-				executesql( \$dbh, $sth, undef,
-					   $uuid
-					,  $user
-					,  $host
-					,  $uid
-					,  $oshost
-					,  $sum
-					,  $schmpath
-					,  $schmfile
+				die( "Unable to create tracking statement handle: " . $dbh -> errstr() . "\n" ) unless( defined( $sth ) and $sth );
+				my $uid = ( $ENV{ LOGNAME } or $ENV{ USER } or getpwuid( $< ) );
+				my $oshost = qx( hostname -f );
+				my $sum = qx( sha1sum \"$file\" );
+				chomp( $oshost );
+				chomp( $sum );
+				$sum =~ s/\s+.*$//;
+				if( $safetyoff ) {
+					executesql( \$dbh, $sth, undef,
+						   $uuid
+						,  $user
+						,  $host
+						,  $uid
+						,  $oshost
+						,  $sum
+						,  $schmpath
+						,  $schmfile
 
-				);
-			}
-			$sth -> finish();
-			}
+					);
+				}
+				$sth -> finish();
+				}
+			} # ( not( defined( $action_init ) ) )
 		} # ( qr/^$flywaytablename$/ |M| \@{ $availabletables } )
 	}
 	#else { # ( 'procedure' eq $mode )
@@ -5639,7 +5641,7 @@ SQL
 	#
 
 	# TODO: Backup Stored Procedures also?
-	if( $statements and not( ( 'procedure' eq $mode ) or $unsafe ) ) {
+	if( $statements and not( ( 'procedure' eq $mode ) or $unsafe or( defined( $action_init ) ) ) ) {
 		if( $dumpusers ) {
 
 			# I can't imagine that this will change any time soon,
@@ -5881,20 +5883,30 @@ SQL
 									} else {
 										$restorefile = realpath( $restorefile );
 									}
-								} else {
+								}
+								if( not( -s $restorefile ) ) {
 									if( $safetyoff ) {
 										die( "Cannot locate file '$restorefile' from root or '$schmpath' directories\n" );
 									} else {
 										warn( "!> $warning Could not locate file '$restorefile' from root or '$schmpath' directories, would abort\n" );
 									}
-								}
-								if( $safetyoff and -s $restorefile ) {
-									dbclose( \$dbh );
-									dbrestore( $auth, $restorefile );
-									return( \$schmversion );
+								} else {
+									if( $safetyoff ) {
+										dbclose( \$dbh );
+										dbrestore( $auth, $restorefile );
+										return( \$schmversion );
+									} else {
+										print( "*> Would restore database from file '$restorefile' ...\n" );
+										dbclose( \$dbh );
+										return( \$schmversion );
+									}
 								}
 							}
+						} elsif( defined( $action_init ) ) { # not( defined( $restorefile ) and length( $restorefile ) )
+							dbclose( \$dbh );
+							return( TRUE );
 						}
+
 						$schmprevious = undef if( defined( $schmprevious ) and ( $schmprevious =~ m#(?:na|n/a)#i ) );
 						print( "*> Read dubious prior version '$schmprevious'\n" ) unless( not( defined( $schmprevious ) ) or ( $schmprevious =~ m/[\d.]+/ ) );
 						print( "*> Read dubious target version '$schmtarget'\n" ) unless( not( defined( $schmtarget ) ) or ( $schmtarget =~ m/[\d.]+/ ) );
