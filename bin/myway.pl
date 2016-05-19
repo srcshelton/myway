@@ -2228,7 +2228,7 @@ no if ( $] >= 5.02 ), warnings => 'experimental::autoderef';
 # ... in actual fact, diagnostics causes more problems than it solves.  It does
 # appear to be, in reality, quite silly.
 
-use constant VERSION     =>  "1.1.2";
+use constant VERSION     =>  "1.1.2.3";
 
 use constant TRUE        =>  1;
 use constant FALSE       =>  0;
@@ -3792,9 +3792,9 @@ sub dbdump( $;$$$$ ) { # {{{
 					foreach my $entry ( @{ $errors } ) {
 						my( $dir, $message ) = %{ $entry };
 						if( length( $message ) ) {
-							print STDERR "Error creating directory '$dir': $message";
+							print STDERR "Error creating directory '$dir': $message\n";
 						} else {
-							print STDERR "make_path general error: $message";
+							print STDERR "make_path general error: $message\n";
 						}
 					}
 					return( undef );
@@ -3818,9 +3818,9 @@ sub dbdump( $;$$$$ ) { # {{{
 				foreach my $entry ( @{ $errors } ) {
 					my( $dir, $message ) = %{ $entry };
 					if( length( $message ) ) {
-						print STDERR "Error creating directory '$dir': $message";
+						print STDERR "Error creating directory '$dir': $message\n";
 					} else {
-						print STDERR "make_path general error: $message";
+						print STDERR "make_path general error: $message\n";
 					}
 				}
 				return( undef );
@@ -4077,19 +4077,31 @@ sub dbdump( $;$$$$ ) { # {{{
 			touch( $output );
 		};
 		if( $@ ) {
-			die( "$fatal $@\n" );
+			( my $error = $@ ) =~ s/ at .+ line \d+\.$//;
+			die( "$fatal $error\n" );
 		}
 
 		pdebug( "Shell-command is: '$command'" );
-		my $result = qx( $command );
+		my $result = qx( $command 2>&1 );
+		my( $rc, $sig, $core ) = ( $? >> 8, $? & 127, $? & 128 );
+		pdebug( "Command completed with return-code $rc, signal $sig, core-dump $core" );
+		pdebug( "Output:\n$result" );
+
 		if( not( defined( $result ) ) ) {
 			warn( "$failed Unable to launch external process: $!\n" );
 			return( undef );
 		}
-		if( $? ) {
-			warn( "$failed Database dump failed: $?\n" ) ;
+		if( $rc ) {
+			warn( "$failed Database dump failed: $rc\n" ) ;
 			return( undef );
 		}
+		# Unfortunately, mysqldump appears to also throw errors but
+		# then exit successfully :(
+		if( ( $result =~ m/mysqldump:\s+Couldn.t execute'/ ) or ( $result =~ m/\s+\(\d{4}\)$/ ) ) {
+			warn( "$failed Database dump failed: $rc\n$result\n" ) ;
+			return( undef );
+		}
+
 		#return( $result );
 		return( TRUE );
 
@@ -4113,11 +4125,14 @@ sub dbrestore( $$ ) { # {{{
 	return( undef ) unless( defined( $auth -> { 'user' } ) and length( $auth -> { 'user' } ) );
 	return( undef ) unless( defined( $auth -> { 'password' } ) and length( $auth -> { 'password' } ) );
 	return( undef ) unless( defined( $auth -> { 'host' } ) and length( $auth -> { 'host' } ) );
+	return( undef ) unless( defined( $auth -> { 'port' } ) and length( $auth -> { 'port' } ) );
 	return( undef ) unless( defined( $file ) );
 
 	my $user = $auth -> { 'user' };
 	my $password = $auth -> { 'password' };
 	my $host = $auth -> { 'host' };
+	my $port = $auth -> { 'port' };
+	my $database = $auth -> { 'database' } if( defined( $auth -> { 'database' } ) and length( $auth -> { 'database' } ) );
 
 	my $mysql = which( 'mysql' );
 
@@ -4173,7 +4188,12 @@ EOF
 	if( DEBUG or ( $verbosity > 2 ) ) {
 		$verbose = '-v -v -v';
 	}
-	my $command = '"' . $file . ( defined( $decompress ) ? '" | ' . $decompress : '"' ) . ' | ' . $fixdrop . ' | { ' . $mysql . " -u $user -p$password -h $host $verbose 2>&1 ; }";
+	my $command = '"' . $file . ( defined( $decompress ) ? '" | ' . $decompress : '"' );
+	$command .= ' | ' . $fixdrop;
+	$command .= ' | { ' . $mysql . " -u $user -p$password -h $host ";
+	$command .= "'$database' " if( defined( $database ) );
+	$command .= "$verbose " if( defined( $verbose ) );
+	$command .= '2>&1 ; }';
 
 	if( which( 'pv' ) ) {
 		my ( $columns, $rows );
@@ -4191,6 +4211,27 @@ EOF
 		$command = 'cat ' . $command;
 	}
 	pdebug( "Restore command is '$command'" );
+
+	if( defined( $database ) ) {
+		# I can't imagine that this will change any time soon, but I
+		# guess it's not impossible that at some future time `maria`
+		# is the system database... ?
+		my $systemdb = 'mysql';
+
+		print( "\n=> Connecting to database `$systemdb` ...\n" );
+		my $systemdsn = "DBI:mysql:database=$systemdb;host=$host;port=$port";
+		my $systemdbh;
+		my $systemerror = dbopen( \$systemdbh, $systemdsn, $user, $password );
+		die( $systemerror ."\n" ) if $systemerror;
+
+		print( "=> Creating database `$systemdb` if necessary ...\n" );
+		die( "$fatal Database creation error\n" ) if( not( dosql( \$systemdbh, "CREATE DATABASE IF NOT EXISTS `$database`" ) ) );
+
+		#dbclose( $systemdbh );
+		print( "=> Complete - disconnecting from database ...\n" );
+		$systemdbh -> disconnect;
+	}
+
 	#exec( $command ) or die( "Failed to execute 'pv' in order to monitor data restoration: $!\n" );
 	system( $command );
 	if( -1 == $? ) {
@@ -4816,19 +4857,21 @@ sub applyschema( $$$$;$ ) { # {{{
 					}
 				} elsif( $okay ) {
 					$okay = FALSE;
-					warn( "!> Metadata contains non-comment code which will be executed once for every specified file\n" );
+					warn( "!> Metadata contains non-comment code which will be executed before procedure definitions are processed\n" ) if( $first );
 				}
 			}
 		}
 
-		if( not( defined( $procedureversion ) and length( $procedureversion ) ) and defined( $marker ) and length( $marker ) ) {
+		if( not( defined( $procedureversion ) and length( $procedureversion ) ) ) {
 			$procedureversion = $1 if( dirname( $file ) =~ m/^(?:.*?)(_v\d+_\d+(_\d+)?)$/ );
 			if( defined( $procedureversion ) ) {
-				$procedureversion .= '` ';
-				if( $pretend ) {
-					print( "*> Would adjust Stored Procedure names with version string '$procedureversion' from path\n" );
-				} else {
-					print( "*> Adjusting Stored Procedure names with version string '$procedureversion' from path\n" ) unless( $quiet or $silent );
+				if( defined( $marker ) and length( $marker ) ) {
+					$procedureversion .= '` ';
+					if( $pretend ) {
+						print( "*> Would adjust Stored Procedure names with version string '$procedureversion' from path\n" );
+					} else {
+						print( "*> Adjusting Stored Procedure names with version string '$procedureversion' from path\n" ) unless( $quiet or $silent );
+					}
 				}
 			} else {
 				if( $force ) {
@@ -4842,7 +4885,7 @@ sub applyschema( $$$$;$ ) { # {{{
 				}
 			}
 		}
-		if( $procedureversion =~ m/_v(\d+_\d+)_\d+/ ) {
+		if( defined( $procedureversion ) and ( $procedureversion =~ m/_v(\d+_\d+)_\d+/ ) ) {
 			( my $version = $1 ) =~ s/_/./g;
 			$procedureversion =~ m/_v\d+_\d+_(\d+)/;
 			my $hotfix = $1;
@@ -4871,11 +4914,24 @@ sub applyschema( $$$$;$ ) { # {{{
 		} else {
 			if( defined( $limit ) ) {
 				my $match = $1;
-				if( not( $match eq $limit ) ) {
-					my @sortedversions = sort { versioncmp( $a, $b ) } ( $match, $limit );
+
+				my( $mcode, $mchange, $mstep, $mhotfix ) = ( $match =~ m/^([[:xdigit:]]+)(?:\.(\d+)(?:\.(\d+)(?:\.(\d+))?)?)?$/ );
+				my( $lcode, $lchange, $lstep, $lhotfix ) = ( $limit =~ m/^([[:xdigit:]]+)(?:\.(\d+)(?:\.(\d+)(?:\.(\d+))?)?)?$/ );
+				$mchange = 0 unless( defined( $mchange ) and $mchange );
+				$mstep = 0 unless( defined( $mstep ) and $mstep );
+				$mhotfix = 0 unless( defined( $mhotfix ) and $mhotfix );
+				$lchange = 0 unless( defined( $lchange ) and $lchange );
+				$lstep = 0 unless( defined( $lstep ) and $lstep );
+				$lhotfix = 0 unless( defined( $lhotfix ) and $lhotfix );
+
+				my $mv = "$mcode.$mchange.$mstep.$mhotfix";
+				my $lv = "$lcode.$lchange.$lstep.$lhotfix";
+
+				if( not( $mv eq $lv ) ) {
+					my @sortedversions = sort { versioncmp( $a, $b ) } ( $mv, $lv );
 					my $latest = pop( @sortedversions );
-					if( $latest eq $match ) {
-						warn( "!> Filename '$schmfile' has version '$match' which is higher than specified target limit '$limit'\n" );
+					if( $latest eq $mv ) {
+						warn( "!> Filename '$schmfile' has version '$mv' which is higher than specified target limit '$lv'\n" );
 						return( FALSE );
 					}
 				}
@@ -5373,13 +5429,27 @@ SQL
 				if( $schmfile =~ m/^V(.*?)__/ ) {
 					my $match = $1;
 
-					if( defined( $limit ) and not( $match eq $limit ) ) {
-						my @sortedversions = sort { versioncmp( $a, $b ) } ( $match, $limit );
-						my $latest = pop( @sortedversions );
-						if( $latest eq $match ) {
-							warn( "!> Filename '$schmfile' has version '$match' which is higher than specified target limit '$limit'\n" );
-							dbclose( \$dbh );
-							return( FALSE );
+					if( defined( $limit ) ) {
+						my( $mcode, $mchange, $mstep, $mhotfix ) = ( $match =~ m/^([[:xdigit:]]+)(?:\.(\d+)(?:\.(\d+)(?:\.(\d+))?)?)?$/ );
+						my( $lcode, $lchange, $lstep, $lhotfix ) = ( $limit =~ m/^([[:xdigit:]]+)(?:\.(\d+)(?:\.(\d+)(?:\.(\d+))?)?)?$/ );
+						$mchange = 0 unless( defined( $mchange ) and $mchange );
+						$mstep = 0 unless( defined( $mstep ) and $mstep );
+						$mhotfix = 0 unless( defined( $mhotfix ) and $mhotfix );
+						$lchange = 0 unless( defined( $lchange ) and $lchange );
+						$lstep = 0 unless( defined( $lstep ) and $lstep );
+						$lhotfix = 0 unless( defined( $lhotfix ) and $lhotfix );
+
+						my $mv = "$mcode.$mchange.$mstep.$mhotfix";
+						my $lv = "$lcode.$lchange.$lstep.$lhotfix";
+
+						if( not( $mv eq $lv ) ) {
+							my @sortedversions = sort { versioncmp( $a, $b ) } ( $mv, $lv );
+							my $latest = pop( @sortedversions );
+							if( $latest eq $mv ) {
+								warn( "!> Filename '$schmfile' has version '$mv' which is higher than specified target limit '$lv'\n" );
+								dbclose( \$dbh );
+								return( FALSE );
+							}
 						}
 					}
 
@@ -5627,18 +5697,31 @@ SQL
 	my $executed = 0;
 
 	if( 'procedure' eq $mode ) {
-		# N.B. This logic does mean that any valid SQL statements in
-		#      a given metadata file will be executed for /every/
-		#      stored procedure within a given directory... the
-		#      intention is that metadata should contain comments only
-		#      (see warning above).
 		my @entries;
-		foreach my $entry ( $metadata -> { 'entries' } ) {
-			push( @entries, @{ $entry } );
+
+		if( $first ) {
+			foreach my $entry ( $metadata -> { 'entries' } ) {
+				push( @entries, @{ $entry } );
+			}
+		} else {
+			# Each $entry[] consists of: %{ @entry (text of statement), $line, $type (comment|statement) }
+			my @procedurecomments = ();
+			foreach my $entry ( $metadata -> { 'entries' } ) {
+				foreach my $statement ( @{ $entry } ) {
+					if( not( 'statement' eq $statement -> { 'type' } ) ) {
+						push( @procedurecomments, $statement );
+					}
+				}
+
+			}
+			push( @entries, @procedurecomments );
+			$metadata -> { 'entries' } = \@procedurecomments;
 		}
+
 		foreach my $entry ( $data -> { 'entries' } ) {
 			push( @entries, @{ $entry } );
 		}
+
 		$data -> { 'entries' } = \@entries;
 	}
 
@@ -5699,19 +5782,29 @@ SQL
 						if( defined( $restorefile ) and length( $restorefile ) ) {
 							if( not( defined( $action_init ) ) ) {
 								warn( "!> $warning 'Restore' directive is only valid in a base initialiser - ignoring ...\n" );
-							}
-							print( "*> Found restoration directive for file '$restorefile' ...\n" );
-							if( not( -r "$schmpath/$restorefile" ) ) {
-								if( $safetyoff ) {
-									die( "Cannot read file '$schmpath/$restorefile'\n" );
+							} else {
+								print( "*> Found restoration directive for file '$restorefile' ...\n" );
+
+								# $restorefile may be relative or absolute...
+								if( -s ( realpath( "$schmpath/$restorefile" ) or realpath( $restorefile ) ) ) {
+									if( -s realpath( "$schmpath/$restorefile" ) ) {
+										$restorefile = realpath( "$schmpath/$restorefile" );
+										print( "*> Using file location '$restorefile' ...\n" );
+									} else {
+										$restorefile = realpath( $restorefile );
+									}
 								} else {
-									warn( "!> $warning Could not read file '$schmpath/$restorefile', would abort\n" );
+									if( $safetyoff ) {
+										die( "Cannot locate file '$restorefile' from root or '$schmpath' directories\n" );
+									} else {
+										warn( "!> $warning Could not locate file '$restorefile' from root or '$schmpath' directories, would abort\n" );
+									}
 								}
-							}
-							if( $safetyoff ) {
-								dbclose( \$dbh );
-								dbrestore( $auth, $restorefile );
-								return( \$schmversion );
+								if( $safetyoff and -s $restorefile ) {
+									dbclose( \$dbh );
+									dbrestore( $auth, $restorefile );
+									return( \$schmversion );
+								}
 							}
 						}
 						$schmprevious = undef if( defined( $schmprevious ) and ( $schmprevious =~ m#(?:na|n/a)#i ) );
@@ -5874,9 +5967,9 @@ SQL
 										}
 									}
 								} elsif( $fresh ) { # and ( $first )
-									print( "*> " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " version '$schmtarget'" . ( $quiet and ( 'procedure' eq $mode ) ? " for file '$schmfile'" : '' ) . " is a fresh install\n" ) unless( $silent );
+									print( "*> " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " version '$schmtarget'" . ( ( $quiet and ( 'procedure' eq $mode ) ) ? " for file '$schmfile'" : '' ) . " is a fresh install\n" ) unless( $silent );
 								} elsif( $first ) {
-									print( "*> " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " version '$schmtarget'" . ( $quiet and ( 'procedure' eq $mode ) ? " for file '$schmfile'" : '' ) . " is a re-install\n" ) unless( $silent );
+									print( "*> " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " version '$schmtarget'" . ( ( $quiet and ( 'procedure' eq $mode ) ) ? " for file '$schmfile'" : '' ) . " is a re-install\n" ) unless( $silent );
 								}
 								if( $okay or ( 'procedure' eq $mode ) ) {
 									$schmversion = $schmtarget;
@@ -6915,7 +7008,7 @@ sub main( @ ) { # {{{
 		warn( "Cannot specify argument '--separate-files' without option '--backup'\n" ) if( $split and not( defined( $action_backup ) ) );
 		warn( "Cannot specify argument '--skip-metadata' without option '--backup'\n" ) if( $skipmeta and not( defined( $action_backup ) ) );
 		warn( "Cannot specify argument '--extended-insert' without option '--backup'\n" ) if( $extinsert and not( defined( $action_backup ) ) );
-		warn( "Cannot specify argument '--trust-filename' without option '--no-backup'\n" ) if( $shortcut and not( defined( $unsafe ) ) );
+		warn( "Cannot specify argument '--trust-filename' without option '--no-backup'\n" ) if( $shortcut and not( $unsafe ) );
 		warn( "Cannot specify argument '--keep-lock' without option '--lock'\n" ) if( $keeplock and not( $lock ) );
 		warn( "Cannot specify argument '--clear-metadata' without option '--force'\n" ) if( $clear and not( $force ) );
 		warn( "Cannot specify argument '--lock' with option '--database' (locks are global)\n" ) if( $lock and defined( $db ) );
@@ -7235,8 +7328,15 @@ sub main( @ ) { # {{{
 						next if( qr/^$database$/ |M| [ 'information_schema', 'performance_schema' ] );
 						print( "\n*> Backing up database `$database` to '" . ( length( $location ) ? "$location/" : '' ) . "$database.sql' ...\n" );
 						my $databasesuccess = dbdump( $auth, $database, $location, "$database.sql", $options );
-						$success += $databasesuccess;
-						print( "!> Database `$database` failed to backup: $databasesuccess\n" ) if( not( $databasesuccess ) );
+						if( defined( $databasesuccess ) and $databasesuccess ) {
+							$success += $databasesuccess;
+						} else {
+							if( defined( $databasesuccess ) ) {
+								print( "!> Database `$database` failed to backup: $databasesuccess\n" );
+							} else {
+								print( "!> Database `$database` failed to backup\n" );
+							}
+						}
 					}
 				}
 			}
@@ -7731,7 +7831,7 @@ sub main( @ ) { # {{{
 	$variables -> { 'engine' }      = $engine;
 	$variables -> { 'environment' } = $environment;
 	$variables -> { 'extinsert' }   = $extinsert;
-	$variables -> { 'first' }       =  not( 'procedure' eq $mode );
+	$variables -> { 'first' }       =  TRUE;
 	$variables -> { 'force' }       = $force;
 	$variables -> { 'limit' }       = $limit;
 	$variables -> { 'marker' }      = $marker if( $dosub );
@@ -7755,7 +7855,9 @@ sub main( @ ) { # {{{
 		@files = ( shift( @files ) ) if( defined( $action_init ) );
 
 		foreach my $item ( @files ) {
-			if( -r $item ) {
+			if( not( -s $item ) ) {
+				warn( "\n$warning Cannot read from file '$item' - skipping\n" );
+			} else {
 				print "*> Processing file '$item' ...\n" unless( $quiet or $silent );
 				eval {
 					if( defined( $version ) ) {
@@ -7795,12 +7897,11 @@ sub main( @ ) { # {{{
 					#enable diagnostics;
 				}
 				$variables -> { 'first' } = FALSE if( $variables -> { 'first' } );
-			} else {
-				warn( "\n$warning Cannot read from file '$item' - skipping\n" );
 			}
 		}
 
-		if( not( defined( $limit ) ) ) {
+		# FIXME: We need to be able to specify Stored Procedure numbers separately...
+		if( defined( $action_init ) or ( 'procedure' eq $mode ) or not( defined( $limit ) ) ) {
 			if( defined( $version ) and not( $version eq '__NOT_APPLIED__' ) ) {
 				print( "*> Database is up to date at schema version '$version'\n" ) unless( $quiet or $silent );
 			} elsif( defined( $lastversion ) ) {
@@ -7821,12 +7922,28 @@ sub main( @ ) { # {{{
 			} elsif( $version eq $limit ) {
 				print( "*> Database is up to date at schema version '$version'\n" ) unless( $quiet or $silent );
 			} else {
-				my @sortedversions = sort { versioncmp( $a, $b ) } ( $version, $limit );
-				my $latest = pop( @sortedversions );
-				if( $latest eq $limit ) {
-					die( "$fatal Having processed " . scalar( @files ) . " files, database schema version '$version' is still behind target version '$limit'\n" );
+				my( $vcode, $vchange, $vstep, $vhotfix ) = ( $version =~ m/^([[:xdigit:]]+)(?:\.(\d+)(?:\.(\d+)(?:\.(\d+))?)?)?$/ );
+				my( $lcode, $lchange, $lstep, $lhotfix ) = ( $limit =~ m/^([[:xdigit:]]+)(?:\.(\d+)(?:\.(\d+)(?:\.(\d+))?)?)?$/ );
+				$vchange = 0 unless( defined( $vchange ) and $vchange );
+				$vstep = 0 unless( defined( $vstep ) and $vstep );
+				$vhotfix = 0 unless( defined( $vhotfix ) and $vhotfix );
+				$lchange = 0 unless( defined( $lchange ) and $lchange );
+				$lstep = 0 unless( defined( $lstep ) and $lstep );
+				$lhotfix = 0 unless( defined( $lhotfix ) and $lhotfix );
+
+				my $sv = "$vcode.$vchange.$vstep.$vhotfix";
+				my $lv = "$lcode.$lchange.$lstep.$lhotfix";
+
+				if( $sv eq $lv ) {
+					print( "*> Database is up to date at schema version '$version'\n" ) unless( $quiet or $silent );
 				} else {
-					die( "$fatal Logic error - database schema version '$version' is ahead of target version '$limit'\n" );
+					my @sortedversions = sort { versioncmp( $a, $b ) } ( $sv, $lv );
+					my $latest = pop( @sortedversions );
+					if( $latest eq $lv ) {
+						die( "$fatal Having processed " . scalar( @files ) . " files, database schema version '$sv' is still behind target version '$lv'\n" );
+					} else {
+						die( "$fatal Logic error - database schema version '$sv' is ahead of target version '$lv'\n" );
+					}
 				}
 			}
 		}
@@ -7857,9 +7974,9 @@ sub main( @ ) { # {{{
 				foreach my $entry ( @{ $errors } ) {
 					my( $dir, $message ) = %{ $entry };
 					if( length( $message ) ) {
-						print STDERR "Error creating directory '$dir': $message";
+						print STDERR "Error creating directory '$dir': $message\n";
 					} else {
-						print STDERR "make_path general error: $message";
+						print STDERR "make_path general error: $message\n";
 					}
 				}
 				return( undef );

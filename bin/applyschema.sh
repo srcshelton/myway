@@ -366,6 +366,8 @@ function main() {
 				esac
 			fi
 
+		[[ -n "${environment:-}" ]] && params+=( -e "${environment}" )
+
 			for option in force verbose warn debug quiet silent; do
 				eval echo "\${options_${option}:-}" | grep -Eq "${truthy}" && params+=( --${option} )
 			done
