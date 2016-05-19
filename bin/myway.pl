@@ -2312,7 +2312,7 @@ sub pushentry( $$$$$;$ );
 sub pushfragment( $$$;$$ );
 sub processcomments( $$$;$ );
 sub processline( $$;$$ );
-sub processfile( $$;$$$ );
+sub processfile( $$;$$$$ );
 sub dbopen( $$$$;$$ );
 sub dbclose( ;$$ );
 sub dbdump( $;$$$$ );
@@ -2353,6 +2353,14 @@ our $connection;
 our $searchpath;
 
 
+# Changes in flyway release 4.0:
+#  `version_rank` is removed;
+#  `version` is no longer NOT NULL;
+#  `checksum` is still not DEFAULT NULL (although this was a myway change);
+#  The `version_rank` and `installed_rank` indices are removed;
+#  `installed_rank` is now the PRIMARY KEY;
+#  The `type` value 'INIT' is now 'BASELINE'.
+#
 our $flywaytablename = 'schema_version';
 our $flywayddl  = <<DDL;
 CREATE TABLE IF NOT EXISTS `$flywaytablename` (
@@ -3549,8 +3557,8 @@ sub processline( $$;$$ ) { # {{{
 	}
 } # processline # }}}
 
-sub processfile( $$;$$$ ) { # {{{
-	my( $data, $file, $marker, $substitution, $strict ) = @_;
+sub processfile( $$;$$$$ ) { # {{{
+	my( $data, $file, $marker, $substitution, $strict, $stopaftermetadata ) = @_;
 
 	return( undef ) unless( defined( $file ) and length( $file ) and -r $file );
 
@@ -3587,6 +3595,22 @@ sub processfile( $$;$$$ ) { # {{{
 		my $newstatus;
 		( $line, $newstatus ) = processline( $data, $line, $state, $strict );
 		$status = $newstatus if( defined( $newstatus ) );
+
+		if( defined( $stopaftermetadata ) and $stopaftermetadata ) {
+			# Each $entry[] consists of: %{ @entry (text of statement), $line, $type (comment|statement) }
+			my $entry = @{ $data -> { 'entries' } }[ 0 ];
+			if( exists( $entry -> { 'type' } ) ) {
+				if( 'comment' eq $entry -> { 'type' } ) {
+					pdebug( "Value '$line' leftover after calling processline()" ) if( length( $line ) );
+					pdebug( "Metadata read - skipping remainder of file" );
+					last LINE;
+				} else {
+					warn( "First block read from '$file' does not appear to be a metadata comment - parsing entire file\n" );
+					$stopaftermetadata = undef;
+				}
+			}
+		}
+
 		next LINE unless( length( $line ) );
 
 		pdebug( "Value '$line' leftover after calling processline()" );
@@ -3611,6 +3635,7 @@ sub processfile( $$;$$$ ) { # {{{
 	if( defined( $status ) and length( $status ) ) {
 		warn( "!> Serious schema error: " . $status . "\n" );
 		warn( "!> Your schema may not apply as you intend.\n" );
+		#validated = FALSE;
 	}
 
 	# FIXME: We haven't ever actually changed this value since it was defined...
@@ -4880,7 +4905,8 @@ sub applyschema( $$$$;$ ) { # {{{
 	#      Is there a sensible value to use here?  Auto-create a UID?
 	#$schmversion = '0' unless( defined( $schmversion ) and length( $schmversion ) );
 	if( not( defined( $schmversion ) and length( $schmversion ) ) ) {
-		if( defined( $action_init ) ) {
+		# Stored Procedures are also not versioned by filename...
+		if( defined( $action_init ) or ( 'procedure' eq $mode ) ) {
 			$schmversion = 0;
 		} else {
 			my( $s, $ms ) = gettimeofday();
@@ -4889,6 +4915,7 @@ sub applyschema( $$$$;$ ) { # {{{
 	}
 
 	my $metadata = {};
+	my $metafile;
 	my $procedureversion;
 	my $data = {};
 	my $invalid = FALSE;
@@ -4899,15 +4926,15 @@ sub applyschema( $$$$;$ ) { # {{{
 		# In this case, we retrieve the previous/current-version logic
 		# from the metadata file, and many files may be applied with
 		# the same versions.
-		my $metafile = dirname( $file ) . '/' . $db . '.metadata';
+		$metafile = dirname( $file ) . '/' . $db . '.metadata';
 		die( "Cannot read metadata '$db.metadata' for file '$file'\n" ) unless( -s $metafile );
 		print( "*> Using metadata file '$metafile'\n" ) unless( $quiet or $silent );
 
-		$invalid = $invalid | not( processfile( $metadata, $metafile, undef, undef, $strict ) );
+		$invalid = $invalid | not( processfile( $metadata, $metafile, undef, undef, $strict, TRUE ) );
 		die( "Metadata failed validation - aborting.\n" ) if( $invalid );
 
 		my $okay = TRUE;
-		foreach my $entry ( $metadata -> { 'entries' } ) {
+		METADATA_ADJUST: foreach my $entry ( $metadata -> { 'entries' } ) {
 			foreach my $statement ( @{ $entry } ) {
 				if( 'comment' eq $statement -> { 'type' } ) {
 					if( defined( $marker ) and length( $marker ) ) {
@@ -4942,6 +4969,7 @@ sub applyschema( $$$$;$ ) { # {{{
 				} elsif( $okay ) {
 					$okay = FALSE;
 					warn( "!> Metadata contains non-comment code which will be executed before procedure definitions are processed\n" ) if( $first );
+					last METADATA_ADJUST;
 				}
 			}
 		}
@@ -5783,22 +5811,29 @@ SQL
 		my @entries;
 
 		if( $first ) {
+			# Previously, we only processed the metadata as far as
+			# reading the initial metadata.  If we're on the first
+			# iteration, we now need to process the entire file in
+			# order to discover any contents.
+			$invalid = $invalid | not( processfile( $metadata, $metafile, undef, undef, $strict ) );
+			die( "Metadata failed validation - aborting.\n" ) if( $invalid );
+
 			foreach my $entry ( $metadata -> { 'entries' } ) {
 				push( @entries, @{ $entry } );
 			}
-		} else {
-			# Each $entry[] consists of: %{ @entry (text of statement), $line, $type (comment|statement) }
-			my @procedurecomments = ();
-			foreach my $entry ( $metadata -> { 'entries' } ) {
-				foreach my $statement ( @{ $entry } ) {
-					if( not( 'statement' eq $statement -> { 'type' } ) ) {
-						push( @procedurecomments, $statement );
-					}
-				}
-
-			}
-			push( @entries, @procedurecomments );
-			$metadata -> { 'entries' } = \@procedurecomments;
+		#} else {
+		#	# Each $entry[] consists of: %{ @entry (text of statement), $line, $type (comment|statement) }
+		#	my @procedurecomments = ();
+		#	foreach my $entry ( $metadata -> { 'entries' } ) {
+		#		foreach my $statement ( @{ $entry } ) {
+		#			if( not( 'statement' eq $statement -> { 'type' } ) ) {
+		#				push( @procedurecomments, $statement );
+		#			}
+		#		}
+		#
+		#	}
+		#	push( @entries, @procedurecomments );
+		#	$metadata -> { 'entries' } = \@procedurecomments;
 		}
 
 		foreach my $entry ( $data -> { 'entries' } ) {
@@ -6529,14 +6564,17 @@ SQL
 						, $filetype
 						, $schmfile
 						   # flyway appears to initialise the checksum value at
-						   # version_rank, then for each element of the table
+						   # `version_rank`, then for each element of the table
 						   # multiplies this by 31 and adds the hashCode() value
 						   # associated with the item in question (or zero if null),
-						   # except for 'execution_time' and 'success', which are
+						   # except for `execution_time` and `success`, which are
 						   # added directly.  This (large) value is then written to a
 						   # signed int(11) attribute in the database, which causes
 						   # the value to wrap.
-						   # I'm not going to try to reproduce this scheme here...
+						   # I'm not even going to try to reproduce this scheme here...
+						   #
+						   # As of flyway-4.0, the above is still the case, except
+						   # now initially based on `installed_rank`
 						,  0
 						, $user
 						,  int( $schemaelapsed + 0.5 ) # Round up
@@ -8007,7 +8045,7 @@ sub main( @ ) { # {{{
 					$lastversion = undef;
 
 					if( $pretend ) {
-						die( "BUG: applyschema() failed during simulation\n" );
+						die( "BUG: applyschema() failed during simulation: $@\n" );
 					}
 
 					( my $error = $@ ) =~ s/ at .+ line \d+\.$//;
