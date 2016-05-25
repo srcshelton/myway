@@ -2228,12 +2228,13 @@ no if ( $] >= 5.02 ), warnings => 'experimental::autoderef';
 # ... in actual fact, diagnostics causes more problems than it solves.  It does
 # appear to be, in reality, quite silly.
 
-use constant VERSION     =>  "1.1.2.3";
+use constant VERSION     =>  "1.2.0";
 
 use constant TRUE        =>  1;
 use constant FALSE       =>  0;
 
 use constant DEBUG       => ( $ENV{ 'DEBUG' } or FALSE );
+use constant OLDSCHEMA   => ( $ENV{ 'OLDSCHEMA' } or FALSE );
 
 use constant DEFDELIM    => ';';
 
@@ -2326,6 +2327,7 @@ sub getsqlvalue( $$ );
 sub getsqlvalues( $$;$ );
 sub outputtable( $$;$ );
 sub formatastable( $$$ );
+sub migratemetadataschema( $;$$$ );
 sub applyschema( $$$$;$ );
 sub main( @ );
 
@@ -2352,7 +2354,6 @@ our $connection;
 #      ... and, of course, Vertica is very special :(
 our $searchpath;
 
-
 # Changes in flyway release 4.0:
 #  `version_rank` is removed;
 #  `version` is no longer NOT NULL;
@@ -2361,44 +2362,119 @@ our $searchpath;
 #  `installed_rank` is now the PRIMARY KEY;
 #  The `type` value 'INIT' is now 'BASELINE'.
 #
-our $flywaytablename = 'schema_version';
-our $flywayddl  = <<DDL;
-CREATE TABLE IF NOT EXISTS `$flywaytablename` (
-    `version_rank`	INT		                          NOT NULL
-  , `installed_rank`	INT		                          NOT NULL
-  , `version`		VARCHAR(50)	                          NOT NULL
-  , `description`	VARCHAR(200)	                          NOT NULL
-  , `type`		VARCHAR(20)	                          NOT NULL
-  , `script`		VARCHAR(1000)	                          NOT NULL
-  , `checksum`		INT		DEFAULT NULL
-  , `installed_by`	VARCHAR(100)	                          NOT NULL
-  , `installed_on`	TIMESTAMP	DEFAULT CURRENT_TIMESTAMP NOT NULL
-  , `execution_time`	INT		                          NOT NULL
-  , `success`		BOOLEAN		                          NOT NULL
-  , PRIMARY KEY                         (`version`)
-  ,         KEY `schema_version_vr_idx` (`version_rank`)
-  ,         KEY `schema_version_ir_idx` (`installed_rank`)
-  ,         KEY `schema_version_s_idx`  (`success`)
-) ENGINE='InnoDB' DEFAULT CHARSET='UTF8';
+our $flywayinit;
+our $flywayinitdesc;
+if( OLDSCHEMA ) {
+	$flywayinit = 'INIT';
+	$flywayinitdesc = '<< Flyway Init >>';
+} else {
+	$flywayinit = 'BASELINE';
+	$flywayinitdesc = '<< Flyway Baseline >>';
+}
+
+our $mywayversionhistorytablename = 'myway_version_history';
+our $mywayversionhistoryddl = <<DDL;
+CREATE TABLE IF NOT EXISTS `$mywayversionhistorytablename` (
+    `id`		INT		UNSIGNED AUTO_INCREMENT   NOT NULL
+  , `myway_version`	VARCHAR(15)	                          NOT NULL
+  , `flyway_compatible`	VARCHAR(15)				  NOT NULL
+  , `init_string`	VARCHAR(15)				  NOT NULL
+  , `active`		BOOLEAN					  NOT NULL
+  , PRIMARY KEY (`id`)
+) ENGINE='InnoDB' DEFAULT CHARSET='ASCII';
 DDL
-our $verticaflywayddl  = <<DDL;
-CREATE TABLE IF NOT EXISTS __SCHEMA__"$flywaytablename" (
-    "version_rank"	INT		                          NOT NULL
-  , "installed_rank"	INT		                          NOT NULL
-  , "version"		VARCHAR(50)	                          NOT NULL
-  , "description"	VARCHAR(200)	                          NOT NULL
-  , "type"		VARCHAR(20)	                          NOT NULL
-  , "script"		VARCHAR(1000)	                          NOT NULL
-  , "checksum"		INT		DEFAULT NULL
-  , "installed_by"	VARCHAR(100)	                          NOT NULL
-  , "installed_on"	TIMESTAMP	DEFAULT CURRENT_TIMESTAMP NOT NULL
-  , "execution_time"	INT		                          NOT NULL
-  , "success"		BOOLEAN		                          NOT NULL
-  , PRIMARY KEY                         ("version")
+our $verticamywayversionhistoryddl = <<DDL;
+CREATE TABLE IF NOT EXISTS "$mywayversionhistorytablename" (
+    "id"		AUTO_INCREMENT
+  , "myway_version"	VARCHAR(15)	                          NOT NULL
+  , "flyway_compatible"	VARCHAR(15)				  NOT NULL
+  , "init_string"	VARCHAR(15)				  NOT NULL
+  , "active"		BOOLEAN					  NOT NULL
+  , PRIMARY KEY ("id")
 )
-ORDER BY "version", "version_rank", "installed_rank", "success"
-SEGMENTED BY HASH( "version" ) ALL NODES;
+ORDER BY "id"
+SEGMENTED BY HASH( "myway_version" ) ALL NODES;
 DDL
+
+
+our $flywaytablename = 'schema_version';
+our $flywayddl;
+our $verticaflywayddl;
+if( OLDSCHEMA ) {
+	$flywayddl = <<DDL;
+	CREATE TABLE IF NOT EXISTS `$flywaytablename` (
+	    `version_rank`	INT		DEFAULT NULL
+	  , `installed_rank`	INT		                          NOT NULL
+	  , `version`		VARCHAR(50)	                          NOT NULL
+	  , `description`	VARCHAR(200)	                          NOT NULL
+	  , `type`		VARCHAR(20)	                          NOT NULL
+	  , `script`		VARCHAR(1000)	                          NOT NULL
+	  , `checksum`		INT		DEFAULT NULL
+	  , `installed_by`	VARCHAR(100)	                          NOT NULL
+	  , `installed_on`	TIMESTAMP	DEFAULT CURRENT_TIMESTAMP NOT NULL
+	  , `execution_time`	INT		                          NOT NULL
+	  , `success`		BOOLEAN		                          NOT NULL
+	  , PRIMARY KEY                         (`version`)
+	  ,         KEY `schema_version_vr_idx` (`version_rank`)
+	  ,         KEY `schema_version_ir_idx` (`installed_rank`)
+	  ,         KEY `schema_version_s_idx`  (`success`)
+	) ENGINE='InnoDB' DEFAULT CHARSET='UTF8';
+DDL
+	$verticaflywayddl = <<DDL;
+	CREATE TABLE IF NOT EXISTS __SCHEMA__"$flywaytablename" (
+	    "version_rank"	INT		DEFAULT NULL
+	  , "installed_rank"	INT		                          NOT NULL
+	  , "version"		VARCHAR(50)	                          NOT NULL
+	  , "description"	VARCHAR(200)	                          NOT NULL
+	  , "type"		VARCHAR(20)	                          NOT NULL
+	  , "script"		VARCHAR(1000)	                          NOT NULL
+	  , "checksum"		INT		DEFAULT NULL
+	  , "installed_by"	VARCHAR(100)	                          NOT NULL
+	  , "installed_on"	TIMESTAMP	DEFAULT now()             NOT NULL
+	  , "execution_time"	INT		                          NOT NULL
+	  , "success"		BOOLEAN		                          NOT NULL
+	  , PRIMARY KEY ("version")
+	)
+	ORDER BY "version", "version_rank", "installed_rank", "success"
+	SEGMENTED BY HASH( "version" ) ALL NODES;
+	ALTER TABLE __SCHEMA__"$flywaytablename" ADD CONSTRAINT "${flywaytablename}_pk" PRIMARY KEY ("version");
+DDL
+} else {
+	$flywayddl = <<DDL;
+	CREATE TABLE IF NOT EXISTS `$flywaytablename` (
+	    `installed_rank`	INT		                          NOT NULL
+	  , `version`		VARCHAR(50)
+	  , `description`	VARCHAR(200)	                          NOT NULL
+	  , `type`		VARCHAR(20)	                          NOT NULL
+	  , `script`		VARCHAR(1000)	                          NOT NULL
+	  , `checksum`		INT		DEFAULT NULL
+	  , `installed_by`	VARCHAR(100)	                          NOT NULL
+	  , `installed_on`	TIMESTAMP	DEFAULT CURRENT_TIMESTAMP NOT NULL
+	  , `execution_time`	INT		                          NOT NULL
+	  , `success`		BOOLEAN		                          NOT NULL
+	  , CONSTRAINT `${flywaytablename}_pk` PRIMARY KEY (`installed_rank`)
+	  , KEY `${flywaytablename}_s_idx` (`success`)
+	) ENGINE='InnoDB' DEFAULT CHARSET='UTF8';
+DDL
+	$verticaflywayddl = <<DDL;
+	CREATE TABLE IF NOT EXISTS __SCHEMA__"$flywaytablename" (
+	    "installed_rank"	INT		                          NOT NULL
+	  , "version"		VARCHAR(50)
+	  , "description"	VARCHAR(200)	                          NOT NULL
+	  , "type"		VARCHAR(20)	                          NOT NULL
+	  , "script"		VARCHAR(1000)	                          NOT NULL
+	  , "checksum"		INT		DEFAULT NULL
+	  , "installed_by"	VARCHAR(100)	                          NOT NULL
+	  , "installed_on"	TIMESTAMP	DEFAULT now()             NOT NULL
+	  , "execution_time"	INT		                          NOT NULL
+	  , "success"		BOOLEAN		                          NOT NULL
+	  , PRIMARY KEY ("version")
+	)
+	ORDER BY "version"
+	SEGMENTED BY HASH( "version" ) ALL NODES;
+	ALTER TABLE __SCHEMA__"$flywaytablename" ADD CONSTRAINT "${flywaytablename}_pk" PRIMARY KEY ("installed_rank");
+DDL
+}
 
 # Note that field-lengths in myway* tables are not arbitrary, but instead are
 # sized to hold the maximum permissible value for the field-type, according to
@@ -2409,7 +2485,7 @@ DDL
 # as DEFAULT 0, which breaks when NO_ZERO_DATE is in effect...
 #
 our $mywaytablename = 'myway_schema_version';
-our $mywayddl  = <<DDL;
+our $mywayddl = <<DDL;
 CREATE TABLE IF NOT EXISTS `$mywaytablename` (
     `id`		CHAR(36)	                          NOT NULL
   , `dbuser`		CHAR(16)	                          NOT NULL
@@ -2426,7 +2502,7 @@ CREATE TABLE IF NOT EXISTS `$mywaytablename` (
   , PRIMARY KEY (`id`)
 ) ENGINE='InnoDB' DEFAULT CHARSET='ASCII';
 DDL
-our $verticamywayddl  = <<DDL;
+our $verticamywayddl = <<DDL;
 CREATE TABLE IF NOT EXISTS __SCHEMA__"$mywaytablename" (
     "id"		CHAR(36)	                          NOT NULL
   , "dbuser"		CHAR(16)	                          NOT NULL
@@ -2451,34 +2527,60 @@ DDL
 # defaults to 16MB.  To cope with this without truncation, we must use a TEXT
 # field-type.  It is possible that, since this occurance is rare, it would be
 # more advantageous performance-wise to store two fields: one for 'short' lines
-# (of up to 32676 UTF-8 characters) and one for lines that wouldn't fit into a
+# (of up to 32767 UTF-8 characters) and one for lines that wouldn't fit into a
 # maximally-sized VARCHAR()...
 #
+# Update: Schema-analysis tools complain about this table lacking a Primary
+#         Key, and there is also a 'innodb_force_primary_key' option which (is
+#         supposed to) fail if no PK is present...
 our $mywayactionsname = 'myway_schema_actions';
-our $mywayactionsddl  = <<DDL;
-CREATE TABLE IF NOT EXISTS `$mywayactionsname` (
-    `schema_id`		CHAR(36)	                          NOT NULL
-  , `started`		TIMESTAMP(6)	DEFAULT CURRENT_TIMESTAMP NOT NULL
-  , `event`		VARCHAR(256)	                          NOT NULL
-  , `statement`		LONGTEXT	CHARACTER SET 'UTF8'      NOT NULL
-  , `line`		INT		UNSIGNED
-  , `time`		DECIMAL(13,3)
-  , `state`		CHAR(5)
-  , INDEX        `${mywayactionsname}_schema_id_idx` (`schema_id`)
-  , CONSTRAINT   `${mywayactionsname}_schema_id_${mywaytablename}_id`
-    FOREIGN KEY (`schema_id`) REFERENCES `$mywaytablename` (`id`)
-    ON DELETE CASCADE
-) ENGINE='InnoDB' DEFAULT CHARSET='ASCII';
+our $mywayactionsddl;
+if( OLDSCHEMA) {
+	$mywayactionsddl = <<DDL;
+	CREATE TABLE IF NOT EXISTS `$mywayactionsname` (
+	    `schema_id`		CHAR(36)	                          NOT NULL
+	  , `started`		TIMESTAMP(6)	DEFAULT CURRENT_TIMESTAMP NOT NULL
+	  , `event`		VARCHAR(256)	                          NOT NULL
+	  , `statement`		LONGTEXT	CHARACTER SET 'UTF8'      NOT NULL
+	  , `line`		INT		UNSIGNED
+	  , `time`		DECIMAL(13,3)
+	  , `state`		CHAR(5)
+	  , INDEX        `${mywayactionsname}_schema_id_idx` (`schema_id`)
+	  , CONSTRAINT   `${mywayactionsname}_schema_id_${mywaytablename}_id`
+	    FOREIGN KEY (`schema_id`) REFERENCES `$mywaytablename` (`id`)
+	    ON DELETE CASCADE
+	) ENGINE='InnoDB' DEFAULT CHARSET='ASCII';
 DDL
-our $verticamywayactionsddl  = <<DDL;
+} else {
+	$mywayactionsddl = <<DDL;
+	CREATE TABLE IF NOT EXISTS `$mywayactionsname` (
+	    `id`		INT		UNSIGNED AUTO_INCREMENT   NOT NULL
+	  , `schema_id`		CHAR(36)	                          NOT NULL
+	  , `started`		TIMESTAMP(6)	DEFAULT CURRENT_TIMESTAMP NOT NULL
+	  , `event`		VARCHAR(256)	                          NOT NULL
+	  , `statement`		LONGTEXT	CHARACTER SET 'UTF8'      NOT NULL
+	  , `line`		INT		UNSIGNED
+	  , `time`		DECIMAL(13,3)
+	  , `state`		CHAR(5)
+	  , PRIMARY KEY (`id`)
+	  , INDEX        `${mywayactionsname}_schema_id_idx` (`schema_id`)
+	  , CONSTRAINT   `${mywayactionsname}_schema_id_${mywaytablename}_id`
+	    FOREIGN KEY (`schema_id`) REFERENCES `$mywaytablename` (`id`)
+	    ON DELETE CASCADE
+	) ENGINE='InnoDB' DEFAULT CHARSET='ASCII';
+DDL
+}
+our $verticamywayactionsddl = <<DDL;
 CREATE TABLE IF NOT EXISTS __SCHEMA__"$mywayactionsname" (
-    "schema_id"		CHAR(36)	                          NOT NULL
+    "id"		AUTO_INCREMENT
+  , "schema_id"		CHAR(36)	                          NOT NULL
   , "started"		TIMESTAMP(6)	DEFAULT CURRENT_TIMESTAMP NOT NULL
   , "event"		VARCHAR(256)	                          NOT NULL
   , "statement"		LONG VARCHAR	                          NOT NULL
   , "line"		INT
   , "time"		DECIMAL(13,3)
   , "state"		CHAR(5)
+  , PRIMARY KEY ("id")
   , CONSTRAINT   "${mywayactionsname}_schema_id_${mywaytablename}_id"
     FOREIGN KEY ("schema_id") REFERENCES __SCHEMA__"$mywaytablename" ("id")
 )
@@ -2487,7 +2589,7 @@ SEGMENTED BY HASH( "schema_id" ) ALL NODES;
 DDL
 
 our $mywayprocsname = 'myway_stored_procedures';
-our $mywayprocsddl  = <<DDL;
+our $mywayprocsddl = <<DDL;
 CREATE TABLE IF NOT EXISTS `$mywayprocsname` (
     `id`		CHAR(36)	                          NOT NULL
   , `dbuser`		CHAR(16)	                          NOT NULL
@@ -2507,7 +2609,7 @@ CREATE TABLE IF NOT EXISTS `$mywayprocsname` (
   , PRIMARY KEY (`id`)
 ) ENGINE='InnoDB' DEFAULT CHARSET='ASCII';
 DDL
-our $verticamywayprocsddl  = <<DDL;
+our $verticamywayprocsddl = <<DDL;
 CREATE TABLE IF NOT EXISTS __SCHEMA__"$mywayprocsname" (
     "id"		CHAR(36)	                          NOT NULL
   , "dbuser"		CHAR(16)	                          NOT NULL
@@ -2738,7 +2840,7 @@ sub pushentry( $$$$$;$ ) { # {{{
 	my( $data, $state, $type, $entry, $description, $line ) = @_;
 
 	if( $entry =~ m/__MW_(STR|L?TOK|LITERAL_QUOTE_)_/ ) {
-		warn "\nUnexpended token detected in `$entry`\n";
+		warn( "\nUnexpended token detected in `$entry`\n" );
 		#my $trace = Devel::StackTrace -> new;
 		#print $trace -> as_string;
 		die( "Tokenisation failed\n" );
@@ -2802,7 +2904,7 @@ sub pushfragment( $$$;$$ ) { # {{{
 	my( $state, $type, $entry, $description, $line ) = @_;
 
 	if( $entry =~ m/__MW_(STR|L?TOK|LITERAL_QUOTE_)_/ ) {
-		warn "\nUnexpended token detected in `$entry`\n";
+		warn( "\nUnexpended token detected in `$entry`\n" );
 		#my $trace = Devel::StackTrace -> new;
 		#print $trace -> as_string;
 		die( "Tokenisation failed\n" );
@@ -3752,7 +3854,7 @@ sub dbclose( ;$$ ) { # {{{
 			$dbh -> disconnect;
 		} else {
 			die( "LOGIC: " . ( caller( 1 ) )[ 3 ] . "(" . ( caller( 0 ) )[ 2 ] . ") -> " . ( caller( 0 ) )[ 3 ] . ": arg1 must be passed by reference (" . ref( $dbh ) . ")\n" ) unless( 'REF' eq ref( $dbh ) );
-			die( "LOGIC: " . ( caller( 1 ) )[ 3 ] . "(" . ( caller( 0 ) )[ 2 ] . ") -> " . ( caller( 0 ) )[ 3 ] . ": \${ arg1 } must of type DBI::db (" . ref( ${ $dbh } ) . ")\n" ) unless( 'DBI::db' eq ref( ${ $dbh } ) );
+			die( "LOGIC: " . ( caller( 1 ) )[ 3 ] . "(" . ( caller( 0 ) )[ 2 ] . ") -> " . ( caller( 0 ) )[ 3 ] . ": \${ arg1 } must be of type DBI::db (" . ref( ${ $dbh } ) . ")\n" ) unless( 'DBI::db' eq ref( ${ $dbh } ) );
 
 			print( "\n=> $message - disconnecting from database ...\n" ) unless( $reduceoutput );
 			${ $dbh } -> disconnect;
@@ -4278,7 +4380,7 @@ sub setverticasearchpath( $$;$$ ) { # {{{
 
 	return( undef ) unless( defined( $dbh ) );
 	die( "LOGIC: " . ( caller( 1 ) )[ 3 ] . "(" . ( caller( 0 ) )[ 2 ] . ") -> " . ( caller( 0 ) )[ 3 ] . ": arg1 must be passed by reference (" . ref( $dbh ) . ")\n" ) unless( 'REF' eq ref( $dbh ) );
-	die( "LOGIC: " . ( caller( 1 ) )[ 3 ] . "(" . ( caller( 0 ) )[ 2 ] . ") -> " . ( caller( 0 ) )[ 3 ] . ": \${ arg1 } must of type DBI::db (" . ref( ${ $dbh } ) . ")\n" ) unless( 'DBI::db' eq ref( ${ $dbh } ) );
+	die( "LOGIC: " . ( caller( 1 ) )[ 3 ] . "(" . ( caller( 0 ) )[ 2 ] . ") -> " . ( caller( 0 ) )[ 3 ] . ": \${ arg1 } must be of type DBI::db (" . ref( ${ $dbh } ) . ")\n" ) unless( 'DBI::db' eq ref( ${ $dbh } ) );
 
 	return( undef ) unless( defined( $path ) and length( $path ) );
 
@@ -4305,7 +4407,7 @@ sub checkdbconnection( $ ) { # {{{
 
 	return( undef ) unless( defined( $dbh ) );
 	die( "LOGIC: " . ( caller( 1 ) )[ 3 ] . "(" . ( caller( 0 ) )[ 2 ] . ") -> " . ( caller( 0 ) )[ 3 ] . ": arg1 must be passed by reference (" . ref( $dbh ) . ")\n" ) unless( 'REF' eq ref( $dbh ) );
-	die( "LOGIC: " . ( caller( 1 ) )[ 3 ] . "(" . ( caller( 0 ) )[ 2 ] . ") -> " . ( caller( 0 ) )[ 3 ] . ": \${ arg1 } must of type DBI::db (" . ref( ${ $dbh } ) . ")\n" ) unless( 'DBI::db' eq ref( ${ $dbh } ) );
+	die( "LOGIC: " . ( caller( 1 ) )[ 3 ] . "(" . ( caller( 0 ) )[ 2 ] . ") -> " . ( caller( 0 ) )[ 3 ] . ": \${ arg1 } must be of type DBI::db (" . ref( ${ $dbh } ) . ")\n" ) unless( 'DBI::db' eq ref( ${ $dbh } ) );
 
 	return( TRUE ) if( ${ $dbh } -> ping() );
 
@@ -4350,7 +4452,7 @@ sub dosql( $$ ) { # {{{
 
 	return( undef ) unless( defined( $dbh ) );
 	die( "LOGIC: " . ( caller( 1 ) )[ 3 ] . "(" . ( caller( 0 ) )[ 2 ] . ") -> " . ( caller( 0 ) )[ 3 ] . ": arg1 must be passed by reference (" . ref( $dbh ) . ")\n" ) unless( 'REF' eq ref( $dbh ) );
-	die( "LOGIC: " . ( caller( 1 ) )[ 3 ] . "(" . ( caller( 0 ) )[ 2 ] . ") -> " . ( caller( 0 ) )[ 3 ] . ": \${ arg1 } must of type DBI::db (" . ref( ${ $dbh } ) . ")\n" ) unless( 'DBI::db' eq ref( ${ $dbh } ) );
+	die( "LOGIC: " . ( caller( 1 ) )[ 3 ] . "(" . ( caller( 0 ) )[ 2 ] . ") -> " . ( caller( 0 ) )[ 3 ] . ": \${ arg1 } must be of type DBI::db (" . ref( ${ $dbh } ) . ")\n" ) unless( 'DBI::db' eq ref( ${ $dbh } ) );
 
 	#eval {
 	#	my $state = ${ $dbh } -> state();
@@ -4362,7 +4464,7 @@ sub dosql( $$ ) { # {{{
 	return( undef ) unless( defined( $st ) and length( $st ) );
 
 	if( $st =~ m/__MW_(STR|L?TOK|LITERAL_QUOTE_)_/ ) {
-		warn "\n$warning Unexpended token detected in `$st`\n";
+		warn( "\n$warning Unexpended token detected in `$st`\n" );
 		#my $trace = Devel::StackTrace -> new;
 		#print $trace -> as_string;
 		return( FALSE );
@@ -4471,7 +4573,7 @@ sub preparesql( $$ ) { # {{{
 
 	return( undef ) unless( defined( $dbh ) );
 	die( "LOGIC: " . ( caller( 1 ) )[ 3 ] . "(" . ( caller( 0 ) )[ 2 ] . ") -> " . ( caller( 0 ) )[ 3 ] . ": arg1 must be passed by reference (" . ref( $dbh ) . ")\n" ) unless( 'REF' eq ref( $dbh ) );
-	die( "LOGIC: " . ( caller( 1 ) )[ 3 ] . "(" . ( caller( 0 ) )[ 2 ] . ") -> " . ( caller( 0 ) )[ 3 ] . ": \${ arg1 } must of type DBI::db (" . ref( ${ $dbh } ) . ")\n" ) unless( 'DBI::db' eq ref( ${ $dbh } ) );
+	die( "LOGIC: " . ( caller( 1 ) )[ 3 ] . "(" . ( caller( 0 ) )[ 2 ] . ") -> " . ( caller( 0 ) )[ 3 ] . ": \${ arg1 } must be of type DBI::db (" . ref( ${ $dbh } ) . ")\n" ) unless( 'DBI::db' eq ref( ${ $dbh } ) );
 
 	#eval {
 	#	my $state = ${ $dbh } -> state();
@@ -4541,7 +4643,7 @@ sub executesql( $$$;@ ) { # {{{
 
 	return( undef ) unless( defined( $dbh ) );
 	die( "LOGIC: " . ( caller( 1 ) )[ 3 ] . "(" . ( caller( 0 ) )[ 2 ] . ") -> " . ( caller( 0 ) )[ 3 ] . ": arg1 must be passed by reference (" . ref( $dbh ) . ")\n" ) unless( 'REF' eq ref( $dbh ) );
-	die( "LOGIC: " . ( caller( 1 ) )[ 3 ] . "(" . ( caller( 0 ) )[ 2 ] . ") -> " . ( caller( 0 ) )[ 3 ] . ": \${ arg1 } must of type DBI::db (" . ref( ${ $dbh } ) . ")\n" ) unless( 'DBI::db' eq ref( ${ $dbh } ) );
+	die( "LOGIC: " . ( caller( 1 ) )[ 3 ] . "(" . ( caller( 0 ) )[ 2 ] . ") -> " . ( caller( 0 ) )[ 3 ] . ": \${ arg1 } must be of type DBI::db (" . ref( ${ $dbh } ) . ")\n" ) unless( 'DBI::db' eq ref( ${ $dbh } ) );
 
 	#eval {
 	#	my $state = ${ $dbh } -> state();
@@ -4597,7 +4699,7 @@ sub executesql( $$$;@ ) { # {{{
 		warn( "State:        " . $sthstate . "\n" ) if( defined( $sthstate ) );
 
 		if( not( ${ $dbh } -> state() ) or ( ${ $dbh } -> state() eq 'S1000' ) or ( ${ $dbh } -> state() eq '00000' ) ) {
-			if( ${ $dbh } -> errstr() =~ m/ \(SQL-\d{5}\)$/ ) {
+			if( ( ${ $dbh } -> errstr() ) and ( ${ $dbh } -> errstr() =~ m/ \(SQL-\d{5}\)$/ ) ) {
 				pdebug( "Manually updating State from '" . ${ $dbh } -> state() . "' to '$1'\n" );
 				# XXX: set_err automatically triggers RaiseError/PritnError/PrintWarn if $err is set?
 				${ $dbh } -> set_err( ${ $dbh } -> err, ${ $dbh } -> errstr, $1 );
@@ -4626,7 +4728,7 @@ sub getsqlvalue( $$ ) { # {{{
 
 	return( undef ) unless( defined( $dbh ) );
 	die( "LOGIC: " . ( caller( 1 ) )[ 3 ] . "(" . ( caller( 0 ) )[ 2 ] . ") -> " . ( caller( 0 ) )[ 3 ] . ": arg1 must be passed by reference (" . ref( $dbh ) . ")\n" ) unless( 'REF' eq ref( $dbh ) );
-	die( "LOGIC: " . ( caller( 1 ) )[ 3 ] . "(" . ( caller( 0 ) )[ 2 ] . ") -> " . ( caller( 0 ) )[ 3 ] . ": \${ arg1 } must of type DBI::db (" . ref( ${ $dbh } ) . ")\n" ) unless( 'DBI::db' eq ref( ${ $dbh } ) );
+	die( "LOGIC: " . ( caller( 1 ) )[ 3 ] . "(" . ( caller( 0 ) )[ 2 ] . ") -> " . ( caller( 0 ) )[ 3 ] . ": \${ arg1 } must be of type DBI::db (" . ref( ${ $dbh } ) . ")\n" ) unless( 'DBI::db' eq ref( ${ $dbh } ) );
 
 	#eval {
 	#	my $state = ${ $dbh } -> state();
@@ -4658,7 +4760,7 @@ sub getsqlvalues( $$;$ ) { # {{{
 
 	return( undef ) unless( defined( $dbh ) );
 	die( "LOGIC: " . ( caller( 1 ) )[ 3 ] . "(" . ( caller( 0 ) )[ 2 ] . ") -> " . ( caller( 0 ) )[ 3 ] . ": arg1 must be passed by reference (" . ref( $dbh ) . ")\n" ) unless( 'REF' eq ref( $dbh ) );
-	die( "LOGIC: " . ( caller( 1 ) )[ 3 ] . "(" . ( caller( 0 ) )[ 2 ] . ") -> " . ( caller( 0 ) )[ 3 ] . ": \${ arg1 } must of type DBI::db (" . ref( ${ $dbh } ) . ")\n" ) unless( 'DBI::db' eq ref( ${ $dbh } ) );
+	die( "LOGIC: " . ( caller( 1 ) )[ 3 ] . "(" . ( caller( 0 ) )[ 2 ] . ") -> " . ( caller( 0 ) )[ 3 ] . ": \${ arg1 } must be of type DBI::db (" . ref( ${ $dbh } ) . ")\n" ) unless( 'DBI::db' eq ref( ${ $dbh } ) );
 
 	#eval {
 	#	my $state = ${ $dbh } -> state();
@@ -4692,7 +4794,7 @@ sub outputtable( $$;$ ) { # {{{
 
 	return( undef ) unless( defined( $dbh ) );
 	die( "LOGIC: " . ( caller( 1 ) )[ 3 ] . "(" . ( caller( 0 ) )[ 2 ] . ") -> " . ( caller( 0 ) )[ 3 ] . ": arg1 must be passed by reference (" . ref( $dbh ) . ")\n" ) unless( 'REF' eq ref( $dbh ) );
-	die( "LOGIC: " . ( caller( 1 ) )[ 3 ] . "(" . ( caller( 0 ) )[ 2 ] . ") -> " . ( caller( 0 ) )[ 3 ] . ": \${ arg1 } must of type DBI::db (" . ref( ${ $dbh } ) . ")\n" ) unless( 'DBI::db' eq ref( ${ $dbh } ) );
+	die( "LOGIC: " . ( caller( 1 ) )[ 3 ] . "(" . ( caller( 0 ) )[ 2 ] . ") -> " . ( caller( 0 ) )[ 3 ] . ": \${ arg1 } must be of type DBI::db (" . ref( ${ $dbh } ) . ")\n" ) unless( 'DBI::db' eq ref( ${ $dbh } ) );
 
 	my $sth = executesql( $dbh, undef, $st );
 	if( not( defined( $sth ) and $sth ) ) {
@@ -4723,7 +4825,7 @@ sub formatastable( $$$ ) { # {{{
 	$indent = '' unless( defined( $indent ) and length( $indent ) );
 
 	die( "LOGIC: " . ( caller( 1 ) )[ 3 ] . "(" . ( caller( 0 ) )[ 2 ] . ") -> " . ( caller( 0 ) )[ 3 ] . ": arg1 must be passed by reference (" . ref( $dbh ) . ")\n" ) unless( 'REF' eq ref( $dbh ) );
-	die( "LOGIC: " . ( caller( 1 ) )[ 3 ] . "(" . ( caller( 0 ) )[ 2 ] . ") -> " . ( caller( 0 ) )[ 3 ] . ": \${ arg1 } must of type DBI::db (" . ref( ${ $dbh } ) . ")\n" ) unless( 'DBI::db' eq ref( ${ $dbh } ) );
+	die( "LOGIC: " . ( caller( 1 ) )[ 3 ] . "(" . ( caller( 0 ) )[ 2 ] . ") -> " . ( caller( 0 ) )[ 3 ] . ": \${ arg1 } must be of type DBI::db (" . ref( ${ $dbh } ) . ")\n" ) unless( 'DBI::db' eq ref( ${ $dbh } ) );
 
 	my( $read, $write ) = FileHandle::pipe;
 
@@ -4781,6 +4883,206 @@ sub formatastable( $$$ ) { # {{{
 
 	return( TRUE );
 } # formatastable # }}}
+
+sub migratemetadataschema( $;$$$ ) { # {{{
+	my( $dbh, $db, $vschm, $variables ) = @_;
+
+	return( undef ) unless( defined( $dbh ) );
+	die( "LOGIC: " . ( caller( 1 ) )[ 3 ] . "(" . ( caller( 0 ) )[ 2 ] . ") -> " . ( caller( 0 ) )[ 3 ] . ": arg1 must be passed by reference (" . ref( $dbh ) . ")\n" ) unless( 'REF' eq ref( $dbh ) );
+	die( "LOGIC: " . ( caller( 1 ) )[ 3 ] . "(" . ( caller( 0 ) )[ 2 ] . ") -> " . ( caller( 0 ) )[ 3 ] . ": \${ arg1 } must be of type DBI::db (" . ref( ${ $dbh } ) . ")\n" ) unless( 'DBI::db' eq ref( ${ $dbh } ) );
+
+	return( FALSE ) unless( ref( $variables ) eq 'HASH' );
+
+	#
+	# Retrieve variable and settings values # {{{
+	#
+
+	my( $engine, $pretend, $quiet, $silent );
+	$engine    = $variables -> { 'engine' }     if( exists( $variables -> { 'engine' } ) );
+	$pretend   = $variables -> { 'pretend' }    if( exists( $variables -> { 'pretend' } ) );
+	$quiet     = $variables -> { 'quiet' }      if( exists( $variables -> { 'quiet' } ) );
+	$silent    = $variables -> { 'silent' }     if( exists( $variables -> { 'silent' } ) );
+
+	my $safetyoff = not( $pretend );
+
+	# }}}
+
+	if( not( defined( $db ) and length( $db ) ) ) {
+		$db = getsqlvalue( $dbh, "SELECT DATABASE()" );
+	}
+
+	my $verticadb = '';
+	# Apparently '17' (SQL_DBMS_NAME) canonically returns the database
+	# instance vendor...
+	if( not( defined( $engine ) and length( $engine ) ) ) {
+		$engine = lc( $dbh -> get_info( 17 ) );
+		if( defined( $engine ) and length( $engine ) and ( 'vertica database' eq $engine ) ) {
+			$engine = 'vertica';
+
+			if( defined( $vschm ) and length( $vschm ) ) {
+				$verticadb = "$vschm`.`";
+			} elsif( defined( $db ) and length( $db ) ) {
+				$verticadb = "$db`.`";
+			}
+		} elsif( not( defined( $engine ) and length( $engine ) and ( 'mysql' eq $engine ) ) ) {
+			return( FALSE );
+		}
+	}
+
+	if( OLDSCHEMA ) {
+		if( ( not( 'vertica' eq $engine ) and
+			dosql( $dbh, "ALTER TABLE `$verticadb$flywaytablename` MODIFY `version_rank` INT DEFAULT NULL" )
+		) or ( ( 'vertica' eq $engine ) and
+			dosql( $dbh, "ALTER TABLE `$verticadb$flywaytablename` ALTER COLUMN `version` DROP NOT NULL" ) and
+			dosql( $dbh, "ALTER TABLE `$verticadb$flywaytablename` ALTER COLUMN `version` SET DEFAULT NULL" )
+		) ) {
+			warn( "!> Compatibility update applied to table `$flywaytablename`\n" );
+			return( TRUE );
+		} else {
+			warn( "!> Compatibility update failed to update table `$flywaytablename`\n" );
+			return( FALSE );
+		}
+	}
+
+	my $tableexists;
+	if( defined( $vschm ) and length( $vschm ) ) {
+		$tableexists = getsqlvalue( $dbh, "SELECT COUNT(*) FROM `tables` WHERE `table_schema` = '$vschm' AND `table_name` = '$mywayversionhistorytablename'" );
+	} else {
+		$tableexists = getsqlvalue( $dbh, "SELECT COUNT(*) FROM `information_schema`.`TABLES` WHERE `TABLE_SCHEMA` = '$db' AND `TABLE_NAME` = '$mywayversionhistorytablename'" );
+	}
+
+	if( not( defined( $tableexists ) and $tableexists ) ) { # {{{
+		if( $pretend ) {
+			print( "\nS> Would ensure that version-tracking table `$mywayversionhistorytablename` table exists.\n" );
+		} else {
+			print( "\n=> Ensuring that version-tracking table `$mywayversionhistorytablename` exists ...\n" ) unless( $quiet or $silent);
+			my $ddl = $mywayversionhistoryddl;
+			if( 'vertica' eq $engine ) {
+				$ddl = $verticamywayversionhistoryddl;
+				if( defined( $vschm ) and length( $vschm ) ) {
+					$ddl =~ s/__SCHEMA__/\"$vschm\"./g;
+				} elsif( defined( $db ) and length( $db ) ) {
+					$ddl =~ s/__SCHEMA__/\"$db\"./g;
+				} else {
+					$ddl =~ s/__SCHEMA__//g;
+				}
+			}
+			#my $v = $verbosity;
+			#$verbosity = 9;
+			dosql( $dbh, $ddl ) or die( "$fatal `$mywayversionhistorytablename` table creation failed\n" );
+			#$verbosity = $v;
+
+		}
+	} # }}}
+
+	my $mywayversion = getsqlvalue( $dbh, "SELECT DISTINCT `myway_version` FROM `$mywayversionhistorytablename` WHERE `active` IS TRUE ORDER BY `myway_version` DESC LIMIT 1" );
+	my $flywayversion = getsqlvalue( $dbh, "SELECT DISTINCT `flyway_compatible` FROM `$mywayversionhistorytablename` WHERE `active` IS TRUE ORDER BY `myway_version` DESC LIMIT 1" );
+	my $init = getsqlvalue( $dbh, "SELECT DISTINCT `init_string` FROM `$mywayversionhistorytablename` WHERE `active` IS TRUE ORDER BY `myway_version` DESC LIMIT 1" );
+
+	if( defined( $mywayversion ) and length( $mywayversion ) ) {
+		my @sortedversions = sort { versioncmp( $a, $b ) } ( $mywayversion, VERSION );
+		my $latest = pop( @sortedversions );
+		if( not( $latest eq VERSION )  ) {
+			die( "$fatal The metadata version declared in `$mywayversionhistorytablename` is more recent than this version of the tool can understand - aborting in order to maintain data integrity\n" );
+		}
+
+		# TODO: As necessary, perform further migrations beyond
+		#       v1.2.0/4.x here...
+
+	} else { # if( not( defined( $mywayversion ) and length( $mywayversion ) ) ) {
+		# We need to migrate from original schema to Flyway 4.x schema:
+		#
+		#  `version_rank` is removed;
+		#  `version` is no longer NOT NULL;
+		#  The `version_rank` and `installed_rank` indices are removed;
+		#  `installed_rank` is now the PRIMARY KEY;
+		#  The `type` value 'INIT' is now 'BASELINE'.
+		#
+		# ... and in addition we've added a PK to myway_schema_actions.
+
+		if( 'vertica' eq $engine ) {
+			# Vertica can't add AUTO_INCREMENT columns, so we'll
+			# have to just continue without the new Primary Key.
+			# This isn't necessarily an issue, as it was only added
+			# to keep InnoDB happy... but it is now inconsistent :(
+			#
+			#if( not( dosql( $dbh, "ALTER TABLE `$verticadb$mywayactionsname` ADD COLUMN `id` AUTO_INCREMENT" ) ) ) {
+			#	warn( "!> Unable to update `$verticadb$mywayactionsname` table\n" );
+			#	return( FALSE );
+			#}
+		} else {
+			if( not( dosql( $dbh, "ALTER TABLE `$mywayactionsname` ADD COLUMN `id` INT UNSIGNED AUTO_INCREMENT NOT NULL FIRST, ADD CONSTRAINT PRIMARY KEY (`id`)" ) ) ) {
+				warn( "!> Unable to update `$mywayactionsname` table\n" );
+				return( FALSE );
+			}
+		}
+
+		if( not( 'vertica' eq $engine ) ) {
+			if( not( dosql( $dbh, "DROP TEMPORARY TABLE IF EXISTS `$verticadb${flywaytablename}_backup`" ) ) ) {
+				warn( "!> Dropping temporary table `$verticadb${flywaytablename}_backup` failed\n" );
+				return( FALSE );
+			}
+			if( not( dosql( $dbh, "CREATE TEMPORARY TABLE IF NOT EXISTS `$verticadb${flywaytablename}_backup` LIKE `$flywaytablename`" ) ) ) {
+				warn( "!> Creating temporary table `$verticadb${flywaytablename}_backup` failed\n" );
+				return( FALSE );
+			}
+			if( not( dosql( $dbh, "INSERT INTO `$verticadb${flywaytablename}_backup` SELECT * FROM `$flywaytablename`" ) ) ) {
+				warn( "!> Populating temporary table `$verticadb${flywaytablename}_backup` failed\n" );
+				return( FALSE );
+			}
+		}
+
+		if( ( not( 'vertica' eq $engine ) and not( 
+			dosql( $dbh, "DROP INDEX `schema_version_vr_idx` ON `$flywaytablename`" )
+			and
+			dosql( $dbh, "DROP INDEX `schema_version_ir_idx` ON `$flywaytablename`" )
+			and
+			dosql( $dbh, "ALTER TABLE `$flywaytablename` DROP COLUMN `version_rank`" )
+			and
+			dosql( $dbh, "ALTER TABLE `$flywaytablename` DROP PRIMARY KEY, ADD CONSTRAINT `${flywaytablename}_pk` PRIMARY KEY (`installed_rank`)" )
+			and
+			dosql( $dbh, "ALTER TABLE `$flywaytablename` MODIFY `version` VARCHAR(50)" )
+			and
+			dosql( $dbh, "UPDATE `$flywaytablename` SET `type` = '$flywayinit' WHERE `type` = 'INIT'" )
+		) ) or ( ( 'vertica' eq $engine ) and not(
+			dosql( $dbh, "ALTER TABLE `$verticadb$flywaytablename` DROP COLUMN `version_rank`" )
+			and
+			dosql( $dbh, "ALTER TABLE `$verticadb$flywaytablename` DROP CONSTRAINT `C_PRIMARY`" )
+			and
+			dosql( $dbh, "ALTER TABLE `$verticadb$flywaytablename` ADD CONSTRAINT `${flywaytablename}_pk` PRIMARY KEY (`installed_rank`)" )
+			and
+			dosql( $dbh, "ALTER TABLE `$verticadb$flywaytablename` ALTER COLUMN `version` DROP NOT NULL" )
+			and
+			dosql( $dbh, "UPDATE `$verticadb$flywaytablename` SET `type` = '$flywayinit' WHERE `type` = 'INIT'" )
+		) ) ) {
+			# We could automatically restore the backup table, but
+			# for now we want to be able to inspect what failed.
+			# FIXME: Restore backup on failure
+			warn( "!> Error applying schema updates" . ( 'vertica' eq $engine ? '' : " - original table exists as '${flywaytablename}_backup', please manually inspect the differences" ) . "\n" );
+			die( "$fatal Database state is inconsistent\n" );
+		}
+
+		my $sth = preparesql( $dbh, <<SQL );
+INSERT INTO `$verticadb$mywayversionhistorytablename` (
+  `myway_version`
+, `flyway_compatible`
+, `init_string`
+, `active`
+) VALUES ( ?, ?, ?, ? )
+SQL
+		die( "Unable to create version history statement handle: " . $dbh -> errstr() . "\n" ) unless( defined( $sth ) and $sth );
+		if( $safetyoff ) {
+			executesql( $dbh, $sth, undef,
+				  VERSION
+				, '4.0'
+				, $flywayinit
+				,  TRUE
+			) or die( "Populating '$mywayversionhistorytablename' with failed" . ( defined( $sth -> errstr() ) ? ": " . $sth -> errstr() : ( defined( $dbh -> errstr() ) ? ": " . $dbh -> errstr() : '' ) ) . "\n" );
+		}
+	}
+
+	return( TRUE );
+} # migratemetadataschema # }}}
 
 sub applyschema( $$$$;$ ) { # {{{
 	my ( $file, $actions, $variables, $auth, $schmvirtual ) = @_;
@@ -4901,8 +5203,9 @@ sub applyschema( $$$$;$ ) { # {{{
 	my $schmversion = $action_init;
 	$schmversion = $1 if( not( defined( $schmversion ) and length( $schmversion ) ) and ( $schmfile =~ m/^V(.*?)__/ ) );
 
-	# XXX: We don't want to stomp on INIT entries... or indeed any other.
-	#      Is there a sensible value to use here?  Auto-create a UID?
+	# XXX: We don't want to stomp on $flywayinit entries... or indeed any
+	#      other.  Is there a sensible value to use here?  Auto-create a
+	#      UUID?
 	#$schmversion = '0' unless( defined( $schmversion ) and length( $schmversion ) );
 	if( not( defined( $schmversion ) and length( $schmversion ) ) ) {
 		# Stored Procedures are also not versioned by filename...
@@ -4968,7 +5271,7 @@ sub applyschema( $$$$;$ ) { # {{{
 					}
 				} elsif( $okay ) {
 					$okay = FALSE;
-					warn( "!> Metadata contains non-comment code which will be executed before procedure definitions are processed\n" ) if( $first );
+					warn( "!> Metadata file '$metafile' contains non-comment code which will be executed before procedure definitions are processed\n" ) if( $first );
 					last METADATA_ADJUST;
 				}
 			}
@@ -4980,19 +5283,19 @@ sub applyschema( $$$$;$ ) { # {{{
 				if( defined( $marker ) and length( $marker ) ) {
 					$procedureversion .= '` ';
 					if( $pretend ) {
-						print( "*> Would adjust Stored Procedure names with version string '$procedureversion' from path\n" );
+						print( "*> Would adjust Stored Procedure names with version string '$procedureversion' from path for file '$schmfile'\n" );
 					} else {
-						print( "*> Adjusting Stored Procedure names with version string '$procedureversion' from path\n" ) unless( $quiet or $silent );
+						print( "*> Adjusting Stored Procedure names with version string '$procedureversion' from path for file '$schmfile'\n" ) unless( $quiet or $silent );
 					}
 				}
 			} else {
 				if( $force ) {
-					warn( "!> Cannot determine Stored Procedure version string from metadata or path - removing versioning\n" );
+					warn( "!> Cannot determine Stored Procedure version string from metadata or path - removing versioning from file '$schmfile'\n" );
 				} else {
 					if( $pretend ) {
-						warn( "!> Cannot determine Stored Procedure version string from metadata or path - would abort unless forced\n" );
+						warn( "!> Cannot determine Stored Procedure version string from metadata or path for file '$schmfile' - would abort unless forced\n" );
 					} else {
-						die( "$fatal Cannot determine Stored Procedure version string from metadata or directory '" . dirname( $file ) . "' - aborting\n" );
+						die( "$fatal Cannot determine Stored Procedure version string from metadata or directory '" . dirname( $file ) . "' for file '$schmfile' - aborting\n" );
 					}
 				}
 			}
@@ -5022,7 +5325,7 @@ sub applyschema( $$$$;$ ) { # {{{
 		if( defined( $action_init ) ) {
 			pdebug( "Skipping file-name version comparison when --init is specified..." );
 		} elsif( not( $schmfile =~ m/^V(.*?)__/ ) ) {
-			warn( "!> Filename '$schmfile' does not appear to contain a recognisable version - falling-back to metadata ...\n" );
+			warn( "!> Filename '$schmfile' does not appear to contain a recognisable version - switching to metadata versioning ...\n" );
 		} else {
 			if( defined( $limit ) ) {
 				my $match = $1;
@@ -5087,7 +5390,7 @@ sub applyschema( $$$$;$ ) { # {{{
 			if( not( scalar( $availabletables ) ) ) {
 				warn( "\n$warning Unable to retrieve list of tables for database `$db`" . ( defined( $dbh -> errstr() ) ? ': ' . $dbh -> errstr() : '' ) . "\n" );
 			} else {
-				my $version = getsqlvalue( \$dbh, "SELECT `version` FROM `$verticadb$flywaytablename` WHERE `success` = '1' AND `type` = 'INIT' ORDER BY `version` DESC LIMIT 1" );
+				my $version = getsqlvalue( \$dbh, "SELECT `version` FROM `$verticadb$flywaytablename` WHERE `success` IS TRUE AND `type` = '$flywayinit' ORDER BY `version` DESC LIMIT 1" );
 				if( defined( $version ) and length( $version ) ) {
 					if( $schmfile =~ m/^V(.*?)__/ ) {
 						my $match = $1;
@@ -5110,22 +5413,22 @@ sub applyschema( $$$$;$ ) { # {{{
 					#$schmversion = $action_init;
 					#$schmversion = $1 if( not( defined( $schmversion ) and length( $schmversion ) ) and ( $schmfile =~ m/^V(.*?)__/ ) );
 					#$schmversion = '0' unless( defined( $schmversion ) and length( $schmversion ) );
-					my $metadataversions = getsqlvalues( \$dbh, "SELECT DISTINCT(`version`) FROM `$verticadb$flywaytablename` WHERE `success` = '1'" );
+					my $metadataversions = getsqlvalues( \$dbh, "SELECT DISTINCT(`version`) FROM `$verticadb$flywaytablename` WHERE `success` IS TRUE" );
 					#if( /^$schmversion$/ ~~ $metadataversions )
 					if( defined( $schmversion ) and ( qr/^$schmversion$/ |M| $metadataversions ) ) {
 						if( $pretend ) {
 							if( $force ) {
-								warn( "!> File-name schema version '$schmversion' has already been applied to this database - would forcibly re-apply ...\n" );
+								warn( "!> File-name schema version '$schmversion' has already been applied to this database for file '$schmfile' - would forcibly re-apply ...\n" );
 							} else {
-								warn( "!> File-name schema version '$schmversion' has already been applied to this database - skipping ...\n" );
+								warn( "!> File-name schema version '$schmversion' has already been applied to this database for file '$schmfile' - skipping ...\n" );
 								dbclose( \$dbh );
 								return( TRUE );
 							}
 						} else { # not( $pretend )
 							if( $force ) {
-								warn( "!> File-name schema version '$schmversion' has already been applied to this database - forcibly re-applying ...\n" );
+								warn( "!> File-name schema version '$schmversion' has already been applied to this database for file '$schmfile' - forcibly re-applying ...\n" );
 							} else {
-								warn( "!> File-name schema version '$schmversion' has already been applied to this database - skipping ...\n\n" ) unless( $quiet or $silent );
+								warn( "!> File-name schema version '$schmversion' has already been applied to this database for file '$schmfile' - skipping ...\n\n" ) unless( $quiet or $silent );
 								dbclose( \$dbh );
 								return( TRUE );
 							}
@@ -5275,25 +5578,25 @@ sub applyschema( $$$$;$ ) { # {{{
 			# Don't alert - base initialisers aren't supposed to
 			# have content...
 		} elsif( ( $schmfile =~ m/V(.*?)__V(.*?)__/ ) or ( $force ) ) {
-			warn( "!> No valid SQL statements found, but continuing for now ...\n" ) unless( $silent );
+			warn( "!> No valid SQL statements found in file '$schmfile', but continuing for now ...\n" ) unless( $silent );
 		} else {
 			# OTOH, we do want to fail if we read a schema-file
 			# which has accidentally all been commented-out.
 			# If a version really is intended to be skipped, either
 			# a placeholder should be used, or the initial and
 			# target versions should cover the gap.
-			warn( "!> No valid SQL statements found\n" );
+			warn( "!> No valid SQL statements found in file '$schmfile'\n" );
 			return( FALSE );
 		}
 	}
 	if( $invalid ) {
 		if( $pretend ) {
-			pwarn( "SQL parsing failed - continuing with valid statements only ..." );
+			pwarn( "SQL parsing failed for file '$schmfile' - continuing with valid statements only ..." );
 		} else {
 			if( defined( $verbosity ) and $verbosity > 0 ) {
-				die( "SQL parsing failed\n" );
+				die( "SQL parsing failed for file '$schmfile'\n" );
 			} else {
-				die( "SQL parsing failed - please re-execute with the '--warn' option to display discovered issues\n" );
+				die( "SQL parsing failed for file '$schmfile' - please re-execute with the '--warn' option to display discovered issues\n" );
 			}
 		}
 	}
@@ -5365,8 +5668,6 @@ sub applyschema( $$$$;$ ) { # {{{
 	#
 
 	my $installedrank;
-	my $versionrank;
-
 	my $verticadb = '';
 	$verticadb = "$vschm`.`" if( 'vertica' eq $engine );
 
@@ -5385,14 +5686,14 @@ sub applyschema( $$$$;$ ) { # {{{
 			# Write 'init' entry, if not already present # {{{
 			#
 
-			my $init = getsqlvalue( \$dbh, "SELECT COUNT(*) FROM `$verticadb$flywaytablename` WHERE `success` = '1'" );
+			my $init = getsqlvalue( \$dbh, "SELECT COUNT(*) FROM `$verticadb$flywaytablename` WHERE `success` IS TRUE" );
 			if( defined( $init ) and ( 0 != $init ) ) {
 				if( defined( $action_init ) ) {
 					# FIXME: Later on, we decide that we don't trust the database to order arbitrary
 					#        versions correctly, and so perform the operation manually ourselves.
 					#        This should at least be made consistent...
 					#
-					my $version = getsqlvalue( \$dbh, "SELECT `version` FROM `$verticadb$flywaytablename` WHERE `success` = '1' ORDER BY `version` DESC LIMIT 1" );
+					my $version = getsqlvalue( \$dbh, "SELECT `version` FROM `$verticadb$flywaytablename` WHERE `success` IS TRUE ORDER BY `version` DESC LIMIT 1" );
 					print( "\n*> flyway metadata table `$flywaytablename` is already initialised to version '$version'.\n" );
 					if( $force ) {
 						if( $pretend ) {
@@ -5411,12 +5712,6 @@ sub applyschema( $$$$;$ ) { # {{{
 				}
 
 			} elsif( not( defined( $init ) ) or ( 0 == $init ) ) {
-				$versionrank = getsqlvalue( \$dbh, "SELECT MAX(`version_rank`) FROM `$verticadb$flywaytablename`" );
-				if( defined( $versionrank ) and $versionrank =~ m/^\d+$/ and $versionrank >= 0 ) {
-					$versionrank++;
-				} else {
-					$versionrank = 0;
-				}
 				$installedrank = getsqlvalue( \$dbh, "SELECT MAX(`installed_rank`) FROM `$verticadb$flywaytablename`" );
 				if( defined( $installedrank ) and $installedrank =~ m/^\d+$/ and $installedrank >= 0 ) {
 					$installedrank++;
@@ -5431,8 +5726,7 @@ sub applyschema( $$$$;$ ) { # {{{
 				if( defined( $replacement ) and $replacement =~ m/^\d+$/ and 0 == $replacement ) {
 					$sth = preparesql( \$dbh, <<SQL );
 INSERT INTO `$verticadb$flywaytablename` (
-    `version_rank`
-  , `installed_rank`
+    `installed_rank`
   , `version`
   , `description`
   , `type`
@@ -5442,23 +5736,22 @@ INSERT INTO `$verticadb$flywaytablename` (
   , `installed_on`
   , `execution_time`
   , `success`
-) VALUES ( ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ? )
+) VALUES ( ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ? )
 SQL
-					die( "Unable to create INIT statement handle: " . $dbh -> errstr() . "\n" ) unless( defined( $sth ) and $sth );
+					die( "Unable to create $flywayinit statement handle: " . $dbh -> errstr() . "\n" ) unless( defined( $sth ) and $sth );
 					if( $safetyoff ) {
 						executesql( \$dbh, $sth, undef,
-							  $versionrank
-							, $installedrank
-							, $schmversion
-							, '<< Flyway Init >>'
-							, 'INIT'
-							, '<< Flyway Init >>'
-							,  undef
-							, $user
-							#  CURRENT_TIMESTAMP
-							,  0
-							,  1
-						) or die( "Updating '$flywaytablename' with INIT failed" . ( defined( $sth -> errstr() ) ? ": " . $sth -> errstr() : ( defined( $dbh -> errstr() ) ? ": " . $dbh -> errstr() : '' ) ) . "\n" );
+							    $installedrank
+							,   $schmversion
+							,   $flywayinitdesc # ( $schmdescription or $flywayinitdesc ) # <- We don't know this yet :(
+							,   $flywayinit
+							, ( $schmfile or $flywayinitdesc )
+							,    undef
+							,   $user
+							#    CURRENT_TIMESTAMP
+							,    0
+							,    1 # TRUE
+						) or die( "Updating '$flywaytablename' with $flywayinit failed" . ( defined( $sth -> errstr() ) ? ": " . $sth -> errstr() : ( defined( $dbh -> errstr() ) ? ": " . $dbh -> errstr() : '' ) ) . "\n" );
 					}
 				} else {
 					# Since flyway uses `version` alone as the primary key, we have no choice but to
@@ -5470,8 +5763,7 @@ SQL
 					#
 					$sth = preparesql( \$dbh, <<SQL );
 UPDATE `$verticadb$flywaytablename` SET
-    `version_rank` = ?
-  , `installed_rank` = ?
+    `installed_rank` = ?
   , `description` = ?
   , `type` = ?
   , `script` = ?
@@ -5482,21 +5774,20 @@ UPDATE `$verticadb$flywaytablename` SET
   , `success` = ?
 WHERE `version` = ?
 SQL
-					die( "Unable to create updated INIT statement handle: " . $dbh -> errstr() . "\n" ) unless( defined( $sth ) and $sth );
+					die( "Unable to create updated $flywayinit statement handle: " . $dbh -> errstr() . "\n" ) unless( defined( $sth ) and $sth );
 					if( $safetyoff ) {
 						executesql( \$dbh, $sth, undef,
-							  $versionrank
-							, $installedrank
-							, '<< Flyway Init >>'
-							, 'INIT'
-							, '<< Flyway Init >>'
-							,  undef
-							, $user
-							#  CURRENT_TIMESTAMP
-							,  0
-							,  1
-							, $schmversion
-						) or die( "Updating '$flywaytablename' with updated INIT failed" . ( defined( $sth -> errstr() ) ? ": " . $sth -> errstr() : ( defined( $dbh -> errstr() ) ? ": " . $dbh -> errstr() : '' ) ) . "\n" );
+							    $installedrank
+							,   $flywayinitdesc # ( $schmdescription or $flywayinitdesc ) # <- We don't know this yet :(
+							,   $flywayinit
+							, ( $schmfile or $flywayinitdesc )
+							,    undef
+							,   $user
+							#    CURRENT_TIMESTAMP
+							,    0
+							,    1 # TRUE
+							,   $schmversion
+						) or die( "Updating '$flywaytablename' with updated $flywayinit failed" . ( defined( $sth -> errstr() ) ? ": " . $sth -> errstr() : ( defined( $dbh -> errstr() ) ? ": " . $dbh -> errstr() : '' ) ) . "\n" );
 					}
 				}
 				$sth -> finish();
@@ -5525,7 +5816,7 @@ SQL
 				# Cases: {0, 0.3}; {0.1, 0.3}; {0.3, 0.3}; {0.3, 0.5}.
 				#            ^^^         ^^^         ^^^    ^^^
 				#
-				my $version = getsqlvalue( \$dbh, "SELECT `version` FROM `$verticadb$flywaytablename` WHERE `success` = '1' AND `type` = 'INIT' ORDER BY `version` DESC LIMIT 1" );
+				my $version = getsqlvalue( \$dbh, "SELECT `version` FROM `$verticadb$flywaytablename` WHERE `success` IS TRUE AND `type` = '$flywayinit' ORDER BY `version` DESC LIMIT 1" );
 				if( not( defined( $version ) and length( $version ) ) ) {
 					if( not( $force ) ) {
 						die( "Database has not been initialised with this tool - please re-run with '--init' and the appropriate schema-file version number.\n" );
@@ -5583,7 +5874,7 @@ SQL
 				#$schmversion = $action_init;
 				#$schmversion = $1 if( not( defined( $schmversion ) and length( $schmversion ) ) and ( $schmfile =~ m/^V(.*?)__/ ) );
 				#$schmversion = '0' unless( defined( $schmversion ) and length( $schmversion ) );
-				my $metadataversions = getsqlvalues( \$dbh, "SELECT DISTINCT(`version`) FROM `$verticadb$flywaytablename` WHERE `success` = '1'" );
+				my $metadataversions = getsqlvalues( \$dbh, "SELECT DISTINCT(`version`) FROM `$verticadb$flywaytablename` WHERE `success` IS TRUE" );
 				#if( /^$schmversion$/ ~~ $metadataversions )
 				if( defined( $schmversion ) and ( qr/^$schmversion$/ |M| $metadataversions ) ) {
 					if( $pretend ) {
@@ -5605,12 +5896,6 @@ SQL
 					}
 				}
 
-				$versionrank = getsqlvalue( \$dbh, "SELECT MAX(`version_rank`) FROM `$verticadb$flywaytablename`" );
-				if( defined( $versionrank ) and $versionrank =~ m/^\d+$/ and $versionrank >= 0 ) {
-					$versionrank++;
-				} else {
-					$versionrank = 0;
-				}
 				$installedrank = getsqlvalue( \$dbh, "SELECT MAX(`installed_rank`) FROM `$verticadb$flywaytablename`" );
 				if( defined( $installedrank ) and $installedrank =~ m/^\d+$/ and $installedrank >= 0 ) {
 					$installedrank++;
@@ -5816,12 +6101,8 @@ SQL
 			# iteration, we now need to process the entire file in
 			# order to discover any contents.
 			$invalid = $invalid | not( processfile( $metadata, $metafile, undef, undef, $strict ) );
-			die( "Metadata failed validation - aborting.\n" ) if( $invalid );
-
-			foreach my $entry ( $metadata -> { 'entries' } ) {
-				push( @entries, @{ $entry } );
-			}
-		#} else {
+			die( "Metadata validation of file '$metafile' failed - aborting.\n" ) if( $invalid );
+		} # else {
 		#	# Each $entry[] consists of: %{ @entry (text of statement), $line, $type (comment|statement) }
 		#	my @procedurecomments = ();
 		#	foreach my $entry ( $metadata -> { 'entries' } ) {
@@ -5834,8 +6115,11 @@ SQL
 		#	}
 		#	push( @entries, @procedurecomments );
 		#	$metadata -> { 'entries' } = \@procedurecomments;
-		}
+		#}
 
+		foreach my $entry ( $metadata -> { 'entries' } ) {
+			push( @entries, @{ $entry } );
+		}
 		foreach my $entry ( $data -> { 'entries' } ) {
 			push( @entries, @{ $entry } );
 		}
@@ -5863,45 +6147,69 @@ SQL
 					#
 					if( defined( $firstcomment ) or ( ( 'procedure' eq $mode ) and defined( $secondcomment ) ) ) { # {{{
 						foreach my $line ( @{ $statement -> { 'entry' } } ) {
+							my $requiredengine;
+
 							chomp( $line );
 							if( $line =~ m/Description:\s+(.*)\s*$/i ) {
 								$schmdescription = $1;
 								pdebug( "Read metadata description '$schmdescription'" );
+							} elsif( $line =~ m/Engine:\s+([^#]+)(?:#.*)?\s*$/i ) {
+								my $requiredengine = $1;
+								pdebug( "Read metadata engine requirement '$requiredengine' (database engine is '$engine')" );
+								if( not( lc( $engine ) eq lc( $requiredengine ) ) ) {
+									warn( "!> Metadata from file '$schmfile' requires database engine '$requiredengine' but the current connection reports a '$engine' back-end\n" );
+									dbclose( \$dbh );
+									return( FALSE );
+								}
+							} elsif( $line =~ m/Database:\s+([^\s]+)\s*/i ) {
+								pdebug( "Read required database name '$1'" );
+								if( not( lc( $db ) eq lc( $1 ) ) ) {
+									warn( "!> Metadata from file '$schmfile' only allows deployment to database '$1', but current database is '$db'\n" );
+									dbclose( \$dbh );
+									return( FALSE );
+								}
+							} elsif( $line =~ m/Schema:\s+([^\s]+)\s*/i ) {
+								pdebug( "Read required schema name '$1'" );
+								if( not( defined( $requiredengine ) and ( 'vertica' eq lc( $requiredengine ) ) ) ) {
+									warn( "!> The 'Schema' directive from file '$schmfile' is only valid when 'Engine' is specified and declared to be \"vertica\"\n" );
+									dbclose( \$dbh );
+									return( FALSE );
+								}
+								if( not( lc( $vschm ) eq lc( $1 ) ) ) {
+									warn( "!> Metadata from file '$schmfile' only allows deployment to schema '$1', but current schema is '$vschm'\n" );
+									dbclose( \$dbh );
+									return( FALSE );
+								}
 							} elsif( $line =~ m/Previous\s+version:\s+([^\s]+)\s*/i ) {
 								$schmprevious = $1;
 								pdebug( "Read metadata previous version '$schmprevious'" );
 							} elsif( $line =~ m/Target\s+version:\s+([^\s]+)\s*/i ) {
 								$schmtarget = $1;
 								pdebug( "Read metadata target version '$schmtarget'" );
-							} elsif( $line =~ m/Restore:\s+([^#]+)(?:#.*)?\s*$/i ) {
-								$restorefile = $1;
-								pdebug( "Read metadata file-restore request for '$restorefile'" );
-							} elsif( $line =~ m/Engine:\s+([^#]+)(?:#.*)?\s*$/i ) {
-								my $requiredengine = $1;
-								pdebug( "Read metadata engine requirement '$requiredengine' (database engine is '$engine')" );
-								if( not( $engine eq $requiredengine ) ) {
-									warn( "!> Metadata in file '$schmfile' requires database engine '$requiredengine' but the current connection reports a '$engine' back-end\n" );
-									dbclose( \$dbh );
-									return( FALSE );
-								}
 							} elsif( $line =~ m/Environment:\s+(!)?\s*([^\s]+)\s*/i ) {
 								pdebug( "Read metadata environment restriction '" . ( defined( $1 ) ? $1 : '' ) . "$2'" );
 								$environment = '' unless( defined( $environment ) );
 								my $invert = $1 if( defined( $1 ) and length( $1 ) );
 								my $match = $2;
 								if(
-								  ( ( defined( $invert ) and ( $invert eq '!' ) ) and ( $match eq $environment ) )
+								  ( ( defined( $invert ) and ( $invert eq '!' ) ) and ( lc( $match ) eq lc( $environment ) ) )
 								  or
-								  ( not( defined( $invert ) and ( $invert eq '!' ) ) and not( $match eq $environment ) )
+								  ( not( defined( $invert ) and ( $invert eq '!' ) ) and not( lc( $match ) eq lc( $environment ) ) )
 								) {
 									if( '' eq $environment ) {
-										warn( "!> Metadata in file '$schmfile' only allows execution in environment '$match'\n" );
+										warn( "!> Metadata from file '$schmfile' only allows execution in environment '$match'\n" );
 									} else {
-										warn( "!> Metadata in file '$schmfile' prohibits execution in environment '$environment'\n" );
+										warn( "!> Metadata from file '$schmfile' prohibits execution in environment '$environment'\n" );
 									}
+									dbclose( \$dbh );
+									# Don't fail, as we could have multiple files for different
+									# environments, all of which but one drop-out here...
 									return( TRUE );
 								}
 								pdebug( "Validated metadata environment restriction '" . ( defined( $invert ) ? $invert : '' ) . "$match'" );
+							} elsif( $line =~ m/Restore:\s+([^#]+)(?:#.*)?\s*$/i ) {
+								$restorefile = $1;
+								pdebug( "Read metadata file-restore request for '$restorefile'" );
 							}
 						}
 						if( defined( $restorefile ) and length( $restorefile ) ) {
@@ -5943,8 +6251,8 @@ SQL
 						}
 
 						$schmprevious = undef if( defined( $schmprevious ) and ( $schmprevious =~ m#(?:na|n/a)#i ) );
-						print( "*> Read dubious prior version '$schmprevious'\n" ) unless( not( defined( $schmprevious ) ) or ( $schmprevious =~ m/[\d.]+/ ) );
-						print( "*> Read dubious target version '$schmtarget'\n" ) unless( not( defined( $schmtarget ) ) or ( $schmtarget =~ m/[\d.]+/ ) );
+						print( "*> Read dubious prior version '$schmprevious' from file '$schmfile'\n" ) unless( not( defined( $schmprevious ) ) or ( $schmprevious =~ m/[\d.]+/ ) );
+						print( "*> Read dubious target version '$schmtarget' from file '$schmfile'\n" ) unless( not( defined( $schmtarget ) ) or ( $schmtarget =~ m/[\d.]+/ ) );
 						if( ( $schmfile =~ m/^(?:V(?:.*?)__)*V(.*?)__/ ) and not( $1 =~ m/^$schmtarget(?:\.\d+)?$/ ) ) {
 							warn( "!> $warning File-name version '$1' differs from metadata version '$schmtarget' from file '$schmfile'\n" );
 						}
@@ -5967,14 +6275,14 @@ SQL
 
 							if( not( defined( $schmtarget ) and length( $schmtarget ) ) ) {
 								if( not( 'procedure' eq $mode ) ) {
-									warn( "!> No target version defined in schema comments - relying on filename alone\n" );
+									warn( "!> No target version defined in schema comments from file '$schmfile' - relying on filename alone\n" );
 								} else {
-									warn( "!> No target version defined in metadata comments - not validating target installation chain\n" );
+									warn( "!> No target version defined in metadata comments from file '$schmfile'- not validating target installation chain\n" );
 								}
 
 							#} elsif( not( /^$flywaytablename$/ ~~ @{ $availabletables } ) )
 							} elsif( defined( $tablename ) and not( qr/^$tablename$/ |M| \@{ $availabletables } ) ) {
-								warn( "!> metadata table `$tablename` does not exist - not validating target installation chain\n" );
+								warn( "!> metadata table `$tablename` does not exist - not validating target installation chain for file '$schmfile'\n" );
 
 							} else {
 								# N.B. Logic change - previously, we were simply checking that the target version
@@ -6134,7 +6442,7 @@ SQL
 									$schmpreviousmatch = "$regex";
 								}
 								if( $greaterversionpresent ) {
-									print( "*> Not validating previous versions as target version has already been exceeded\n" );
+									print( "*> Not validating previous versions as target version has already been exceeded for file '$schmfile'\n" );
 								} else {
 									#if( /^$schmprevious$/ ~~ $installedversions )
 									if( defined( $schmpreviousmatch ) and ( qr/^$schmpreviousmatch(?:\.\d)?$/ |M| $installedversions ) ) {
@@ -6540,8 +6848,7 @@ SQL
 			if( defined( $replacement ) and $replacement =~ m/^\d+$/ and 0 == $replacement ) {
 				$sth = preparesql( \$dbh, <<SQL );
 INSERT INTO `$verticadb$flywaytablename` (
-    `version_rank`
-  , `installed_rank`
+    `installed_rank`
   , `version`
   , `description`
   , `type`
@@ -6551,14 +6858,13 @@ INSERT INTO `$verticadb$flywaytablename` (
   , `installed_on`
   , `execution_time`
   , `success`
-) VALUES ( ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ? )
+) VALUES ( ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ? )
 SQL
 				die( "Unable to create tracking statement handle: " . $dbh -> errstr() . "\n" ) unless( defined( $sth ) and $sth );
 				if( $safetyoff ) {
 					dosql( \$dbh, "UNLOCK TABLES" ) unless( 'vertica' eq $engine );
 					executesql( \$dbh, $sth, undef,
-						  $versionrank
-						, $installedrank
+						  $installedrank
 						, $schmversion
 						, $desc
 						, $filetype
@@ -6578,7 +6884,7 @@ SQL
 						,  0
 						, $user
 						,  int( $schemaelapsed + 0.5 ) # Round up
-						,  $status
+						, $status
 					);
 				}
 			} else {
@@ -6587,8 +6893,7 @@ SQL
 				#
 				$sth = preparesql( \$dbh, <<SQL );
 UPDATE `$verticadb$flywaytablename` SET
-    `version_rank` = ?
-  , `installed_rank` = ?
+    `installed_rank` = ?
   , `description` = ?
   , `type` = ?
   , `script` = ?
@@ -6603,8 +6908,7 @@ SQL
 				if( $safetyoff ) {
 					dosql( \$dbh, "UNLOCK TABLES" ) unless( 'vertica' eq $engine );
 					executesql( \$dbh, $sth, undef,
-						  $versionrank
-						, $installedrank
+						  $installedrank
 						, $desc
 						, $filetype
 						, $schmfile
@@ -6704,7 +7008,7 @@ sub main( @ ) { # {{{
 	,   'extended-insert!'				=> \$extinsert
 
 	, 'r|restore=s'					=> \$action_restore
-	, 'i|init:s'					=> \$action_init
+	, 'i|init|baseline:s'				=> \$action_init
 	, 'c|check!'					=> \$action_check
 
 	, 'o|mode=s'					=> \$mode
@@ -7750,6 +8054,36 @@ sub main( @ ) { # {{{
 		die( $fatal . " Unknown database instance '$engine'\n" );
 	}
 
+	my $actions;
+	$actions -> { 'check' }         = $action_check;
+	$actions -> { 'init' }          = $action_init;
+	$actions -> { 'migrate' }       = $action_migrate;
+
+	my $variables;
+	$variables -> { 'backupdir' }   = $backupdir;
+	$variables -> { 'clear' }       = $clear;
+	$variables -> { 'compat' }      = $compat;
+	$variables -> { 'desc' }        = $desc;
+	$variables -> { 'dsn' }         = $dsn;
+	$variables -> { 'engine' }      = $engine;
+	$variables -> { 'environment' } = $environment;
+	$variables -> { 'extinsert' }   = $extinsert;
+	$variables -> { 'first' }       =  TRUE;
+	$variables -> { 'force' }       = $force;
+	$variables -> { 'limit' }       = $limit;
+	$variables -> { 'marker' }      = $marker if( $dosub );
+	$variables -> { 'mode' }        = $mode;
+	$variables -> { 'pretend' }     = $pretend;
+	$variables -> { 'quiet' }       = $quiet;
+	$variables -> { 'safetyoff' }   = $safetyoff;
+	$variables -> { 'shortcut' }    = $shortcut;
+	$variables -> { 'silent' }      = $silent;
+	$variables -> { 'skipmeta' }    = $skipmeta;
+	$variables -> { 'strict' }      = $strict;
+	$variables -> { 'tmpdir' }      = $tmpdir;
+	$variables -> { 'unsafe' }      = $unsafe;
+	$variables -> { 'vschm' }       = $vschm;
+
 	#
 	# Create {fl,m}yway metadata tables
 	#
@@ -7758,7 +8092,7 @@ sub main( @ ) { # {{{
 	# different database to perform DDL alterations.
 	# Vertica strongly suggests always specifying the database (instance)
 	# and schema (database) when deleting a table... although the (auto-
-	# generated?) documentation also suggests specfying the column also,
+	# generated?) documentation also suggests specifying the column also,
 	# which is hopefully simply an oversight...
 	if( $clear ) { # and $safetyoff
 		my $flag = $allowunsafeoperations;
@@ -7950,6 +8284,8 @@ sub main( @ ) { # {{{
 		}
 	}
 
+	migratemetadataschema( \$dbh, $db, $vschm, $variables );
+
 	my $dbversion = getsqlvalue( \$dbh, "SELECT `version` FROM `$verticadb$flywaytablename` WHERE `success` = '1' ORDER BY `version` DESC LIMIT 1" );
 
 	print( "\n=> Disconnecting from database.\n" ) unless( $quiet or $silent );
@@ -7960,36 +8296,6 @@ sub main( @ ) { # {{{
 	#
 	# Apply schema file to database # {{{
 	#
-
-	my $actions;
-	$actions -> { 'check' }         = $action_check;
-	$actions -> { 'init' }          = $action_init;
-	$actions -> { 'migrate' }       = $action_migrate;
-
-	my $variables;
-	$variables -> { 'backupdir' }   = $backupdir;
-	$variables -> { 'clear' }       = $clear;
-	$variables -> { 'compat' }      = $compat;
-	$variables -> { 'desc' }        = $desc;
-	$variables -> { 'dsn' }         = $dsn;
-	$variables -> { 'engine' }      = $engine;
-	$variables -> { 'environment' } = $environment;
-	$variables -> { 'extinsert' }   = $extinsert;
-	$variables -> { 'first' }       =  TRUE;
-	$variables -> { 'force' }       = $force;
-	$variables -> { 'limit' }       = $limit;
-	$variables -> { 'marker' }      = $marker if( $dosub );
-	$variables -> { 'mode' }        = $mode;
-	$variables -> { 'pretend' }     = $pretend;
-	$variables -> { 'quiet' }       = $quiet;
-	$variables -> { 'safetyoff' }   = $safetyoff;
-	$variables -> { 'shortcut' }    = $shortcut;
-	$variables -> { 'silent' }      = $silent;
-	$variables -> { 'skipmeta' }    = $skipmeta;
-	$variables -> { 'strict' }      = $strict;
-	$variables -> { 'tmpdir' }      = $tmpdir;
-	$variables -> { 'unsafe' }      = $unsafe;
-	$variables -> { 'vschm' }       = $vschm;
 
 	my $version = undef;
 	my $lastversion = undef;
@@ -8020,7 +8326,7 @@ sub main( @ ) { # {{{
 						if( not( $version eq '__NOT_APPLIED__' ) ) {
 							$lastversion = $version;
 						}
-						print( "*> This session now has base version '$version'\n" ) unless( $quiet or $silent );
+						print( "*> This session now has base " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure ' : '' ) . "version '$version'\n" ) unless( $quiet or $silent );
 					} elsif( ref( $version ) eq '' ) {
 						if( not( $version ) ) {
 							die( "Fatal error encountered whilst applying file '$item' - aborting\n" );

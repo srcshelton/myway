@@ -24,7 +24,7 @@ std_DEBUG="${DEBUG:-0}"
 std_TRACE="${TRACE:-0}"
 
 SCRIPT="myway.pl"
-COMPATIBLE="1.1.2"
+COMPATIBLE="1.2.0"
 
 # We want to be able to debug applyschema.sh without debugging myway.pl...
 if [[ -n "${MYDEBUG:-}" ]]; then
