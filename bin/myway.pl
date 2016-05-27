@@ -2242,8 +2242,6 @@ use constant PORT        =>  3306;
 use constant VERTICAPORT =>  5433;
 use constant MARKER      => '`<<VERSION>>';
 
-use constant VERTICAODBCISBROKEN => FALSE;
-
 # Necessary non-default modules:
 #
 # * DBI::Format ( DBI::Shell, Text::Reform, IO::Tee )
@@ -4419,14 +4417,6 @@ sub checkdbconnection( $ ) { # {{{
 	${ $dbh } -> disconnect();
 
 	pwarn( "Database unexpectedly dropped connection!\n" );
-	if( VERTICAODBCISBROKEN ) {
-		die( "You probably have a syntax error in your previous SQL statement, but the Vertica ODBC connector is broken and won't tell me what happened :(\n" );
-	} else {
-		if( not( defined( $connection ) and ( scalar( $connection ) > 0 ) ) ) {
-			die( "Database connection unstable, unable to proceed.\n" );
-		}
-	}
-
 	pwarn( "Attempting to reconnect using last connection string ...\n" );
 	my $error = dbopen( $dbh, $connection -> { 'dsn' } , $connection -> { 'user' }, $connection -> { 'password' }, $connection -> { 'strict' }, $connection -> { 'options' } );
 	warn( "!> BUG: Reconnection returned '$error'\n" ) if $error;
@@ -8024,12 +8014,6 @@ sub main( @ ) { # {{{
 	# instance vendor...
 	$engine = lc( $dbh -> get_info( 17 ) );
 	if( defined( $engine ) and length( $engine ) and ( 'vertica database' eq $engine ) ) {
-		if( VERTICAODBCISBROKEN ) {
-			print( "*> WARNING: The ODBC interface to Vertica is HORRIBLY BROKEN <*\n" );
-			print( "*>          It appears to be able to be replied upon ONLY so <*\n" );
-			print( "*>          long as ALL SQL statements are 100% correct, and <*\n" );
-			print( "*>          entirely syntactically valid!                    <*\n\n" );
-		}
 		print( "-> Successfully connected to Vertica database instance\n" );
 		$engine = 'vertica';
 
