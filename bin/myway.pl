@@ -2271,6 +2271,7 @@ use Getopt::Long qw( GetOptionsFromArray );
 use Module::Loaded qw( is_loaded );
 use Pod::Usage;
 use Regexp::Common;
+use Scalar::Util qw( looks_like_number );
 use Sort::Versions;
 use Time::HiRes qw( gettimeofday tv_interval );
 
@@ -6422,7 +6423,7 @@ SQL
 									print( "*> " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " version '$schmtarget'" . ( ( $quiet and ( 'procedure' eq $mode ) ) ? " for file '$schmfile'" : '' ) . " is a re-install\n" ) unless( $silent );
 								}
 								if( $okay or ( 'procedure' eq $mode ) ) {
-									$schmversion = $schmtarget unless( ( $schmversion == int( $schmversion ) ) and ( $schmversion < 0 ) );
+									$schmversion = $schmtarget unless( looks_like_number( $schmversion ) and ( $schmversion < 0 ) );
 								}
 							}
 
