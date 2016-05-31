@@ -211,10 +211,10 @@ function main() {
 
 	debug "Establishing lock ..."
 
-	[[ -e "${lockfile}" ]] && return 1
-	lock "${lockfile}" || return 1
+	[[ -e "${lockfile}" ]] && die "Lock '${lockfile}' exists - aborting"
+	lock "${lockfile}" || die "Creating lock '${lockfile}' failed - aborting"
 	sleep 0.1
-	[[ -e "${lockfile}" && "$( <"${lockfile}" )" == "${$}" ]] || return 1
+	[[ -e "${lockfile}" && "$( <"${lockfile}" )" == "${$}" ]] || die "Lock '${lockfile}' is for process $( <"${lockfile}" ), not our PID ${$} - aborting"
 
 	# We have a lock...
 
@@ -544,6 +544,7 @@ function main() {
 
 		debug "Load completed for database '${db}'\n"
 
+		(( founddb && rc )) && exit 4
 		(( founddb && !( rc ) )) && exit 3
 		(( rc )) && false || true
 
@@ -551,9 +552,15 @@ function main() {
 
 		result=${?}
 		case ${result} in
-			3)
+			4)
 				# Slightly non-obviously, we've found a
-				# database without hitting an error...
+				# database but hit an error...
+				founddb=1
+				rc=1
+				;;
+			3)
+				# ... or we've found a database without hitting
+				# an error...
 				founddb=1
 				;;
 			2)
@@ -575,7 +582,9 @@ function main() {
 
 	(( silent )) || {
 		# ${rc} should have recovered from the sub-shell, above...
-		if (( rc )); then
+		if (( rc )) && (( dryrun )); then
+			warn "Load completed with errors, or database doesn't exist"
+		elif (( rc )); then
 			warn "Load completed with errors"
 		elif (( !( founddb ) )); then
 			error "Specified database(s) not present in configuration file"
