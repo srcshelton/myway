@@ -343,7 +343,7 @@ function main() {
 						params+=( -u "${dbadmin}" )
 					fi
 					if ! grep -Eiq '(^|;)password=([^;]+)(;|$)' <<<"${dsn}"; then
-						params+=( -h "${passwd}" )
+						params+=( -p "${passwd}" )
 					fi
 					if ! grep -Eiq '(^|;)servername=([^;]+)(;|$)' <<<"${dsn}"; then
 						params+=( -h "${host}" )
