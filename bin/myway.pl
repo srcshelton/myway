@@ -2228,7 +2228,7 @@ no if ( $] >= 5.02 ), warnings => 'experimental::autoderef';
 # ... in actual fact, diagnostics causes more problems than it solves.  It does
 # appear to be, in reality, quite silly.
 
-use constant VERSION     =>  "1.2.0";
+use constant VERSION     =>  "1.2.0.1";
 
 use constant TRUE        =>  1;
 use constant FALSE       =>  0;
@@ -2271,6 +2271,7 @@ use Getopt::Long qw( GetOptionsFromArray );
 use Module::Loaded qw( is_loaded );
 use Pod::Usage;
 use Regexp::Common;
+use Scalar::Util qw( looks_like_number );
 use Sort::Versions;
 use Time::HiRes qw( gettimeofday tv_interval );
 
@@ -2329,9 +2330,9 @@ sub migratemetadataschema( $;$$$ );
 sub applyschema( $$$$;$ );
 sub main( @ );
 
-our $fatal   = "FATAL:";
-our $failed  = "FAIL: ";
-our $warning = "WARN: ";
+our $fatal   = "FATAL: ";
+our $failed  = "FAIL:  ";
+our $warning = "WARN:  ";
 
 
 # XXX: Too many globals... :(
@@ -5232,7 +5233,7 @@ sub applyschema( $$$$;$ ) { # {{{
 	my $dumpusers = FALSE;
 	my @dumptables = ();
 
-	if( 'procedure' eq $mode ) {
+	if( 'procedure' eq $mode ) { # {{{
 		# In this case, we retrieve the previous/current-version logic
 		# from the metadata file, and many files may be applied with
 		# the same versions.
@@ -5314,7 +5315,7 @@ sub applyschema( $$$$;$ ) { # {{{
 			warn( "!> Metadata contains hotfix version $hotfix to base version $version\n" ) if( $first );
 		}
 
-	} # ( 'procedure' eq $mode )
+	} # ( 'procedure' eq $mode ) # }}}
 
 	my $shouldprocess = FALSE;
 	if( ( 'procedure' eq $mode ) ) {
@@ -5328,7 +5329,7 @@ sub applyschema( $$$$;$ ) { # {{{
 		$shouldprocess = TRUE;
 	} elsif( not( $shortcut ) ) {
 		$shouldprocess = TRUE;
-	} else { # ( $shortcut )
+	} else { # ( $shortcut ) # {{{
 		if( defined( $action_init ) ) {
 			pdebug( "Skipping file-name version comparison when --init is specified..." );
 		} elsif( not( $schmfile =~ m/^V(.*?)__/ ) ) {
@@ -5339,6 +5340,15 @@ sub applyschema( $$$$;$ ) { # {{{
 
 				my( $mcode, $mchange, $mstep, $mhotfix ) = ( $match =~ m/^([[:xdigit:]]+)(?:\.(\d+)(?:\.(\d+)(?:\.(\d+))?)?)?$/ );
 				my( $lcode, $lchange, $lstep, $lhotfix ) = ( $limit =~ m/^([[:xdigit:]]+)(?:\.(\d+)(?:\.(\d+)(?:\.(\d+))?)?)?$/ );
+
+				if( not( defined( $mcode ) and $mcode ) ) {
+					warn( "!> Could not determine major version number from filename '$schmfile' version '$match'\n" );
+					$mcode = 0;
+				}
+				if( not( defined( $lcode ) and $lcode ) ) {
+					warn( "!> Could not determine major version number from specified limit '$limit'\n" );
+					$lcode = 0;
+				}
 				$mchange = 0 unless( defined( $mchange ) and $mchange );
 				$mstep = 0 unless( defined( $mstep ) and $mstep );
 				$mhotfix = 0 unless( defined( $mhotfix ) and $mhotfix );
@@ -5397,7 +5407,9 @@ sub applyschema( $$$$;$ ) { # {{{
 			if( not( scalar( $availabletables ) ) ) {
 				warn( "\n$warning Unable to retrieve list of tables for database `$db`" . ( defined( $dbh -> errstr() ) ? ': ' . $dbh -> errstr() : '' ) . "\n" );
 			} else {
-				my $version = getsqlvalue( \$dbh, "SELECT `version` FROM `$verticadb$flywaytablename` WHERE `success` IS TRUE AND `type` = '$flywayinit' ORDER BY `version` DESC LIMIT 1" );
+				my $versions = getsqlvalues( \$dbh, "SELECT DISTINCT `version` FROM `$verticadb$flywaytablename` WHERE `success` IS TRUE AND `type` = '$flywayinit'" );
+				my @sortedversions = sort { versioncmp( $a, $b ) } @{ $versions };
+				my $version = pop( @sortedversions );
 				if( defined( $version ) and length( $version ) ) {
 					if( $schmfile =~ m/^V(.*?)__/ ) {
 						my $match = $1;
@@ -5420,7 +5432,7 @@ sub applyschema( $$$$;$ ) { # {{{
 					#$schmversion = $action_init;
 					#$schmversion = $1 if( not( defined( $schmversion ) and length( $schmversion ) ) and ( $schmfile =~ m/^V(.*?)__/ ) );
 					#$schmversion = '0' unless( defined( $schmversion ) and length( $schmversion ) );
-					my $metadataversions = getsqlvalues( \$dbh, "SELECT DISTINCT(`version`) FROM `$verticadb$flywaytablename` WHERE `success` IS TRUE" );
+					my $metadataversions = getsqlvalues( \$dbh, "SELECT DISTINCT `version` FROM `$verticadb$flywaytablename` WHERE `success` IS TRUE" );
 					#if( /^$schmversion$/ ~~ $metadataversions )
 					if( defined( $schmversion ) and ( qr/^$schmversion$/ |M| $metadataversions ) ) {
 						if( $pretend ) {
@@ -5446,7 +5458,7 @@ sub applyschema( $$$$;$ ) { # {{{
 			dbclose( \$dbh );
 		}
 		$shouldprocess = TRUE;
-	} # ( $shortcut )
+	} # ( $shortcut ) # }}}
 	$invalid = $invalid | not( processfile( $data, $file, undef, undef, $strict ) ) if( $shouldprocess );
 	die( "Data failed validation - aborting.\n" ) if( $invalid );
 
@@ -5700,7 +5712,9 @@ sub applyschema( $$$$;$ ) { # {{{
 					#        versions correctly, and so perform the operation manually ourselves.
 					#        This should at least be made consistent...
 					#
-					my $version = getsqlvalue( \$dbh, "SELECT `version` FROM `$verticadb$flywaytablename` WHERE `success` IS TRUE ORDER BY `version` DESC LIMIT 1" );
+					my $versions = getsqlvalues( \$dbh, "SELECT DISTINCT `version` FROM `$verticadb$flywaytablename` WHERE `success` IS TRUE" );
+					my @sortedversions = sort { versioncmp( $a, $b ) } @{ $versions };
+					my $version = pop( @sortedversions );
 					print( "\n*> flyway metadata table `$flywaytablename` is already initialised to version '$version'.\n" );
 					if( $force ) {
 						if( $pretend ) {
@@ -5713,7 +5727,8 @@ sub applyschema( $$$$;$ ) { # {{{
 						if( $pretend ) {
 							warn( "!> Database `$db` has already been initialised to version '$version' - please use '--clear-metadata' to discard.\n" );
 						} else {
-							die( "Database `$db` has already been initialised to version '$version' - please use '--clear-metadata' to discard.\n" );
+							#    "INFO:   xxx" - to match stdlib.sh widths from applyschema.sh
+							die( "        Database `$db` has already been initialised to version '$version' - please use '--clear-metadata' to discard.\n" );
 						}
 					}
 				}
@@ -5801,6 +5816,18 @@ SQL
 				}
 				if( not( $pretend or $quiet or $silent ) ) {
 					print( "\n*> flyway metadata table `$flywaytablename` has been initialised to version '$schmversion':\n" );
+					# XXX: Elsewhere, we're sorting in-code to ensure
+					#      correct ordering (e.g. 0.40 > 0.5) - but
+					#      formatastable() takes a SQL statement as an
+					#      argument, and MySQL lacks any version-sort
+					#      function :(
+					#
+					# There doesn't appear to be any good in-database
+					# solution... but I did see one suggestion of
+					# padding data to four digits separated by decimal
+					# points, and then abusing INET_ATON() to perform
+					# a lexical sort!
+					#
 					formatastable( \$dbh, "SELECT * FROM `$verticadb$flywaytablename` ORDER BY `version` DESC LIMIT 5", '   ' );
 				}
 			}
@@ -5823,7 +5850,9 @@ SQL
 				# Cases: {0, 0.3}; {0.1, 0.3}; {0.3, 0.3}; {0.3, 0.5}.
 				#            ^^^         ^^^         ^^^    ^^^
 				#
-				my $version = getsqlvalue( \$dbh, "SELECT `version` FROM `$verticadb$flywaytablename` WHERE `success` IS TRUE AND `type` = '$flywayinit' ORDER BY `version` DESC LIMIT 1" );
+				my $versions = getsqlvalues( \$dbh, "SELECT DISTINCT `version` FROM `$verticadb$flywaytablename` WHERE `success` IS TRUE AND `type` = '$flywayinit'" );
+				my @sortedversions = sort { versioncmp( $a, $b ) } @{ $versions };
+				my $version = pop( @sortedversions );
 				if( not( defined( $version ) and length( $version ) ) ) {
 					if( not( $force ) ) {
 						die( "Database has not been initialised with this tool - please re-run with '--init' and the appropriate schema-file version number.\n" );
@@ -5840,6 +5869,15 @@ SQL
 						if( defined( $limit ) ) {
 							my( $mcode, $mchange, $mstep, $mhotfix ) = ( $match =~ m/^([[:xdigit:]]+)(?:\.(\d+)(?:\.(\d+)(?:\.(\d+))?)?)?$/ );
 							my( $lcode, $lchange, $lstep, $lhotfix ) = ( $limit =~ m/^([[:xdigit:]]+)(?:\.(\d+)(?:\.(\d+)(?:\.(\d+))?)?)?$/ );
+
+							if( not( defined( $mcode ) and $mcode ) ) {
+								warn( "!> Could not determine major version number from filename '$schmfile' version '$match'\n" );
+								$mcode = 0;
+							}
+							if( not( defined( $lcode ) and $lcode ) ) {
+								warn( "!> Could not determine major version number from specified limit '$limit'\n" );
+								$lcode = 0;
+							}
 							$mchange = 0 unless( defined( $mchange ) and $mchange );
 							$mstep = 0 unless( defined( $mstep ) and $mstep );
 							$mhotfix = 0 unless( defined( $mhotfix ) and $mhotfix );
@@ -5881,7 +5919,7 @@ SQL
 				#$schmversion = $action_init;
 				#$schmversion = $1 if( not( defined( $schmversion ) and length( $schmversion ) ) and ( $schmfile =~ m/^V(.*?)__/ ) );
 				#$schmversion = '0' unless( defined( $schmversion ) and length( $schmversion ) );
-				my $metadataversions = getsqlvalues( \$dbh, "SELECT DISTINCT(`version`) FROM `$verticadb$flywaytablename` WHERE `success` IS TRUE" );
+				my $metadataversions = getsqlvalues( \$dbh, "SELECT DISTINCT `version` FROM `$verticadb$flywaytablename` WHERE `success` IS TRUE" );
 				#if( /^$schmversion$/ ~~ $metadataversions )
 				if( defined( $schmversion ) and ( qr/^$schmversion$/ |M| $metadataversions ) ) {
 					if( $pretend ) {
@@ -6099,7 +6137,7 @@ SQL
 	my $state = FALSE;
 	my $executed = 0;
 
-	if( 'procedure' eq $mode ) {
+	if( 'procedure' eq $mode ) { # {{{
 		my @entries;
 
 		if( $first ) {
@@ -6132,11 +6170,36 @@ SQL
 		}
 
 		$data -> { 'entries' } = \@entries;
-	}
+	} # }}}
 
 	my $schemastart = [ gettimeofday() ];
 
 	my $delim = DEFDELIM;
+
+	# Pre-process tokenised statements in order to abort early (before any
+	# changes have been applied) if we have any prohibited statements...
+	if( not( $allowunsafeoperations ) ) { # {{{
+		my $okay = TRUE;
+		foreach my $entry ( $data -> { 'entries' } ) {
+			foreach my $statement ( @{ $entry } ) {
+				if( 'statement' eq $statement -> { 'type' } ) {
+					foreach my $line ( @{ $statement -> { 'entry' } } ) {
+						if( defined( $line ) and length( $line ) ) {
+							if( $line =~ m/^\s*DROP\s+(?:TABLE|DATABASE)\s/i ) {
+								if( $okay ) {
+									warn( "\n$fatal Refusing to execute prohibited SQL statement:\n" );
+									$okay = FALSE;
+								}
+								warn( "!> $line\n" );
+							}
+						}
+					}
+				}
+			}
+		}
+		return( FALSE ) unless( $okay );
+	} # }}}
+
 	foreach my $entry ( $data -> { 'entries' } ) {
 		foreach my $statement ( @{ $entry } ) {
 			if( 'comment' eq $statement -> { 'type' } ) {
@@ -6299,7 +6362,7 @@ SQL
 								# We could sort in the database here, but I'm not sure "ORDER BY" would cope with the
 								# various variations we might be trying to throw at it...
 								#
-								my $installedversions = getsqlvalues( \$dbh, "SELECT DISTINCT(`version`) FROM `$verticadb$tablename` WHERE `$statuscolumn` = $status" );
+								my $installedversions = getsqlvalues( \$dbh, "SELECT DISTINCT `version` FROM `$verticadb$tablename` WHERE `$statuscolumn` = $status" );
 								die( 'Unable to retrieve list of installed ' . ( 'procedure' eq $mode  ? 'stored procedures' : 'schema versions' ) . ( defined( $dbh -> errstr() ) ? ': ' . $dbh -> errstr() : '' ) . "\n" ) unless( scalar( $installedversions ) );
 
 								my( $codeversion, $changeversion, $stepversion, $hotfixversion );
@@ -6422,7 +6485,7 @@ SQL
 									print( "*> " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " version '$schmtarget'" . ( ( $quiet and ( 'procedure' eq $mode ) ) ? " for file '$schmfile'" : '' ) . " is a re-install\n" ) unless( $silent );
 								}
 								if( $okay or ( 'procedure' eq $mode ) ) {
-									$schmversion = $schmtarget unless( ( $schmversion == int( $schmversion ) ) and ( $schmversion < 0 ) );
+									$schmversion = $schmtarget unless( looks_like_number( $schmversion ) and ( $schmversion < 0 ) );
 								}
 							}
 
@@ -6436,7 +6499,7 @@ SQL
 								#
 								# N.B.: $status is pre-quoted
 								#
-								my $installedversions = getsqlvalues( \$dbh, "SELECT DISTINCT(`version`) FROM `$verticadb$tablename` WHERE `$statuscolumn` = $status" );
+								my $installedversions = getsqlvalues( \$dbh, "SELECT DISTINCT `version` FROM `$verticadb$tablename` WHERE `$statuscolumn` = $status" );
 								push( @{ $installedversions }, $schmvirtual ) if( defined( $schmvirtual ) );
 								die( 'Unable to retrieve list of installed schema versions' . ( defined( $dbh -> errstr() ) ? ': ' . $dbh -> errstr() : '' ) . "\n" ) unless( scalar( $installedversions ) );
 
@@ -8302,7 +8365,9 @@ sub main( @ ) { # {{{
 
 	migratemetadataschema( \$dbh, $db, $vschm, $variables );
 
-	my $dbversion = getsqlvalue( \$dbh, "SELECT `version` FROM `$verticadb$flywaytablename` WHERE `success` = '1' ORDER BY `version` DESC LIMIT 1" );
+	my $versions = getsqlvalues( \$dbh, "SELECT DISTINCT `version` FROM `$verticadb$flywaytablename` WHERE `success` = '1'" );
+	my @sortedversions = sort { versioncmp( $a, $b ) } @{ $versions };
+	my $dbversion = pop( @sortedversions );
 
 	print( "\n=> Disconnecting from database.\n" ) unless( $quiet or $silent );
 	$dbh -> disconnect;
@@ -8373,7 +8438,11 @@ sub main( @ ) { # {{{
 					( my $error = $@ ) =~ s/ at .+ line \d+\.$//;
 					$error = join( ' ', split( /\s*\n+\s*/, $error ) );
 					chomp( $error );
-					die( "\n$fatal Error when applying schema file '$item':\n$error\n" );
+					if( defined( $action_init ) ) {
+						die( "\n$warning Failed to initialise from schema file '$item':\n$error\n" );
+					} else {
+						die( "\n$fatal Error when applying schema file '$item':\n$error\n" );
+					}
 				}
 				$variables -> { 'first' } = FALSE if( $variables -> { 'first' } );
 			}
@@ -8389,7 +8458,7 @@ sub main( @ ) { # {{{
 			} elsif( defined( $lastversion ) ) {
 				print( "*> Database is up to date at schema version '$lastversion'\n" ) unless( $quiet or $silent );
 			} else {
-				die( "*> No database changes applied\n" );
+				die( "*> Schema migration incomplete\n" );
 			}
 		} else {
 			if( defined( $version ) and ( $version eq '__NOT_APPLIED__' ) ) {
@@ -8400,7 +8469,7 @@ sub main( @ ) { # {{{
 				}
 			}
 			if( not( defined( $version ) ) ) {
-				print( "*> No database changes applied\n" );
+				print( "*> Schema migration incomplete\n" );
 			} elsif( $version eq $limit ) {
 				print( "*> Database is up to date at schema version '$version'\n" ) unless( $quiet or $silent );
 			} else {

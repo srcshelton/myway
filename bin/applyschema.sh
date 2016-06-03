@@ -441,6 +441,7 @@ function main() {
 			else
 				if (( keepgoing )); then
 					warn "Initialisation of database '${db}' (${myway} ${params[*]} ${extraparams[*]} --init) failed: ${result}"
+					output "\n\nContinuing to next database, if any ...\n"
 					rc=1
 				else
 					die "Initialisation of database '${db}' (${myway} ${params[*]} ${extraparams[*]} --init) failed: ${result}"
@@ -497,12 +498,15 @@ function main() {
 				if (( ${result} )); then
 					if (( keepgoing )); then
 						warn "Loading of stored procedures to database '${db}' (${myway} ${params[*]} ${procparams[*]} ${extraparams[*]}${extra[*]:+ ${extra[*]}}) failed: ${result}"
+						output "\n\nContinuing to next database, if any ...\n"
 						rc=1
 					else
 						die "Loading of stored procedures to database '${db}' (${myway} ${params[*]} ${extraparams[*]}${extra[*]:+ ${extra[*]}}) failed: ${result}"
 					fi
 				fi
 			done
+
+			debug "Stored Procedures loaded for database '${db}'\n"
 		fi
 
 		# ... and finally, perform schema deployment.
@@ -536,6 +540,7 @@ function main() {
 		if (( ${result} )); then
 			if (( keepgoing )); then
 				warn "Migration of database '${db}' (${myway} ${params[*]} ${extraparams[*]}) failed: ${result}"
+				output "\n\nContinuing to next database, if any ...\n"
 				rc=1
 			else
 				die "Migration of database '${db}' (${myway} ${params[*]} ${extraparams[*]}) failed: ${result}"
