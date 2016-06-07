@@ -92,13 +92,13 @@ function main() {
 		novsort=1
 	fi
 
-	local arg schema db dblist
+	local arg schema db dblist clist
 	local -i dryrun=0 quiet=0 silent=0 keepgoing=0
-	local -a extra
+	local -a extra=()
 	while [[ -n "${1:-}" ]]; do
 		arg="${1}"
 		case "${arg}" in
-			--config|-c)
+			-c|--conf|--config)
 				shift
 				if [[ -z "${1:-}" ]]; then
 					die "Option ${arg} requires an argument"
@@ -108,7 +108,37 @@ function main() {
 					filename="${1}"
 				fi
 				;;
-			--schema|--schemata|-s)
+			-d|--database|--databases|-o|--only)
+				shift
+				if [[ -z "${1:-}" ]]; then
+					die "Option ${arg} requires an argument"
+				elif [[ "${1}" =~ ^-- ]]; then
+					die "Argument '${1}' to option ${arg} looks like an option... aborting"
+				else
+					dblist="${1}"
+				fi
+				;;
+			-h|--help)
+				export std_USAGE="[--config <file>] [--schema <path>] [ [--databases <database>[,...]] | [--clusters <cluster>[,...]] ] [--keep-going] [--dry-run] [--silent] | [--locate <database>]"
+				std::usage
+				;;
+			-k|--keep-going|--keepgoing)
+				keepgoing=1
+				;;
+			-l|--locate|--whereis|--server|--host)
+				shift
+				if [[ -z "${1:-}" ]]; then
+					die "Option ${arg} requires an argument"
+				elif [[ "${1}" =~ ^-- ]]; then
+					die "Argument '${1}' to option ${arg} looks like an option... aborting"
+				else
+					db="${1}"
+				fi
+				;;
+			-q|--quiet)
+				quiet=1
+				;;
+			-s|--schema|--schemata|--directory|--scripts)
 				shift
 				if [[ -z "${1:-}" ]]; then
 					die "Option ${arg} requires an argument"
@@ -118,51 +148,39 @@ function main() {
 					actualpath="${1}"
 				fi
 				;;
-			--locate|--whereis|--server|--host|-l)
+			-u|--cluster|--clusters)
 				shift
 				if [[ -z "${1:-}" ]]; then
 					die "Option ${arg} requires an argument"
+				elif [[ "${1}" =~ ^-- ]]; then
+					die "Argument '${1}' to option ${arg} looks like an option... aborting"
 				else
-					db="${1}"
+					clist="${1}"
 				fi
 				;;
-			--only|-o)
-				shift
-				if [[ -z "${1:-}" ]]; then
-					die "Option ${arg} requires an argument"
-				else
-					dblist="${1}"
-				fi
-				;;
-			--keep-going|--keepgoing|-k)
-				keepgoing=1
-				;;
-			--dry-run|--verify|-v)
+			   --dry-run|--verify)
 				dryrun=1
 				;;
-			--quiet|-q)
-				quiet=1
-				;;
-			--silent|-s)
+			   --silent)
 				silent=1
 				;;
-			--help|-h)
-				export std_USAGE="[--config <file>] [--schema <path>] [--only <database>[,...]] [--keep-going] [--dry-run] [--silent] | [--locate <database>]"
-				std::usage
-				;;
-			--)
+			   --)
 				shift
 				while [[ -n "${1:-}" ]]; do
-					extra=( "${1}" )
+					extra+=( "${1}" )
 					shift
 				done
 				;;
-			*)
+			   *)
 				die "Unknown argument '${arg}'"
 				;;
 		esac
 		shift
 	done
+
+	if [[ -n "${dblist:-}" && -n "${clist:-}" ]]; then
+		die "Options --databases and --clusters are mutually exclusive"
+	fi
 
 	for filename in "${filename:-}" /etc/iod/schema.conf /etc/schema.conf ~/schema.conf "$( dirname "$( readlink -e "${0}" )" )"/schema.conf; do
 		[[ -r "${filename:-}" ]] && break
@@ -244,7 +262,12 @@ function main() {
 
 		eval "${details}"
 
-		if grep -Eq "${falsy}" <<<"${managed:-}"; then
+		if [[ -n "${clist:-}" ]] && ! grep -q ",${cluster:-.*}," <<<",${clist},"; then
+			(( silent )) || info "Skipping database '${db}' from deselected cluster '${cluster:-all}' ..."
+			continue
+		fi
+
+		if grep -Eiq "${falsy}" <<<"${managed:-}"; then
 			(( silent )) || info "Skipping unmanaged database '${db}' ..."
 			founddb=1
 			exit 3 # See below...
@@ -271,7 +294,7 @@ function main() {
 				messages+=( "Schema-file directory '${path}' does not exist for database '${db}'" )
 			else
 				if [[ "$( basename "${path}" )" == "${db}" ]]; then
-					if grep -Eq "${truthy}" <<<"${procedures:-}"; then
+					if grep -Eiq "${truthy}" <<<"${procedures:-}"; then
 						messages+=( "Cannot load Stored Procedures for database '${db}' since a database-specific schema-file location is specified" )
 					else
 						debug "Using schema-file '${path}' for database '${db}'"
@@ -295,7 +318,7 @@ function main() {
                                                 else
                                                         debug "Using schema-files path '${path}/schema/${db}' for database '${db}'"
                                                 fi
-						if grep -Eq "${truthy}" <<<"${procedures:-}"; then
+						if grep -Eiq "${truthy}" <<<"${procedures:-}"; then
 							#if [[ -d "${path}"/procedures/"${db}" ]]; then
 							#	debug "Using '${path}/procedures/${db}' for '${db}' Stored Procedures"
 							if [[ -n "${actualpath:-}" && -d "${actualpath}"/../procedures ]]; then
@@ -369,28 +392,28 @@ function main() {
 		[[ -n "${environment:-}" ]] && params+=( -e "${environment}" )
 
 		for option in force verbose warn debug quiet silent; do
-			eval echo "\${options_${option}:-}" | grep -Eq "${truthy}" && params+=( --${option} )
+			eval echo "\${options_${option}:-}" | grep -Eiq "${truthy}" && params+=( --${option} )
 		done
 		if [[ "${syntax:-}" != "vertica" ]]; then
 			for option in compat relaxed; do
-				eval echo "\${mysql_${option}:-}" | grep -Eq "${truthy}" && params+=( --mysql-${option} )
+				eval echo "\${mysql_${option}:-}" | grep -Eiq "${truthy}" && params+=( --mysql-${option} )
 			done
-			if grep -Eq "${falsy}" <<<"${backups:-}"; then
+			if grep -Eiq "${falsy}" <<<"${backups:-}"; then
 				params+=( --no-backup )
 			else
 				[[ -n "${backups_compress:-}" ]] && params+=( --compress "${backups_compress}" )
-				grep -Eq "${truthy}" <<<"${backups_transactional:-}" && params+=( --transactional )
-				grep -Eq "${truthy}" <<<"${backups_lock:-}" && params+=( --lock )
-				grep -Eq "${truthy}" <<<"${backups_keeplock:-}" && params+=( --keep-lock )
-				grep -Eq "${truthy}" <<<"${backups_separate:-}" && params+=( --separate-files )
-				grep -Eq "${truthy}" <<<"${backups_skipmeta:-}" && params+=( --skip-metadata )
-				grep -Eq "${truthy}" <<<"${backups_extended:-}" && params+=( --extended-insert )
+				grep -Eiq "${truthy}" <<<"${backups_transactional:-}" && params+=( --transactional )
+				grep -Eiq "${truthy}" <<<"${backups_lock:-}" && params+=( --lock )
+				grep -Eiq "${truthy}" <<<"${backups_keeplock:-}" && params+=( --keep-lock )
+				grep -Eiq "${truthy}" <<<"${backups_separate:-}" && params+=( --separate-files )
+				grep -Eiq "${truthy}" <<<"${backups_skipmeta:-}" && params+=( --skip-metadata )
+				grep -Eiq "${truthy}" <<<"${backups_extended:-}" && params+=( --extended-insert )
 
-				grep -Eq "${truthy}" <<<"${backups_keep:-}" && params+=( --keep-backup )
+				grep -Eiq "${truthy}" <<<"${backups_keep:-}" && params+=( --keep-backup )
 			fi
 		fi
-		grep -Eq "${truthy}" <<<"${parser_trustname:-}" && params+=( --trust-filename )
-		grep -Eq "${truthy}" <<<"${parser_allowdrop:-}" && params+=( --allow-unsafe )
+		grep -Eiq "${truthy}" <<<"${parser_trustname:-}" && params+=( --trust-filename )
+		grep -Eiq "${truthy}" <<<"${parser_allowdrop:-}" && params+=( --allow-unsafe )
 		[[ -n "${version_max:-}" ]] && params+=( --target-limit "${version_max}" )
 
 		founddb=1
@@ -453,7 +476,7 @@ function main() {
 		# checked until the SP is actually executed, but SPs may be
 		# invoked as part of schema deployment.
 		#
-		if grep -Eq "${truthy}" <<<"${procedures:-}"; then
+		if grep -Eiq "${truthy}" <<<"${procedures:-}"; then
 			local -a procparams=( --mode procedure )
 			if [[ -n "${procedures_marker:-}" ]]; then
 				procparams+=( --substitute --marker "${procedures_marker}" )
