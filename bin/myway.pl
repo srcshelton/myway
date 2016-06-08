@@ -5433,8 +5433,30 @@ sub applyschema( $$$$;$ ) { # {{{
 					#$schmversion = $1 if( not( defined( $schmversion ) and length( $schmversion ) ) and ( $schmfile =~ m/^V(.*?)__/ ) );
 					#$schmversion = '0' unless( defined( $schmversion ) and length( $schmversion ) );
 					my $metadataversions = getsqlvalues( \$dbh, "SELECT DISTINCT `version` FROM `$verticadb$flywaytablename` WHERE `success` IS TRUE" );
+
+					my( $scode, $schange, $sstep, $shotfix ) = ( $schmversion =~ m/^([[:xdigit:]]+)(?:\.(\d+)(?:\.(\d+)(?:\.(\d+))?)?)?$/ );
+					if( not( defined( $scode ) and $scode ) ) {
+						warn( "!> Could not determine major version number from filename '$schmfile' version '$schmversion'\n" );
+						$scode = 0;
+					}
+					$schange = 0 unless( defined( $schange ) and $schange );
+					$sstep = 0 unless( defined( $sstep ) and $sstep );
+
+					my $sv;
+					if( defined( $shotfix ) and $shotfix ) {
+						$sv = "$scode.$schange.$sstep.$shotfix";
+					} else {
+						$sv = "$scode.$schange.$sstep";
+					}
+
+					# Either we lack a hotfix version and
+					# so the optional '.0' may apply, or we
+					# have a hotfix version and so valid
+					# metadata can only match without an
+					# extension.
+
 					#if( /^$schmversion$/ ~~ $metadataversions )
-					if( defined( $schmversion ) and ( qr/^$schmversion$/ |M| $metadataversions ) ) {
+					if( defined( $sv ) and ( qr/^$sv(?:\.0+)?$/ |M| $metadataversions ) ) {
 						if( $pretend ) {
 							if( $force ) {
 								warn( "!> File-name schema version '$schmversion' has already been applied to this database for file '$schmfile' - would forcibly re-apply ...\n" );
