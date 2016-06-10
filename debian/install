@@ -1,8 +1,9 @@
 bin/applyschema.sh usr/local/bin
 #bin/dbbackup.sh usr/local/sbin
+#bin/dropschema.sh usr/local/sbin
 #bin/listschema.sh usr/local/bin
 bin/myway.pl usr/local/bin
 #bin/run-dbbackup.sh usr/local/sbin
 #bin/runrepl.sh usr/local/sbin
-conf/schema.conf etc
-conf/schema.example.conf etc
+conf/schema.conf etc/dbtools
+conf/schema.example.conf etc/dbtools

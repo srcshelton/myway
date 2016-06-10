@@ -2,19 +2,34 @@
 
 # stdlib.sh should be in /usr/local/lib/stdlib.sh, which can be found as
 # follows by scripts located in /usr/local/{,s}bin/...
-std_LIB="stdlib.sh"
-for std_LIBPATH in \
-	"." \
-	"$( dirname "$( type -pf "${std_LIB}" 2>/dev/null )" )" \
-	"$( readlink -e "$( dirname -- "${BASH_SOURCE:-${0:-.}}" )/../lib" )" \
-	"/usr/local/lib" \
-	${FPATH:+${FPATH//:/ }} \
-	${PATH:+${PATH//:/ }}
+declare std_LIB="stdlib.sh"
+for std_LIBPATH in							\
+	"$( dirname -- "${BASH_SOURCE:-${0:-.}}" )"			\
+	"."								\
+	"$( dirname -- "$( type -pf "${std_LIB}" 2>/dev/null )" )"	\
+	"$( dirname -- "${BASH_SOURCE:-${0:-.}}" )/../lib"		\
+	"/usr/local/lib"						\
+	 ${FPATH:+${FPATH//:/ }}					\
+	 ${PATH:+${PATH//:/ }}
 do
 	if [[ -r "${std_LIBPATH}/${std_LIB}" ]]; then
 		break
 	fi
 done
+
+# Attempt to use colourised output if the environment indicates that this is
+# an appropriate choice...
+[[ -n "${LS_COLORS:-}" ]] && \
+	export STDLIB_WANT_COLOUR="${STDLIB_WANT_COLOUR:-1}"
+
+# We want the non if-then-else functionality here - the third element should be
+# executed if either of the first two fail...
+#
+# N.B. The shellcheck 'source' option is only valid with shellcheck 0.4.0 and
+#      later...
+#
+# shellcheck disable=SC2015
+# shellcheck source=/usr/local/lib/stdlib.sh
 [[ -r "${std_LIBPATH}/${std_LIB}" ]] && source "${std_LIBPATH}/${std_LIB}" || {
 	echo >&2 "FATAL:  Unable to source ${std_LIB} functions"
 	exit 1
@@ -58,12 +73,13 @@ function lock() {
 	return 128
 } # lock
 
+# shellcheck disable=SC2155
 function main() {
-	local myway="$( source "${std_LIBPATH}/${std_LIB}" 2>/dev/null ; std::requires --path "${SCRIPT}" )"
+	local myway="$( std::requires --path "${SCRIPT}" )"
 
 	local truthy="^(on|y(es)?|true|1)$"
 	local falsy="^(off|n(o)?|false|0)$"
-	local silentfilter='^((Useless|Use of|Cannot parse|!>) |\s*$)'
+	#local silentfilter='^((Useless|Use of|Cannot parse|!>) |\s*$)'
 
 	local actualpath filename
 	local lockfile="/var/lock/${NAME}.lock"
@@ -75,7 +91,7 @@ function main() {
 		"execute - please confirm that all required perl modules are" \
 		"available"
 	# Alternatively...
-	# eval "$( source "${std_LIBPATH}/${std_LIB}" 2>/dev/null ; std::requires --path "perl" ) -c ${myway}" || die "${myway} is failing to compile - please confirm that all required perl modules are available"
+	# eval "$( std::requires --path "perl" ) -c ${myway}" || die "${myway} is failing to compile - please confirm that all required perl modules are available"
 
 	local version="$( ${myway} --version 2>/dev/null | rev | cut -d' '  -f 1 | rev | cut -d'.' -f 1-3 )"
 	if [[ "${version}" != "${COMPATIBLE}" ]]; then
@@ -182,18 +198,19 @@ function main() {
 		die "Options --databases and --clusters are mutually exclusive"
 	fi
 
-	for filename in "${filename:-}" /etc/iod/schema.conf /etc/schema.conf ~/schema.conf "$( dirname "$( readlink -e "${0}" )" )"/schema.conf; do
-		[[ -r "${filename:-}" ]] && break
-	done
+	#for filename in "${filename:-}" /etc/iod/schema.conf /etc/schema.conf ~/schema.conf "$( dirname "$( readlink -e "${0}" )" )"/schema.conf; do
+	#	[[ -r "${filename:-}" ]] && break
+	#done
+	filename="$( std::findfile -app dbtools -name schema.conf -dir /etc ${filename:+-default "${filename}"} )"
 	if [[ ! -r "${filename}" ]]; then
 		die "Cannot read configuration file"
 	else
 		(( silent )) || info "Using configuration file '${filename}' ..."
 	fi
 
-	local defaults="$( source "${std_LIBPATH}/${std_LIB}" 2>/dev/null ; std::getfilesection "${filename}" "DEFAULT" | sed -r 's/#.*$// ; /^[^[:space:]]+\.[^[:space:]]+\s*=/s/\./_/' | grep -Ev '^\s*$' | sed -r 's/\s*=\s*/=/' )"
-	local hosts="$( source "${std_LIBPATH}/${std_LIB}" 2>/dev/null ; std::getfilesection "${filename}" "CLUSTERHOSTS" | sed -r 's/#.*$// ; /^[^[:space:]]+\.[^[:space:]]+\s*=/s/\./_/' | grep -Ev '^\s*$' | sed -r 's/\s*=\s*/=/' )"
-	local databases="$( source "${std_LIBPATH}/${std_LIB}" 2>/dev/null ; std::getfilesection "${filename}" "DATABASES" | sed -r 's/#.*$// ; /^[^[:space:]]+\.[^[:space:]]+\s*=/s/\./_/' | grep -Ev '^\s*$' | sed -r 's/\s*=\s*/=/' )"
+	local defaults="$( std::getfilesection "${filename}" "DEFAULT" | sed -r 's/#.*$// ; /^[^[:space:]]+\.[^[:space:]]+\s*=/s/\./_/' | grep -Ev '^\s*$' | sed -r 's/\s*=\s*/=/' )"
+	local hosts="$( std::getfilesection "${filename}" "CLUSTERHOSTS" | sed -r 's/#.*$// ; /^[^[:space:]]+\.[^[:space:]]+\s*=/s/\./_/' | grep -Ev '^\s*$' | sed -r 's/\s*=\s*/=/' )"
+	local databases="$( std::getfilesection "${filename}" "DATABASES" | sed -r 's/#.*$// ; /^[^[:space:]]+\.[^[:space:]]+\s*=/s/\./_/' | grep -Ev '^\s*$' | sed -r 's/\s*=\s*/=/' )"
 
 	[[ -n "${databases:-}" ]] || die "No databases defined in '${filename}'"
 
@@ -205,7 +222,7 @@ function main() {
 		local name="$( grep -om 1 "^${db}$" <<<"${databases}" )"
 		[[ -n "${name:-}" ]] || die "Database '${db}' not defined in '${filename}'"
 
-		local details="$( source "${std_LIBPATH}/${std_LIB}" 2>/dev/null ; std::getfilesection "${filename}" "${name}" | sed -r 's/#.*$// ; /^[^[:space:]]+\.[^[:space:]]+\s*=/s/\./_/' | grep -Ev '^\s*$' | sed -r 's/\s*=\s*/=/' )"
+		local details="$( std::getfilesection "${filename}" "${name}" | sed -r 's/#.*$// ; /^[^[:space:]]+\.[^[:space:]]+\s*=/s/\./_/' | grep -Ev '^\s*$' | sed -r 's/\s*=\s*/=/' )"
 		[[ -n "${details:-}" ]] || die "Database '${db}' lacks a configuration block in '${filename}'"
 		debug "${db}:\n${details}\n"
 
@@ -244,7 +261,6 @@ function main() {
 	eval "${defaults}"
 	eval "${hosts}"
 
-	local database
 	for db in ${databases}; do
 		# Run the block below in a sub-shell so that we don't have to
 		# manually sanitise the environment on each iteration.
@@ -253,10 +269,10 @@ function main() {
 
 		if [[ -n "${dblist:-}" ]] && ! grep -q ",${db}," <<<",${dblist},"; then
 			(( silent )) || info "Skipping deselected database '${db}' ..."
-			continue
+			exit 0 # continue
 		fi
 
-		local details="$( source "${std_LIBPATH}/${std_LIB}" 2>/dev/null ; std::getfilesection "${filename}" "${db}" | sed -r 's/#.*$// ; /^[^[:space:]]+\.[^[:space:]]+\s*=/s/\./_/' | grep -Ev '^\s*$' | sed -r 's/\s*=\s*/=/' )"
+		local details="$( std::getfilesection "${filename}" "${db}" | sed -r 's/#.*$// ; /^[^[:space:]]+\.[^[:space:]]+\s*=/s/\./_/' | grep -Ev '^\s*$' | sed -r 's/\s*=\s*/=/' )"
 		[[ -n "${details:-}" ]] || die "Database '${db}' lacks a configuration block in '${filename}'"
 		debug "${db}:\n${details}\n"
 
@@ -264,7 +280,7 @@ function main() {
 
 		if [[ -n "${clist:-}" ]] && ! grep -q ",${cluster:-.*}," <<<",${clist},"; then
 			(( silent )) || info "Skipping database '${db}' from deselected cluster '${cluster:-all}' ..."
-			continue
+			exit 0 # continue
 		fi
 
 		if grep -Eiq "${falsy}" <<<"${managed:-}"; then
@@ -453,12 +469,15 @@ function main() {
 		elif (( quiet )); then
 			# Loses return code to grep :(
 			#${myway} "${params[@]}" "${extraparams[@]}" --init 2>&1 >/dev/null | grep -Ev --line-buffered "${silentfilter}"
+
+			# Throw away stdout but redirect stderr to stdout...
+			# shellcheck disable=SC2069
 			${myway} "${params[@]}" "${extraparams[@]}" --init 2>&1 >/dev/null
 		else
 			${myway} "${params[@]}" "${extraparams[@]}" --init
 		fi
 		result=${?}
-		if (( ${result} )); then
+		if (( result )); then
 			if (( allowfail )); then
 				info "Initialisation of database '${db}' (${myway} ${params[*]} ${extraparams[*]} --init) expected failure: ${result}"
 			else
@@ -494,9 +513,9 @@ function main() {
 				procedurepath="${path}"/schema/"${db}"/procedures
 			fi
 
-			find "${procedurepath}"/ -mindepth 1 -maxdepth 1 -type d -name "${db}" 2>/dev/null | "${reorder[@]}" | while read -r path; do
-				extraparams=()
-				extraparams+=( --scripts "${path}" )
+			local ppath
+			find "${procedurepath}"/ -mindepth 1 -maxdepth 1 -type d -name "${db}" 2>/dev/null | "${reorder[@]}" | while read -r ppath; do
+				extraparams=( --scripts "${ppath}" )
 				#if (( ${#extra[@]} )); then
 				if [[ -n "${extra[*]:-}" ]]; then
 					extraparams+=( "${extra[@]}" )
@@ -505,7 +524,7 @@ function main() {
 					extraparams+=( "--dry-run" )
 				fi
 
-				(( silent )) || info "Launching '${SCRIPT}' with path '${path}' to update Stored Procedures for database '${db}' ..."
+				(( silent )) || info "Launching '${SCRIPT}' with path '${ppath}' to update Stored Procedures for database '${db}' ..."
 
 				debug "About to apply Stored Procedures: ${myway} ${params[*]} ${procparams[*]} ${extraparams[*]} ${extra[*]:-}"
 				if (( silent )); then
@@ -513,12 +532,15 @@ function main() {
 				elif (( quiet )); then
 					# Loses return code to grep :(
 					#${myway} "${params[@]}" "${procparams[@]}" "${extraparams[@]}" 2>&1 >/dev/null | grep -Ev --line-buffered "${silentfilter}"
+
+					# Throw away stdout but redirect stderr to stdout...
+					# shellcheck disable=SC2069
 					${myway} "${params[@]}" "${procparams[@]}" "${extraparams[@]}" 2>&1 >/dev/null
 				else
 					${myway} "${params[@]}" "${procparams[@]}" "${extraparams[@]}"
 				fi
 				result=${?}
-				if (( ${result} )); then
+				if (( result )); then
 					if (( keepgoing )); then
 						warn "Loading of stored procedures to database '${db}' (${myway} ${params[*]} ${procparams[*]} ${extraparams[*]}${extra[*]:+ ${extra[*]}}) failed: ${result}"
 						output "\n\nContinuing to next database, if any ...\n"
@@ -555,12 +577,15 @@ function main() {
 		elif (( quiet )); then
 			# Loses return code to grep :(
 			#${myway} "${params[@]}" "${extraparams[@]}" 2>&1 >/dev/null | grep -Ev --line-buffered "${silentfilter}"
+
+			# Throw away stdout but redirect stderr to stdout...
+			# shellcheck disable=SC2069
 			${myway} "${params[@]}" "${extraparams[@]}" 2>&1 >/dev/null
 		else
 			${myway} "${params[@]}" "${extraparams[@]}"
 		fi
 		result=${?}
-		if (( ${result} )); then
+		if (( result )); then
 			if (( keepgoing )); then
 				warn "Migration of database '${db}' (${myway} ${params[*]} ${extraparams[*]}) failed: ${result}"
 				output "\n\nContinuing to next database, if any ...\n"
@@ -574,6 +599,8 @@ function main() {
 
 		(( founddb && rc )) && exit 4
 		(( founddb && !( rc ) )) && exit 3
+
+		# shellcheck disable=SC2015
 		(( rc )) && false || true
 
 		)
