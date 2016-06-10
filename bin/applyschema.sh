@@ -514,7 +514,7 @@ function main() {
 			fi
 
 			local ppath
-			find "${procedurepath}"/ -mindepth 1 -maxdepth 1 -type d -name "${db}" 2>/dev/null | "${reorder[@]}" | while read -r ppath; do
+			while read -r ppath; do
 				extraparams=( --scripts "${ppath}" )
 				#if (( ${#extra[@]} )); then
 				if [[ -n "${extra[*]:-}" ]]; then
@@ -549,7 +549,7 @@ function main() {
 						die "Loading of stored procedures to database '${db}' (${myway} ${params[*]} ${extraparams[*]}${extra[*]:+ ${extra[*]}}) failed: ${result}"
 					fi
 				fi
-			done
+			done < <( find "${procedurepath}"/ -mindepth 1 -maxdepth 1 -type d -name "${db}" 2>/dev/null | "${reorder[@]}" )
 
 			debug "Stored Procedures loaded for database '${db}'\n"
 		fi
