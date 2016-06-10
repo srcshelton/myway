@@ -4348,21 +4348,21 @@ EOF
 
 	if( defined( $database ) ) {
 		# I can't imagine that this will change any time soon, but I
-		# guess it's not impossible that at some future time `maria`
+		# guess it's not impossible that at some future time `mariadb`
 		# is the system database... ?
 		my $systemdb = 'mysql';
 
-		print( "\n=> Connecting to database `$systemdb` ...\n" );
+		print( "\n=> Connecting to system database `$systemdb` ...\n" );
 		my $systemdsn = "DBI:mysql:database=$systemdb;host=$host;port=$port";
 		my $systemdbh;
 		my $systemerror = dbopen( \$systemdbh, $systemdsn, $user, $password );
 		die( $systemerror ."\n" ) if $systemerror;
 
-		print( "=> Creating database `$systemdb` if necessary ...\n" );
+		print( "=> Creating database `$database` if necessary ...\n" );
 		die( "$fatal Database creation error\n" ) if( not( dosql( \$systemdbh, "CREATE DATABASE IF NOT EXISTS `$database`" ) ) );
 
 		#dbclose( $systemdbh );
-		print( "=> Complete - disconnecting from database ...\n" );
+		print( "=> Complete - disconnecting from system database ...\n" );
 		$systemdbh -> disconnect;
 	}
 
@@ -5341,11 +5341,11 @@ sub applyschema( $$$$;$ ) { # {{{
 				my( $mcode, $mchange, $mstep, $mhotfix ) = ( $match =~ m/^([[:xdigit:]]+)(?:\.(\d+)(?:\.(\d+)(?:\.(\d+))?)?)?$/ );
 				my( $lcode, $lchange, $lstep, $lhotfix ) = ( $limit =~ m/^([[:xdigit:]]+)(?:\.(\d+)(?:\.(\d+)(?:\.(\d+))?)?)?$/ );
 
-				if( not( defined( $mcode ) and $mcode ) ) {
+				if( not( defined( $mcode ) and ( ( 0 == $mcode ) or $mcode ) ) ) {
 					warn( "!> Could not determine major version number from filename '$schmfile' version '$match'\n" );
 					$mcode = 0;
 				}
-				if( not( defined( $lcode ) and $lcode ) ) {
+				if( not( defined( $lcode ) and ( ( 0 == $lcode ) or $lcode ) ) ) {
 					warn( "!> Could not determine major version number from specified limit '$limit'\n" );
 					$lcode = 0;
 				}
@@ -5435,7 +5435,7 @@ sub applyschema( $$$$;$ ) { # {{{
 					my $metadataversions = getsqlvalues( \$dbh, "SELECT DISTINCT `version` FROM `$verticadb$flywaytablename` WHERE `success` IS TRUE" );
 
 					my( $scode, $schange, $sstep, $shotfix ) = ( $schmversion =~ m/^([[:xdigit:]]+)(?:\.(\d+)(?:\.(\d+)(?:\.(\d+))?)?)?$/ );
-					if( not( defined( $scode ) and $scode ) ) {
+					if( not( defined( $scode ) and ( ( 0 == $scode ) or $scode ) ) ) {
 						warn( "!> Could not determine major version number from filename '$schmfile' version '$schmversion'\n" );
 						$scode = 0;
 					}
@@ -5892,11 +5892,11 @@ SQL
 							my( $mcode, $mchange, $mstep, $mhotfix ) = ( $match =~ m/^([[:xdigit:]]+)(?:\.(\d+)(?:\.(\d+)(?:\.(\d+))?)?)?$/ );
 							my( $lcode, $lchange, $lstep, $lhotfix ) = ( $limit =~ m/^([[:xdigit:]]+)(?:\.(\d+)(?:\.(\d+)(?:\.(\d+))?)?)?$/ );
 
-							if( not( defined( $mcode ) and $mcode ) ) {
+							if( not( defined( $mcode ) and ( ( 0 == $mcode ) or $mcode ) ) ) {
 								warn( "!> Could not determine major version number from filename '$schmfile' version '$match'\n" );
 								$mcode = 0;
 							}
-							if( not( defined( $lcode ) and $lcode ) ) {
+							if( not( defined( $lcode ) and ( ( 0 == $lcode ) or $lcode ) ) ) {
 								warn( "!> Could not determine major version number from specified limit '$limit'\n" );
 								$lcode = 0;
 							}
