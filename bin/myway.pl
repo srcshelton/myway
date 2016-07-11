@@ -2775,7 +2775,7 @@ sub decompressquotes( $$ ) { # {{{
 			my $match = $str[ $index ];
 			if( defined( $match ) and length( $match ) ) {
 				if( $line =~ s/__MW_STR_${index}__/$match/ ) {
-					pdebug( "  Q Replaced '__MW_STR_${index}__' wth '$match' to give '$line'" );
+					pdebug( "  Q Replaced '__MW_STR_${index}__' with '$match' to give '$line'" );
 					$strchanged = TRUE;
 					@{ $state -> { 'str' } }[ $index ] = undef;
 				}
@@ -3305,8 +3305,8 @@ sub processline( $$;$$ ) { # {{{
 	# a second delimiter - an entirely safe operation - which causes
 	# 'foreach' to process the intervening space character!
 	my $trailingdelim = FALSE;
-	if( $line =~ m/^\s*$delim\s*$/ ) {
-		pdebug( "  S Expanding trailing delimiter '$delim'..." );
+	if( $line =~ m/^\s*\Q$delim\E\s*$/ ) {
+		pdebug( "  S Expanding line '$line' with trailing delimiter '$delim'..." );
 		$line = $delim . ' ' . $delim;
 		$trailingdelim = TRUE;
 	}
@@ -3373,6 +3373,8 @@ sub processline( $$;$$ ) { # {{{
 			# $item contains a complete SQL statement, or the end
 			# of a previously started one...
 			#
+			#pdebug( "  S Line '$filteredline' contains delimiter '$delim' and so is a complete statement, or the end of a previously started statement..." );
+
 			my( $pre, $post ) = split( /\Q$delim\E/, $filteredline, 2 );
 			$pre =~ s/^\s+//; $pre =~ s/\s+$//;
 			$post =~ s/^\s+//; $post =~ s/\s+$//;
@@ -3507,7 +3509,7 @@ sub processline( $$;$$ ) { # {{{
 					warn( "$warning Not parsing prohibited command '$command'" . ( ( defined( $state -> { 'file' } ) and length( $state -> { 'file' } ) ) ? " from file '" . $state -> { 'file' } . "'" : '' ) . "\n" );
 				}
 
-			} elsif( $command =~ m/^\s*$delim\s*$/ ) {
+			} elsif( $command =~ m/^\s*\Q$delim\E\s*$/ ) {
 				pdebug( "  S Not parsing lone delimiter from '$command', but pushing statements array ..." );
 				pushstate( $data, $state -> { 'statements' } );
 
@@ -6755,7 +6757,7 @@ SQL
 					# 'DELIMITER' isn't a reserved-word,
 					# but /really/ should be!
 					#if( not( $line =~ m/^\s*DELIMITER\s/i ) ) {
-					if( not( $line =~ m/(?:^\s*|$delim\s+)DELIMITER\s/i ) ) {
+					if( not( $line =~ m/(?:^\s*|\Q$delim\E\s+)DELIMITER\s/i ) ) {
 						$sql .= ' ' . $line;
 					}
 				}
