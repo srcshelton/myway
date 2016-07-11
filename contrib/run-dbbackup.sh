@@ -44,17 +44,18 @@ function lock() {
 function main() {
 	local dirname="${1:-/backup}"
 	local db="${2:-}"
+	local pass="${3:-${PASSWD:-}}"
 
 	local lockfile="/var/lock/${NAME}.lock"
 
 	local user=root
-	local pass=mysupersecretpassword
 	local host=localhost
 
 	local -i rc
 
 	[[ -x /usr/local/sbin/dbbackup.sh ]] || die "Backup script 'dbbackup.sh' does not exist"
 	[[ -d "${dirname}" ]] || die "Backup directory '${dirname}' does not exist"
+	[[ -n "${pass:-}" ]] || die "No password specified, aborting"
 
 	# Ensure that 'fuser' will work...
 	(( EUID )) && die "This script must be run with super-user privileges"

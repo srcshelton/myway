@@ -4,12 +4,18 @@ std_DEBUG="${DEBUG:-0}"
 std_TRACE="${TRACE:-0}"
 
 dbuser="root"
-dbpass="mysupersecretpassword"
+dbpass="${1:-${PASSWD:-}}"
+
 declare -i timeout="${TIMEOUT:-5}"
 
 (( timeout < 5 )) && timeout=5
 
 (( std_TRACE )) && set -o xtrace
+
+if ! [[ -n "${dbpass:-}" ]]; then
+	echo >&2 "FATAL: No password specified, aborting"
+	exit 1
+fi
 
 while true; do
 	if
