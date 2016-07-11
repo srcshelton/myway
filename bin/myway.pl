@@ -3689,9 +3689,10 @@ sub processfile( $$;$$$$ ) { # {{{
 		if( defined( $marker ) and length( $marker ) ) {
 			$substitution = '' unless( defined( $substitution ) and length( $substitution ) );
 
-			my $original = $line;
+			( my $original = $line ) =~ s/^\s+//;
 			if( $line =~ s/$marker/$substitution/ ) {
-				print( "!> Substituted '$marker' for '$substitution' in string '$original'\n" ) unless( $reduceoutput );
+				( my $new = $line ) =~ s/^\s+//;
+				print( "!> Substituted '$marker' for '$substitution' in string '$original' to result in '$new'\n" ) unless( $reduceoutput );
 			}
 		}
 		# NB: $. contains the last-read line-number
@@ -5309,9 +5310,11 @@ sub applyschema( $$$$;$ ) { # {{{
 			}
 		}
 		if( defined( $procedureversion ) and ( $procedureversion =~ m/_v(\d+_\d+)_\d+/ ) ) {
-			( my $version = $1 ) =~ s/_/./g;
+			my $version = $1;
 			$procedureversion =~ m/_v\d+_\d+_(\d+)/;
 			my $hotfix = $1;
+			$procedureversion =~ s/_v${version}_${hotfix}/_v${version}/;
+			$version =~ s/_/./g;
 			warn( "!> Metadata contains hotfix version $hotfix to base version $version\n" ) if( $first );
 		}
 
