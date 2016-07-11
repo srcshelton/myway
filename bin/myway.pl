@@ -4974,9 +4974,9 @@ sub migratemetadataschema( $;$$$ ) { # {{{
 		}
 	} # }}}
 
-	my $mywayversion = getsqlvalue( $dbh, "SELECT DISTINCT `myway_version` FROM `$mywayhistoryname` WHERE `active` IS TRUE ORDER BY `myway_version` DESC LIMIT 1" );
-	my $flywayversion = getsqlvalue( $dbh, "SELECT DISTINCT `flyway_compatible` FROM `$mywayhistoryname` WHERE `active` IS TRUE ORDER BY `myway_version` DESC LIMIT 1" );
-	my $init = getsqlvalue( $dbh, "SELECT DISTINCT `init_string` FROM `$mywayhistoryname` WHERE `active` IS TRUE ORDER BY `myway_version` DESC LIMIT 1" );
+	my $mywayversion = getsqlvalue( $dbh, "SELECT DISTINCT `myway_version` FROM `$verticadb$mywayhistoryname` WHERE `active` IS TRUE ORDER BY `myway_version` DESC LIMIT 1" );
+	my $flywayversion = getsqlvalue( $dbh, "SELECT DISTINCT `flyway_compatible` FROM `$verticadb$mywayhistoryname` WHERE `active` IS TRUE ORDER BY `myway_version` DESC LIMIT 1" );
+	my $init = getsqlvalue( $dbh, "SELECT DISTINCT `init_string` FROM `$verticadb$mywayhistoryname` WHERE `active` IS TRUE ORDER BY `myway_version` DESC LIMIT 1" );
 
 	pdebug( "Metadata: myway '" . ( defined( $mywayversion ) ? $mywayversion : '<not set>' ) . "', flyway '" . ( defined( $flywayversion ) ? $flywayversion : '<not set>' ) . "', init string '" . ( defined( $init ) ? $init : '<not set>' ) . "'" );
 
