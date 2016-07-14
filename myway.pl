@@ -2350,6 +2350,7 @@ our $tokenise = FALSE;
 # XXX: We're seeing random disconnects after successful commands with Vertica
 #      so this provides a temporary way to alert and attempt to reconnect...
 our $connection;
+our $retries = 0;
 #      ... and, of course, Vertica is very special :(
 our $searchpath;
 
@@ -4461,6 +4462,10 @@ sub dosql( $$ ) { # {{{
 	#}
 	return( undef ) unless( defined( $st ) and length( $st ) );
 
+	if( $retries ) {
+		warn( "\n$warning Database connection failed $retries time(s) when directly executing statement \"$st\"\n" );
+	}
+
 	if( $st =~ m/__MW_(STR|L?TOK|LITERAL_QUOTE_)_/ ) {
 		warn( "\n$warning Unexpended token detected in `$st`\n" );
 		#my $trace = Devel::StackTrace -> new;
@@ -4538,7 +4543,9 @@ sub dosql( $$ ) { # {{{
 				die( "Trivial command following error failed" );
 			}
 
+			$retries ++;
 			checkdbconnection( $dbh ) or return( dosql( $dbh, $st ) );
+			$retries = 0;
 
 			return( TRUE );
 
@@ -4547,7 +4554,9 @@ sub dosql( $$ ) { # {{{
 			my $errstr = ${ $dbh } -> errstr();
 			my $state = ${ $dbh } -> state();
 
+			$retries ++;
 			checkdbconnection( $dbh ) or return( dosql( $dbh, $st ) );
+			$retries = 0;
 
 			my $error = join( ' ', split( /\s*\n+\s*/, $errstr ) );
 			pdebug( "Restoring state $state (\"$error\"); omitting error value '$err'" );
@@ -4558,7 +4567,10 @@ sub dosql( $$ ) { # {{{
 		}
 	} else {
 
+		$retries ++;
 		checkdbconnection( $dbh ) or return( dosql( $dbh, $st ) );
+		$retries = 0;
+
 		return( TRUE );
 	}
 
@@ -4581,6 +4593,10 @@ sub preparesql( $$ ) { # {{{
 	#	die( "Not a database handle or handle state in error: $@" );
 	#}
 	return( undef ) unless( defined( $st ) and length( $st ) );
+
+	if( $retries ) {
+		warn( "\n$warning Database connection failed $retries time(s) when preparing statement \"$st\"\n" );
+	}
 
 	if( $st =~ m/^\s*DROP\s+(?:TABLE|DATABASE)\s/i ) {
 		if( $allowunsafeoperations ) {
@@ -4623,13 +4639,19 @@ sub preparesql( $$ ) { # {{{
 			pdebug( "Driver has set SQL state '" . ${ $dbh } -> state() . "'\n" );
 		}
 
+		$retries ++;
 		checkdbconnection( $dbh ) or return( preparesql( $dbh, $st ) );
+		$retries = 0;
+
 		return( undef );
 	} else {
 		# N.B.: $sth -> finish() must be called prior to the next SQL
 		#       interaction!
 
+		$retries ++;
 		checkdbconnection( $dbh ) or return( preparesql( $dbh, $st ) );
+		$retries = 0;
+
 		return( $sth );
 	}
 
@@ -4659,6 +4681,14 @@ sub executesql( $$$;@ ) { # {{{
 		pdebug( 'SQL: Preparing to execute query: "' . join( ' ', split( /\s*\n+\s*/, $st ) ) . '"' );
 		$sth = preparesql( $dbh, $st );
 		return( undef ) unless( defined( $sth ) and $sth );
+	}
+
+	if( $retries ) {
+		if( defined( $st ) and length( $st )  ) {
+			warn( "\n$warning Database connection failed $retries time(s) when executing statement \"$st\"\n" );
+		} else {
+			warn( "\n$warning Database connection failed $retries time(s) when executing prepared statement \"" . ${ $dbh } -> { 'Statement' } . "\"\n" );
+		}
 	}
 
 	pdebug( 'SQL: Executing: "' . join( ' ', split( /\s*\n+\s*/, ${ $dbh } -> { 'Statement' } ) ) . '"' ) if( defined( ${ $dbh } -> { 'Statement' } ) );
@@ -4707,14 +4737,20 @@ sub executesql( $$$;@ ) { # {{{
 			}
 		}
 
+		$retries ++;
 		checkdbconnection( $dbh ) or return( executesql( $dbh, $sth, $st, @values ) );
+		$retries = 0;
+
 		return( undef );
 
 	} else {
 		# N.B.: $sth -> finish() must be called prior to the next SQL
 		#       interaction!
 
+		$retries ++;
 		checkdbconnection( $dbh ) or return( executesql( $dbh, $sth, $st, @values ) );
+		$retries = 0;
+
 		return( $sth );
 	}
 
