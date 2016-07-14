@@ -4437,8 +4437,9 @@ sub checkdbconnection( $ ) { # {{{
 		dosql( $dbh, $searchpath ) or die( "Unable to restore database connetion state.\n" );
 	}
 	my $text = 'Database responding';
-	my $result = getsqlvalue( $dbh, "SELECT '($text)'" ) or die( "Database remains unusable.\n" );
-	die( "Database remains unusable ('$result' != '($text)')\n" ) unless( $result eq "($text)" );
+	dosql( $dbh, "SELECT '($text) DIRECT'" ) or die( "Database remains unusable.\n" );
+	my $result = getsqlvalue( $dbh, "SELECT '($text) PREPARED'" ) or die( "Database remains unusable.\n" );
+	die( "Database remains unusable ('$result' != '($text)*')\n" ) unless( $result =~ m/^\Q($text)\E/ );
 
 	# XXX: set_err automatically triggers RaiseError/PritnError/PrintWarn if $err is set?
 	${ $dbh } -> set_err( $err, $errstr, $state );
@@ -4544,7 +4545,10 @@ sub dosql( $$ ) { # {{{
 			}
 
 			$retries ++;
-			checkdbconnection( $dbh ) or return( dosql( $dbh, $st ) );
+			if( not( checkdbconnection( $dbh ) ) ) {
+				return( FALSE ) unless( $retries < 4 );
+				return( dosql( $dbh, $st ) );
+			}
 			$retries = 0;
 
 			return( TRUE );
@@ -4555,7 +4559,10 @@ sub dosql( $$ ) { # {{{
 			my $state = ${ $dbh } -> state();
 
 			$retries ++;
-			checkdbconnection( $dbh ) or return( dosql( $dbh, $st ) );
+			if( not( checkdbconnection( $dbh ) ) ) {
+				return( FALSE ) unless( $retries < 4 );
+				return( dosql( $dbh, $st ) );
+			}
 			$retries = 0;
 
 			my $error = join( ' ', split( /\s*\n+\s*/, $errstr ) );
@@ -4568,7 +4575,10 @@ sub dosql( $$ ) { # {{{
 	} else {
 
 		$retries ++;
-		checkdbconnection( $dbh ) or return( dosql( $dbh, $st ) );
+		if( not( checkdbconnection( $dbh ) ) ) {
+			return( FALSE ) unless( $retries < 4 );
+			return( dosql( $dbh, $st ) );
+		}
 		$retries = 0;
 
 		return( TRUE );
@@ -4640,7 +4650,10 @@ sub preparesql( $$ ) { # {{{
 		}
 
 		$retries ++;
-		checkdbconnection( $dbh ) or return( preparesql( $dbh, $st ) );
+		if( not( checkdbconnection( $dbh ) ) ) {
+			return( undef ) unless( $retries < 4 );
+			return( preparesql( $dbh, $st ) );
+		}
 		$retries = 0;
 
 		return( undef );
@@ -4649,7 +4662,10 @@ sub preparesql( $$ ) { # {{{
 		#       interaction!
 
 		$retries ++;
-		checkdbconnection( $dbh ) or return( preparesql( $dbh, $st ) );
+		if( not( checkdbconnection( $dbh ) ) ) {
+			return( undef ) unless( $retries < 4 );
+			return( preparesql( $dbh, $st ) );
+		}
 		$retries = 0;
 
 		return( $sth );
@@ -4738,7 +4754,10 @@ sub executesql( $$$;@ ) { # {{{
 		}
 
 		$retries ++;
-		checkdbconnection( $dbh ) or return( executesql( $dbh, $sth, $st, @values ) );
+		if( not( checkdbconnection( $dbh ) ) ) {
+			return( undef ) unless( $retries < 4 );
+			return( executesql( $dbh, $sth, $st, @values ) );
+		}
 		$retries = 0;
 
 		return( undef );
@@ -4748,7 +4767,10 @@ sub executesql( $$$;@ ) { # {{{
 		#       interaction!
 
 		$retries ++;
-		checkdbconnection( $dbh ) or return( executesql( $dbh, $sth, $st, @values ) );
+		if( not( checkdbconnection( $dbh ) ) ) {
+			return( undef ) unless( $retries < 4 );
+			return( executesql( $dbh, $sth, $st, @values ) );
+		}
 		$retries = 0;
 
 		return( $sth );
