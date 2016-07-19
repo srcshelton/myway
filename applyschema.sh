@@ -437,7 +437,7 @@ function main() {
 		# Initialise databases first, as they must be present before
 		# Stored Procedures are loaded.
 		#
-		(( silent )) || info "Launching '${SCRIPT}' to perform database initialisation for database '${db}' ..."
+		(( silent )) || info "Launching '${SCRIPT}' to perform database initialisation for database '${db}' ${version_max:+with target version '${version_max}' }..."
 		extraparams=()
 		if [[ -n "${actualpath:-}" ]]; then
 			extraparams=( --scripts "${actualpath}/"*.sql )
@@ -464,6 +464,7 @@ function main() {
 				allowfail=1
 			fi
 		fi
+		local response=""
 		if (( silent )); then
 			${myway} "${params[@]}" "${extraparams[@]}" --init >/dev/null 2>&1
 		elif (( quiet )); then
@@ -472,130 +473,135 @@ function main() {
 
 			# Throw away stdout but redirect stderr to stdout...
 			# shellcheck disable=SC2069
-			${myway} "${params[@]}" "${extraparams[@]}" --init 2>&1 >/dev/null
+			response="$( ${myway} "${params[@]}" "${extraparams[@]}" --init 2>&1 >/dev/null )"
 		else
 			${myway} "${params[@]}" "${extraparams[@]}" --init
 		fi
 		result=${?}
 		if (( result )); then
 			if (( allowfail )); then
-				info "Initialisation of database '${db}' (${myway} ${params[*]} ${extraparams[*]} --init) expected failure: ${result}"
+				(( quiet || silent )) || info "Initialisation of database '${db}' (${myway} ${params[*]} ${extraparams[*]} --init) expected failure: ${result}"
 			else
 				if (( keepgoing )); then
 					warn "Initialisation of database '${db}' (${myway} ${params[*]} ${extraparams[*]} --init) failed: ${result}"
 					output "\n\nContinuing to next database, if any ...\n"
 					rc=1
 				else
+					output >&2 "${response}"
 					die "Initialisation of database '${db}' (${myway} ${params[*]} ${extraparams[*]} --init) failed: ${result}"
 				fi
 			fi
 		fi
 
-		# Load stored-procedures next, as references to tables aren't
-		# checked until the SP is actually executed, but SPs may be
-		# invoked as part of schema deployment.
-		#
-		if grep -Eiq "${truthy}" <<<"${procedures:-}"; then
-			local -a procparams=( --mode procedure )
-			if [[ -n "${procedures_marker:-}" ]]; then
-				procparams+=( --substitute --marker "${procedures_marker}" )
-			else
-				procparams+=( --substitute )
-			fi
-
-			local -a reorder=( sort -V )
-			if (( novsort )); then
-				reorder=( tac )
-			fi
-
-			local procedurepath="${path}/procedures"
-			if [[ -d "${path}"/schema/"${db}"/procedures ]]; then
-				procedurepath="${path}"/schema/"${db}"/procedures
-			fi
-
-			local ppath
-			while read -r ppath; do
-				extraparams=( --scripts "${ppath}" )
-				#if (( ${#extra[@]} )); then
-				if [[ -n "${extra[*]:-}" ]]; then
-					extraparams+=( "${extra[@]}" )
-				fi
-				if (( dryrun )); then
-					extraparams+=( "--dry-run" )
-				fi
-
-				(( silent )) || info "Launching '${SCRIPT}' with path '${ppath}' to update Stored Procedures for database '${db}' ..."
-
-				debug "About to apply Stored Procedures: ${myway} ${params[*]} ${procparams[*]} ${extraparams[*]} ${extra[*]:-}"
-				if (( silent )); then
-					${myway} "${params[@]}" "${procparams[@]}" "${extraparams[@]}" >/dev/null 2>&1
-				elif (( quiet )); then
-					# Loses return code to grep :(
-					#${myway} "${params[@]}" "${procparams[@]}" "${extraparams[@]}" 2>&1 >/dev/null | grep -Ev --line-buffered "${silentfilter}"
-
-					# Throw away stdout but redirect stderr to stdout...
-					# shellcheck disable=SC2069
-					${myway} "${params[@]}" "${procparams[@]}" "${extraparams[@]}" 2>&1 >/dev/null
+		if ! mysql -u "${dbadmin}" -p"${passwd}" -h "${host}" "${db}" <<<'QUIT' >/dev/null 2>&1; then
+			warn "Skipping further simulation for non-existent database '${db}'"
+		else
+			# Load stored-procedures next, as references to tables aren't
+			# checked until the SP is actually executed, but SPs may be
+			# invoked as part of schema deployment.
+			#
+			if grep -Eiq "${truthy}" <<<"${procedures:-}"; then
+				local -a procparams=( --mode procedure )
+				if [[ -n "${procedures_marker:-}" ]]; then
+					procparams+=( --substitute --marker "${procedures_marker}" )
 				else
-					${myway} "${params[@]}" "${procparams[@]}" "${extraparams[@]}"
+					procparams+=( --substitute )
 				fi
-				result=${?}
-				if (( result )); then
-					if (( keepgoing )); then
-						warn "Loading of stored procedures to database '${db}' (${myway} ${params[*]} ${procparams[*]} ${extraparams[*]}${extra[*]:+ ${extra[*]}}) failed: ${result}"
-						output "\n\nContinuing to next database, if any ...\n"
-						rc=1
-					else
-						die "Loading of stored procedures to database '${db}' (${myway} ${params[*]} ${extraparams[*]}${extra[*]:+ ${extra[*]}}) failed: ${result}"
+
+				local -a reorder=( sort -V )
+				if (( novsort )); then
+					reorder=( tac )
+				fi
+
+				local procedurepath="${path}/procedures"
+				if [[ -d "${path}"/schema/"${db}"/procedures ]]; then
+					procedurepath="${path}"/schema/"${db}"/procedures
+				fi
+
+				local ppath
+				while read -r ppath; do
+					extraparams=( --scripts "${ppath}" )
+					#if (( ${#extra[@]} )); then
+					if [[ -n "${extra[*]:-}" ]]; then
+						extraparams+=( "${extra[@]}" )
 					fi
-				fi
-			done < <( find "${procedurepath}"/ -mindepth 1 -maxdepth 1 -type d -name "${db}" 2>/dev/null | "${reorder[@]}" )
+					if (( dryrun )); then
+						extraparams+=( "--dry-run" )
+					fi
 
-			debug "Stored Procedures loaded for database '${db}'\n"
-		fi
+					(( silent )) || info "Launching '${SCRIPT}' with path '${ppath}' to update Stored Procedures for database '${db}' ..."
 
-		# ... and finally, perform schema deployment.
-		#
-		(( silent )) || info "Launching '${SCRIPT}' to perform database migration for database '${db}' ..."
-		extraparams=()
-		if [[ -n "${actualpath:-}" ]]; then
-			extraparams=( --scripts "${actualpath}/"*.sql )
-		else
-			extraparams=( --scripts "${path}/schema/${db}/"*.sql )
-		fi
-		#if (( ${#extra[@]} )); then
-		if [[ -n "${extra[*]:-}" ]]; then
-			extraparams+=( "${extra[@]}" )
-		fi
-		if (( dryrun )); then
-			extraparams+=( "--dry-run" )
-		fi
+					debug "About to apply Stored Procedures: ${myway} ${params[*]} ${procparams[*]} ${extraparams[*]} ${extra[*]:-}"
+					if (( silent )); then
+						${myway} "${params[@]}" "${procparams[@]}" "${extraparams[@]}" >/dev/null 2>&1
+					elif (( quiet )); then
+						# Loses return code to grep :(
+						#${myway} "${params[@]}" "${procparams[@]}" "${extraparams[@]}" 2>&1 >/dev/null | grep -Ev --line-buffered "${silentfilter}"
 
-		debug "About to apply schema: '${myway} ${params[*]} ${extraparams[*]}'"
-		if (( silent )); then
-			${myway} "${params[@]}" "${extraparams[@]}" >/dev/null 2>&1
-		elif (( quiet )); then
-			# Loses return code to grep :(
-			#${myway} "${params[@]}" "${extraparams[@]}" 2>&1 >/dev/null | grep -Ev --line-buffered "${silentfilter}"
+						# Throw away stdout but redirect stderr to stdout...
+						# shellcheck disable=SC2069
+						${myway} "${params[@]}" "${procparams[@]}" "${extraparams[@]}" 2>&1 >/dev/null
+					else
+						${myway} "${params[@]}" "${procparams[@]}" "${extraparams[@]}"
+					fi
+					result=${?}
+					if (( result )); then
+						if (( keepgoing )); then
+							warn "Loading of stored procedures to database '${db}' (${myway} ${params[*]} ${procparams[*]} ${extraparams[*]}${extra[*]:+ ${extra[*]}}) failed: ${result}"
+							output "\n\nContinuing to next database, if any ...\n"
+							rc=1
+						else
+							die "Loading of stored procedures to database '${db}' (${myway} ${params[*]} ${extraparams[*]}${extra[*]:+ ${extra[*]}}) failed: ${result}"
+						fi
+					fi
+				done < <( find "${procedurepath}"/ -mindepth 1 -maxdepth 1 -type d -name "${db}" 2>/dev/null | "${reorder[@]}" )
 
-			# Throw away stdout but redirect stderr to stdout...
-			# shellcheck disable=SC2069
-			${myway} "${params[@]}" "${extraparams[@]}" 2>&1 >/dev/null
-		else
-			${myway} "${params[@]}" "${extraparams[@]}"
-		fi
-		result=${?}
-		if (( result )); then
-			if (( keepgoing )); then
-				warn "Migration of database '${db}' (${myway} ${params[*]} ${extraparams[*]}) failed: ${result}"
-				output "\n\nContinuing to next database, if any ...\n"
-				rc=1
-			else
-				die "Migration of database '${db}' (${myway} ${params[*]} ${extraparams[*]}) failed: ${result}"
+				debug "Stored Procedures loaded for database '${db}'\n"
 			fi
-		fi
 
-		debug "Load completed for database '${db}'\n"
+			# ... and finally, perform schema deployment.
+			#
+			(( silent )) || info "Launching '${SCRIPT}' to perform database migration for database '${db}' ..."
+			extraparams=()
+			if [[ -n "${actualpath:-}" ]]; then
+				extraparams=( --scripts "${actualpath}/"*.sql )
+			else
+				extraparams=( --scripts "${path}/schema/${db}/"*.sql )
+			fi
+			#if (( ${#extra[@]} )); then
+			if [[ -n "${extra[*]:-}" ]]; then
+				extraparams+=( "${extra[@]}" )
+			fi
+			if (( dryrun )); then
+				extraparams+=( "--dry-run" )
+			fi
+
+			debug "About to apply schema: '${myway} ${params[*]} ${extraparams[*]}'"
+			if (( silent )); then
+				${myway} "${params[@]}" "${extraparams[@]}" >/dev/null 2>&1
+			elif (( quiet )); then
+				# Loses return code to grep :(
+				#${myway} "${params[@]}" "${extraparams[@]}" 2>&1 >/dev/null | grep -Ev --line-buffered "${silentfilter}"
+
+				# Throw away stdout but redirect stderr to stdout...
+				# shellcheck disable=SC2069
+				${myway} "${params[@]}" "${extraparams[@]}" 2>&1 >/dev/null
+			else
+				${myway} "${params[@]}" "${extraparams[@]}"
+			fi
+			result=${?}
+			if (( result )); then
+				if (( keepgoing )); then
+					warn "Migration of database '${db}' (${myway} ${params[*]} ${extraparams[*]}) failed: ${result}"
+					output "\n\nContinuing to next database, if any ...\n"
+					rc=1
+				else
+					die "Migration of database '${db}' (${myway} ${params[*]} ${extraparams[*]}) failed: ${result}"
+				fi
+			fi
+
+			debug "Load completed for database '${db}'\n"
+		fi
 
 		(( founddb && rc )) && exit 4
 		(( founddb && !( rc ) )) && exit 3
