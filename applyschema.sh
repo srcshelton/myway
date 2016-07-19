@@ -430,14 +430,13 @@ function main() {
 		fi
 		grep -Eiq "${truthy}" <<<"${parser_trustname:-}" && params+=( --trust-filename )
 		grep -Eiq "${truthy}" <<<"${parser_allowdrop:-}" && params+=( --allow-unsafe )
-		[[ -n "${version_max:-}" ]] && params+=( --target-limit "${version_max}" )
 
 		founddb=1
 
 		# Initialise databases first, as they must be present before
 		# Stored Procedures are loaded.
 		#
-		(( silent )) || info "Launching '${SCRIPT}' to perform database initialisation for database '${db}' ${version_max:+with target version '${version_max}' }..."
+		(( silent )) || info "Launching '${SCRIPT}' to perform database initialisation for database '${db}' ..."
 		extraparams=()
 		if [[ -n "${actualpath:-}" ]]; then
 			extraparams=( --scripts "${actualpath}/"*.sql )
@@ -561,7 +560,8 @@ function main() {
 
 			# ... and finally, perform schema deployment.
 			#
-			(( silent )) || info "Launching '${SCRIPT}' to perform database migration for database '${db}' ..."
+			(( silent )) || info "Launching '${SCRIPT}' to perform database migration for database '${db}' ${version_max:+with target version '${version_max}' }..."
+			[[ -n "${version_max:-}" ]] && params+=( --target-limit "${version_max}" )
 			extraparams=()
 			if [[ -n "${actualpath:-}" ]]; then
 				extraparams=( --scripts "${actualpath}/"*.sql )

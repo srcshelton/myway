@@ -6490,6 +6490,17 @@ SQL
 								pdebug( "Read metadata file-restore request for '$restorefile'" );
 							}
 						}
+
+						$schmprevious = undef if( defined( $schmprevious ) and ( $schmprevious =~ m#(?:na|n/a)#i ) );
+						print( "*> Read dubious prior version '$schmprevious' from file '$schmfile'\n" ) unless( not( defined( $schmprevious ) ) or ( $schmprevious =~ m/[\d.]+/ ) );
+						print( "*> Read dubious target version '$schmtarget' from file '$schmfile'\n" ) unless( not( defined( $schmtarget ) ) or ( $schmtarget =~ m/[\d.]+/ ) );
+						if( ( $schmfile =~ m/^(?:V(?:.*?)__)*V(.*?)__/ ) and not( $1 =~ m/^$schmtarget(?:\.\d+)?$/ ) ) {
+							warn( "!> $warning File-name version '$1' differs from metadata version '$schmtarget' from file '$schmfile'\n" );
+						}
+						if( not( $schmversion =~ m/^$schmtarget(?:\.\d+)?(?:.0+)?$/ ) ) {
+							warn( "!> $warning Metadata version '$schmtarget' differs from command-line argument '$schmversion'\n" );
+						}
+
 						if( defined( $restorefile ) and length( $restorefile ) ) {
 							if( not( defined( $action_init ) ) ) {
 								warn( "!> $warning 'Restore' directive is only valid in a base initialiser - ignoring ...\n" );
@@ -6515,12 +6526,33 @@ SQL
 									if( $safetyoff ) {
 										dbclose( \$dbh );
 										dbrestore( $auth, $restorefile );
-warn "Connecting to '$db' via '$dsn'...\n";
 										my $error = dbopen( \$dbh, $dsn, $user, $pass, $strict );
 										die( $error ."\n" ) if $error;
 										migratemetadataschema( \$dbh, $db, $vschm, $variables );
-										dbclose( \$dbh );
-										return( \$schmversion );
+										my $tableexists;
+										if( defined( $vschm ) and length( $vschm ) ) {
+											$tableexists = getsqlvalue( \$dbh, "SELECT COUNT(*) FROM `tables` WHERE `table_schema` = '$vschm' AND `table_name` = '$flywaytablename'" );
+										} else {
+											$tableexists = getsqlvalue( \$dbh, "SELECT COUNT(*) FROM `information_schema`.`TABLES` WHERE `TABLE_SCHEMA` = '$db' AND `TABLE_NAME` = '$flywaytablename'" );
+										}
+										if( not( defined( $tableexists ) and $tableexists ) ) {
+											warn( "!> Restored data appears to lack metadata tables - further migrations may fail\n" );
+											dbclose( \$dbh );
+											return( \$schmversion );
+										} else {
+											my $init = getsqlvalue( \$dbh, "SELECT COUNT(*) FROM `$verticadb$flywaytablename` WHERE `success` IS TRUE" );
+											if( not( defined( $init ) ) or ( 0 == $init ) ) {
+												warn( "!> Restored data appears to lack metadata content - further migrations may fail\n" );
+												dbclose( \$dbh );
+												return( \$schmversion );
+											} else {
+												my $versions = getsqlvalues( \$dbh, "SELECT DISTINCT `version` FROM `$verticadb$flywaytablename` WHERE `success` IS TRUE" );
+												dbclose( \$dbh );
+												my @sortedversions = sort { versioncmp( $a, $b ) } @{ $versions };
+												my $version = pop( @sortedversions );
+												return( \$version );
+											}
+										}
 									} else {
 										print( "*> Would restore database from file '$restorefile' ...\n" );
 										dbclose( \$dbh );
@@ -6530,14 +6562,7 @@ warn "Connecting to '$db' via '$dsn'...\n";
 							}
 						} elsif( defined( $action_init ) ) { # not( defined( $restorefile ) and length( $restorefile ) )
 							dbclose( \$dbh );
-							return( TRUE );
-						}
-
-						$schmprevious = undef if( defined( $schmprevious ) and ( $schmprevious =~ m#(?:na|n/a)#i ) );
-						print( "*> Read dubious prior version '$schmprevious' from file '$schmfile'\n" ) unless( not( defined( $schmprevious ) ) or ( $schmprevious =~ m/[\d.]+/ ) );
-						print( "*> Read dubious target version '$schmtarget' from file '$schmfile'\n" ) unless( not( defined( $schmtarget ) ) or ( $schmtarget =~ m/[\d.]+/ ) );
-						if( ( $schmfile =~ m/^(?:V(?:.*?)__)*V(.*?)__/ ) and not( $1 =~ m/^$schmtarget(?:\.\d+)?$/ ) ) {
-							warn( "!> $warning File-name version '$1' differs from metadata version '$schmtarget' from file '$schmfile'\n" );
+							return( \$schmversion );
 						}
 
 						if( defined( $firstcomment ) ) {
@@ -8616,6 +8641,8 @@ sub main( @ ) { # {{{
 	$lastversion = $dbversion if( defined( $dbversion ) );
 
 	if( scalar( @files ) ) {
+		my $totalfiles = scalar( @files );
+
 		@files = ( shift( @files ) ) if( defined( $action_init ) );
 
 		foreach my $item ( @files ) {
@@ -8681,7 +8708,16 @@ sub main( @ ) { # {{{
 			}
 		}
 
-		if( defined( $action_init ) and ( not( defined( $limit ) ) or not( defined( $version ) ) ) ) {
+		# If we're only processing the initialiser (with possible
+		# 'Restore' directive) then we need to check that we've reached
+		# the intended version, if supplied.  Otherwise, the '--init'
+		# step is performed separately from the remainder of the
+		# migration and so we may be behind for now...
+		# (This is thought to be less confusing that requiring separate
+		# target-limit arguments for the initialisation versus the
+		# migration, especially when --init does take an argument
+		# itself)
+		if( defined( $action_init ) and ( not( defined( $limit ) ) or ( $totalfiles > 1 ) ) ) {
 			# No action, we're good!
 		} elsif( ( 'procedure' eq $mode ) or not( defined( $limit ) ) ) {
 			# FIXME: We need to be able to specify Stored Procedure numbers separately...
@@ -8698,7 +8734,7 @@ sub main( @ ) { # {{{
 				if( defined( $lastversion ) ) {
 					$version = $lastversion;
 				} else {
-					die( "$fatal Having processed " . scalar( @files ) . " files (none of which were applied), database schema version is still behind target version '$limit'\n" );
+					die( "$fatal Having processed " . scalar( @files ) . " file(s) (none of which were applied), database schema version is still behind target version '$limit'\n" );
 				}
 			}
 			if( not( defined( $version ) ) ) {
@@ -8724,7 +8760,7 @@ sub main( @ ) { # {{{
 					my @sortedversions = sort { versioncmp( $a, $b ) } ( $sv, $lv );
 					my $latest = pop( @sortedversions );
 					if( $latest eq $lv ) {
-						die( "$fatal Having processed " . scalar( @files ) . " files, database schema version '$sv' is still behind target version '$lv'\n" );
+						die( "$fatal Having processed " . scalar( @files ) . " file(s), database schema version '$sv' is still behind target version '$lv'\n" );
 					} else {
 						die( "$fatal Logic error - database schema version '$sv' is ahead of target version '$lv'\n" );
 					}
