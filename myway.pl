@@ -5211,9 +5211,35 @@ sub migratemetadataschema( $;$$$ ) { # {{{
 						#	return( FALSE );
 						#}
 					} else {
-						if( not( dosql( $dbh, "ALTER TABLE `$mywayactionsname` ADD COLUMN `id` INT UNSIGNED AUTO_INCREMENT NOT NULL FIRST, ADD CONSTRAINT PRIMARY KEY (`id`)" ) ) ) {
-							warn( "!> Unable to update `$mywayactionsname` table\n" );
+						my $st = "DESCRIBE `$mywayactionsname`";
+						my $sth = executesql( $dbh, undef, $st );
+						if( not( defined( $sth ) and $sth ) ) {
+							my $errstr = $dbh -> errstr();
+							warn( "\n$failed Unable to create statement handle to execute '$st'" . ( defined( $errstr ) and length( $errstr ) ? ": " . $errstr : '' ) . "\n" );
+
 							return( FALSE );
+						} else {
+							my $foundnewschema = FALSE;
+
+							ROWS: while( my $ref = $sth -> fetchrow_arrayref() ) {
+								my $field = @{ $ref }[ 0 ];
+
+								if( ( $field eq 'id' ) ) {
+									$foundnewschema = TRUE;
+									last ROWS;
+								}
+							}
+
+							$sth -> finish();
+
+							if( $foundnewschema ) {
+								warn( "\n$warning Metadata not flagged as updated but schema alteration 'id' already applied - database may not be consistent\n" );
+							} else {
+								if( not( dosql( $dbh, "ALTER TABLE `$mywayactionsname` ADD COLUMN `id` INT UNSIGNED AUTO_INCREMENT NOT NULL FIRST, ADD CONSTRAINT PRIMARY KEY (`id`)" ) ) ) {
+									warn( "!> Unable to update `$mywayactionsname` table\n" );
+									return( FALSE );
+								}
+							}
 						}
 					}
 
@@ -5232,13 +5258,72 @@ sub migratemetadataschema( $;$$$ ) { # {{{
 						}
 					}
 
-					if( ( not( 'vertica' eq $engine ) and not(
-						dosql( $dbh, "DROP INDEX `schema_version_vr_idx` ON `$flywaytablename`" )
-						and
-						dosql( $dbh, "DROP INDEX `schema_version_ir_idx` ON `$flywaytablename`" )
-						and
-						dosql( $dbh, "ALTER TABLE `$flywaytablename` DROP COLUMN `version_rank`" )
-						and
+					my $continue = TRUE;
+					if( not( 'vertica' eq $engine ) ) {
+						if( $continue ) {
+							my $st = "SHOW INDEX FROM `$flywaytablename`";
+							my $sth = executesql( $dbh, undef, $st );
+							if( not( defined( $sth ) and $sth ) ) {
+								my $errstr = $dbh -> errstr();
+								warn( "\n$failed Unable to create statement handle to execute '$st'" . ( defined( $errstr ) and length( $errstr ) ? ": " . $errstr : '' ) . "\n" );
+
+								$continue = FALSE;
+							} else {
+								my $foundidx = 0;
+
+								ROWS: while( my $ref = $sth -> fetchrow_arrayref() ) {
+									my $key = @{ $ref }[ 2 ];
+
+									if( ( $key eq 'schema_version_vr_idx' ) ) {
+										dosql( $dbh, "DROP INDEX `schema_version_vr_idx` ON `$flywaytablename`" );
+										$foundidx ++;
+									} elsif( ( $key eq 'schema_version_ir_idx' ) ) {
+										dosql( $dbh, "DROP INDEX `schema_version_ir_idx` ON `$flywaytablename`" );
+										$foundidx ++;
+									}
+								}
+
+								$sth -> finish();
+
+								$continue = FALSE unless( $foundidx == 2 );
+							}
+						}
+
+						if( $continue ) {
+							my $st = "DESCRIBE `$flywaytablename`";
+							my $sth = executesql( $dbh, undef, $st );
+							if( not( defined( $sth ) and $sth ) ) {
+								my $errstr = $dbh -> errstr();
+								warn( "\n$failed Unable to create statement handle to execute '$st'" . ( defined( $errstr ) and length( $errstr ) ? ": " . $errstr : '' ) . "\n" );
+
+								$continue = FALSE;
+							} else {
+								my $foundoldschema = FALSE;
+
+								ROWS: while( my $ref = $sth -> fetchrow_arrayref() ) {
+									my $field = @{ $ref }[ 0 ];
+
+									if( ( $field eq 'version_rank' ) ) {
+										$foundoldschema = TRUE;
+										last ROWS;
+									}
+								}
+
+								$sth -> finish();
+
+								if( not( $foundoldschema ) ) {
+									warn( "\n$warning Metadata not flagged as updated but schema alteration 'version_rank' already applied - database may not be consistent\n" );
+								} else {
+									if( not( dosql( $dbh, "ALTER TABLE `$flywaytablename` DROP COLUMN `version_rank`" ) ) ) {
+										warn( "!> Unable to update `$flywaytablename` table\n" );
+										$continue = FALSE;
+									}
+								}
+							}
+						}
+					}
+
+					if( not( $continue ) or ( not( 'vertica' eq $engine ) and not(
 						dosql( $dbh, "ALTER TABLE `$flywaytablename` DROP PRIMARY KEY, ADD CONSTRAINT `${flywaytablename}_pk` PRIMARY KEY (`installed_rank`)" )
 						and
 						dosql( $dbh, "ALTER TABLE `$flywaytablename` MODIFY `version` VARCHAR(50)" )
@@ -6497,7 +6582,7 @@ SQL
 						if( ( $schmfile =~ m/^(?:V(?:.*?)__)*V(.*?)__/ ) and not( $1 =~ m/^$schmtarget(?:\.\d+)?$/ ) ) {
 							warn( "!> $warning File-name version '$1' differs from metadata version '$schmtarget' from file '$schmfile'\n" );
 						}
-						if( not( $schmversion =~ m/^$schmtarget(?:\.\d+)?(?:.0+)?$/ ) ) {
+						if( defined( $schmversion ) and length( $schmversion ) and not( $schmversion eq '0' ) and not( $schmversion =~ m/^$schmtarget(?:\.\d+)?(?:.0+)?$/ ) ) {
 							warn( "!> $warning Metadata version '$schmtarget' differs from command-line argument '$schmversion'\n" );
 						}
 
