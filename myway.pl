@@ -4426,18 +4426,21 @@ sub checkdbconnection( $ ) { # {{{
 	my $errstr = ${ $dbh } -> errstr();
 	my $state = ${ $dbh } -> state();
 
+	my $statement = ${ $dbh } -> { Statement };
+	$statement = "<statement corrupted by known Vertica bug>" if( $statement eq 'SQLTables_PING' );
+
 	# Just in case we have anything cached...
 	${ $dbh } -> disconnect();
 
-	pwarn( "Database unexpectedly dropped connection!\n" );
+	warn( "$warning Database unexpectedly dropped connection!\n" );
 
 	if( not( defined( $connection ) and ( $connection -> { 'dsn' } ) ) ) {
 		die( "No prior connection string saved - attempt to re-use closed connection?\n" );
 	}
 
-	pwarn( "Attempting to reconnect using last connection string:\n" );
+	warn( "!> Attempting to reconnect using last connection string:\n" );
 	$Data::Dumper::Pad = '    ';
-	$Data::Dumper::Varname = "\$connection";
+	$Data::Dumper::Varname = "connection";
 	print Dumper $connection;
 	my $error = dbopen( $dbh, $connection -> { 'dsn' } , $connection -> { 'user' }, $connection -> { 'password' }, $connection -> { 'strict' }, $connection -> { 'options' } );
 	warn( "!> BUG: Reconnection returned '$error'\n" ) if $error;
@@ -4449,9 +4452,12 @@ sub checkdbconnection( $ ) { # {{{
 		dosql( $dbh, $searchpath ) or die( "Unable to restore database connetion state.\n" );
 	}
 	my $text = 'Database responding';
-	dosql( $dbh, "SELECT '($text) DIRECT'" ) or die( "Database remains unusable.\n" );
-	my $result = getsqlvalue( $dbh, "SELECT '($text) PREPARED'" ) or die( "Database remains unusable.\n" );
-	die( "Database remains unusable ('$result' != '($text)*')\n" ) unless( $result =~ m/^\Q($text)\E/ );
+	my $savedretries = $retries;
+	$retries = undef;
+	dosql( $dbh, "SELECT '($text) DIRECT'" ) or die( "$fatal Database remains unusable.\n" );
+	my $result = getsqlvalue( $dbh, "SELECT '($text) PREPARED'" ) or die( "$fatal Database remains unusable.\n" );
+	$retries = $savedretries;
+	die( "$fatal Database remains unusable ('$result' != '($text)*')\n" ) unless( $result =~ m/^\Q($text)\E/ );
 
 	# XXX: set_err automatically triggers RaiseError/PritnError/PrintWarn if $err is set?
 	${ $dbh } -> set_err( $err, $errstr, $state );
@@ -4475,8 +4481,12 @@ sub dosql( $$ ) { # {{{
 	#}
 	return( undef ) unless( defined( $st ) and length( $st ) );
 
-	if( $retries ) {
-		warn( "\n$warning Database connection failed $retries time(s) when directly executing statement \"$st\"\n" );
+	if( not( defined( $retries ) and ( $retries eq '0' ) ) ) {
+		if( $retries ) {
+			warn( "\n$warning Database connection failed $retries time(s) when directly executing statement \"$st\"\n" );
+		} else {
+			warn( "\n$warning Database connection failed whilst attempting to recover from previous failure\n" );
+		}
 	}
 
 	if( $st =~ m/__MW_(STR|L?TOK|LITERAL_QUOTE_)_/ ) {
@@ -4556,10 +4566,15 @@ sub dosql( $$ ) { # {{{
 				die( "Trivial command following error failed" );
 			}
 
-			$retries ++;
-			if( not( checkdbconnection( $dbh ) ) ) {
-				return( FALSE ) unless( $retries < 4 );
-				return( dosql( $dbh, $st ) );
+			if( not( defined( $retries ) ) ) {
+				return( FALSE );
+			} else {
+				$retries ++;
+				if( not( checkdbconnection( $dbh ) ) ) {
+					return( FALSE ) unless( $retries < 4 );
+					warn( "!> Retrying SQL statement \"$st\" after $retries failures ...\n" );
+					return( dosql( $dbh, $st ) );
+				}
 			}
 			$retries = 0;
 
@@ -4570,10 +4585,15 @@ sub dosql( $$ ) { # {{{
 			my $errstr = ${ $dbh } -> errstr();
 			my $state = ${ $dbh } -> state();
 
-			$retries ++;
-			if( not( checkdbconnection( $dbh ) ) ) {
-				return( FALSE ) unless( $retries < 4 );
-				return( dosql( $dbh, $st ) );
+			if( not( defined( $retries ) ) ) {
+				return( FALSE );
+			} else {
+				$retries ++;
+				if( not( checkdbconnection( $dbh ) ) ) {
+					return( FALSE ) unless( $retries < 4 );
+					warn( "!> Retrying SQL statement \"$st\" after $retries failures ...\n" );
+					return( dosql( $dbh, $st ) );
+				}
 			}
 			$retries = 0;
 
@@ -4586,10 +4606,15 @@ sub dosql( $$ ) { # {{{
 		}
 	} else {
 
-		$retries ++;
-		if( not( checkdbconnection( $dbh ) ) ) {
-			return( FALSE ) unless( $retries < 4 );
-			return( dosql( $dbh, $st ) );
+		if( not( defined( $retries ) ) ) {
+			return( FALSE );
+		} else {
+			$retries ++;
+			if( not( checkdbconnection( $dbh ) ) ) {
+				return( FALSE ) unless( $retries < 4 );
+				warn( "!> Retrying SQL statement \"$st\" after $retries failures ...\n" );
+				return( dosql( $dbh, $st ) );
+			}
 		}
 		$retries = 0;
 
@@ -4661,10 +4686,15 @@ sub preparesql( $$ ) { # {{{
 			pdebug( "Driver has set SQL state '" . ${ $dbh } -> state() . "'\n" );
 		}
 
-		$retries ++;
-		if( not( checkdbconnection( $dbh ) ) ) {
-			return( undef ) unless( $retries < 4 );
-			return( preparesql( $dbh, $st ) );
+		if( not( defined( $retries ) ) ) {
+			return( FALSE );
+		} else {
+			$retries ++;
+			if( not( checkdbconnection( $dbh ) ) ) {
+				return( undef ) unless( $retries < 4 );
+				warn( "!> Retrying SQL statement \"$st\" after $retries failures ...\n" );
+				return( preparesql( $dbh, $st ) );
+			}
 		}
 		$retries = 0;
 
@@ -4673,10 +4703,15 @@ sub preparesql( $$ ) { # {{{
 		# N.B.: $sth -> finish() must be called prior to the next SQL
 		#       interaction!
 
-		$retries ++;
-		if( not( checkdbconnection( $dbh ) ) ) {
-			return( undef ) unless( $retries < 4 );
-			return( preparesql( $dbh, $st ) );
+		if( not( defined( $retries ) ) ) {
+			return( FALSE );
+		} else {
+			$retries ++;
+			if( not( checkdbconnection( $dbh ) ) ) {
+				return( undef ) unless( $retries < 4 );
+				warn( "!> Retrying SQL statement \"$st\" after $retries failures ...\n" );
+				return( preparesql( $dbh, $st ) );
+			}
 		}
 		$retries = 0;
 
@@ -4765,10 +4800,17 @@ sub executesql( $$$;@ ) { # {{{
 			}
 		}
 
-		$retries ++;
-		if( not( checkdbconnection( $dbh ) ) ) {
-			return( undef ) unless( $retries < 4 );
-			return( executesql( $dbh, $sth, $st, @values ) );
+		if( not( defined( $retries ) ) ) {
+			return( FALSE );
+		} else {
+			$retries ++;
+			if( not( checkdbconnection( $dbh ) ) ) {
+				return( undef ) unless( $retries < 4 );
+				my $statement = $st;
+				$statement = $dbh -> { Statement } unless( defined( $st ) and length( $st ) );
+				warn( "!> Retrying SQL statement \"$statement\" after $retries failures ...\n" );
+				return( executesql( $dbh, $sth, $st, @values ) );
+			}
 		}
 		$retries = 0;
 
@@ -4778,10 +4820,17 @@ sub executesql( $$$;@ ) { # {{{
 		# N.B.: $sth -> finish() must be called prior to the next SQL
 		#       interaction!
 
-		$retries ++;
-		if( not( checkdbconnection( $dbh ) ) ) {
-			return( undef ) unless( $retries < 4 );
-			return( executesql( $dbh, $sth, $st, @values ) );
+		if( not( defined( $retries ) ) ) {
+			return( FALSE );
+		} else {
+			$retries ++;
+			if( not( checkdbconnection( $dbh ) ) ) {
+				return( undef ) unless( $retries < 4 );
+				my $statement = $st;
+				$statement = $dbh -> { Statement } unless( defined( $st ) and length( $st ) );
+				warn( "!> Retrying SQL statement \"$statement\" after $retries failures ...\n" );
+				return( executesql( $dbh, $sth, $st, @values ) );
+			}
 		}
 		$retries = 0;
 
