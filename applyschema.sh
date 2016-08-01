@@ -702,7 +702,8 @@ function main() {
 export LC_ALL="C"
 set -o pipefail
 
-std::requires --no-quiet 'perl' "${SCRIPT}"
+std::requires --no-quiet 'perl'
+std::requires --no-quiet "${SCRIPT}"
 #std::requires --no-exit --no-quiet "${VALIDATOR}" # Checked above
 
 main "${@:-}"
