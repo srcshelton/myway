@@ -1,4 +1,5 @@
 applyschema.sh usr/local/bin
+validateschema.sh usr/local/bin
 #contrib/dbbackup.sh usr/local/sbin
 #contrib/dropschema.sh usr/local/sbin
 #contrib/listschema.sh usr/local/bin

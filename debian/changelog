@@ -1,3 +1,9 @@
+dbtools (2.0.0-1) stable; urgency=low
+
+  * See `git log`.
+
+ -- Stuart Shelton <stuart.shelton@hpe.com>  Mon, 01 Aug 2016 14:04:24 +0100
+
 dbtools (1.2.0-2g) stable; urgency=low
 
   * See `git log`.

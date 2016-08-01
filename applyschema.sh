@@ -31,7 +31,7 @@ done
 # shellcheck disable=SC2015
 # shellcheck source=/usr/local/lib/stdlib.sh
 [[ -r "${std_LIBPATH}/${std_LIB}" ]] && source "${std_LIBPATH}/${std_LIB}" || {
-	echo >&2 "FATAL:  Unable to source ${std_LIB} functions"
+	echo >&2 "FATAL:  Unable to source ${std_LIB} functions: ${?}"
 	exit 1
 }
 
@@ -40,6 +40,7 @@ std_TRACE="${TRACE:-0}"
 
 SCRIPT="myway.pl"
 COMPATIBLE="1.2.0"
+VALIDATOR="validateschema.sh"
 
 # We want to be able to debug applyschema.sh without debugging myway.pl...
 if [[ -n "${MYDEBUG:-}" ]]; then
@@ -81,7 +82,7 @@ function main() {
 	local falsy="^(off|n(o)?|false|0)$"
 	#local silentfilter='^((Useless|Use of|Cannot parse|!>) |\s*$)'
 
-	local actualpath filename
+	local actualpath filename validator
 	local lockfile="/var/lock/${NAME}.lock"
 
 	# Ensure that 'fuser' will work...
@@ -109,7 +110,7 @@ function main() {
 	fi
 
 	local arg schema db dblist clist
-	local -i dryrun=0 quiet=0 silent=0 keepgoing=0
+	local -i dryrun=0 quiet=0 silent=0 keepgoing=0 force=0 validate=1
 	local -a extra=()
 	while [[ -n "${1:-}" ]]; do
 		arg="${1}"
@@ -134,8 +135,11 @@ function main() {
 					dblist="${1}"
 				fi
 				;;
+			-f|--force)
+				force=1
+				;;
 			-h|--help)
-				export std_USAGE="[--config <file>] [--schema <path>] [ [--databases <database>[,...]] | [--clusters <cluster>[,...]] ] [--keep-going] [--dry-run] [--silent] | [--locate <database>]"
+				export std_USAGE="[--config <file>] [--schema <path>] [ [--databases <database>[,...]] | [--clusters <cluster>[,...]] ] [--keep-going] [--dry-run] [--force] [--no-validate] [ [--quiet] | [--silent] ] | [--locate <database>]"
 				std::usage
 				;;
 			-k|--keep-going|--keepgoing)
@@ -174,6 +178,9 @@ function main() {
 					clist="${1}"
 				fi
 				;;
+			   --no-validate)
+				validate=0
+				;;
 			   --dry-run|--verify)
 				dryrun=1
 				;;
@@ -206,6 +213,23 @@ function main() {
 		die "Cannot read configuration file"
 	else
 		(( silent )) || info "Using configuration file '${filename}' ..."
+	fi
+
+	if ! (( validate )); then
+		warn "Validation disabled - applied schema may not be standards compliant"
+	else
+		if validator="$( std::requires --no-exit --path "${VALIDATOR}" )" && [[ -x "${validator:-}" ]]; then
+			debug "Using '${validator}' to validate data"
+		else
+			if (( force || dryrun )); then
+				warn "Cannot locate script '${VALIDATOR}' to perform data validation"
+				validate=0
+				unset validator
+			else
+				error "Cannot locate script '${VALIDATOR}' to perform data validation"
+				die "Invoke with '--force' parameter to proceed without validation - aborting"
+			fi
+		fi
 	fi
 
 	local defaults="$( std::getfilesection "${filename}" "DEFAULT" | sed -r 's/#.*$// ; /^[^[:space:]]+\.[^[:space:]]+\s*=/s/\./_/' | grep -Ev '^\s*$' | sed -r 's/\s*=\s*/=/' )"
@@ -246,10 +270,21 @@ function main() {
 
 	debug "Establishing lock ..."
 
-	[[ -e "${lockfile}" ]] && die "Lock '${lockfile}' exists - aborting"
-	lock "${lockfile}" || die "Creating lock '${lockfile}' failed - aborting"
+	[[ -e "${lockfile}" ]] && die "Lock file '${lockfile}' (belonging to PID '$( <"${lockfile}" 2>/dev/null )') exists - aborting"
+	lock "${lockfile}" || die "Creating lock file '${lockfile}' failed - aborting"
 	sleep 0.1
-	[[ -e "${lockfile}" && "$( <"${lockfile}" )" == "${$}" ]] || die "Lock '${lockfile}' is for process $( <"${lockfile}" ), not our PID ${$} - aborting"
+
+	local lockpid="$( <"${lockfile}" )"
+	if [[ -e "${lockfile}" && -n "${lockpid:-}" && "${lockpid}" == "${$}" ]]; then
+		:
+	elif [[ -e "${lockfile}" && -n "${lockpid:-}" ]]; then
+		die "Lock file '${lockfile}' is for process ${lockpid}, not our PID ${$} - aborting"
+	elif [[ -e "${lockfile}" ]]; then
+		die "Lock file '${lockfile}' exists but is empty - aborting"
+	else
+		die "Lock file '${lockfile}' does not exist - aborting"
+	fi
+	unset lockpid
 
 	# We have a lock...
 
@@ -373,6 +408,12 @@ function main() {
 		local -a params=( -u "${dbadmin}" -p "${passwd}" -h "${host}" -d "${db}" )
 		local -a extraparams
 		local option
+
+		if (( validate )); then
+			info "Validating database '${db}' ..."
+			#${validator} ${filename:+--config "${filename}"} -d "${db}" -s "${actualpath:-${path}/schema}" $( (( keepgoing )) && echo -- "-k" ) $( (( dryrun )) && echo "--dry-run" ) $( (( quiet )) && echo "--quiet" ) $( (( silent )) && echo "--silent" ) --from-applyschema || die "Validation of database '${db}' failed - aborting"
+			${validator} ${filename:+--config "${filename}"} -d "${db}" -s "${actualpath:-${path}/schema}" $( (( keepgoing )) && echo -- "-k" ) $( (( dryrun )) && echo "--dry-run" ) $( (( quiet )) && echo "--quiet" ) $( (( silent )) && echo "--silent" ) --from-applyschema || error "Validation of database '${db}' failed - in the future, will abort"
+		fi
 
 		if [[ -n "${dsn:-}" ]]; then
 			case "${syntax:-}" in
@@ -661,7 +702,8 @@ function main() {
 export LC_ALL="C"
 set -o pipefail
 
-std::requires perl "${SCRIPT}"
+std::requires --no-quiet 'perl' "${SCRIPT}"
+#std::requires --no-exit --no-quiet "${VALIDATOR}" # Checked above
 
 main "${@:-}"
 
