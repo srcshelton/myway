@@ -218,7 +218,11 @@ function main() {
 	if ! (( validate )); then
 		warn "Validation disabled - applied schema may not be standards compliant"
 	else
-		if validator="$( std::requires --no-exit --path "${VALIDATOR}" )" && [[ -x "${validator:-}" ]]; then
+		# stdlib.sh prior to v2.0.0 incorrectly didn't accept
+		# multi-argument calls to std::requires
+		#
+		#if validator="$( std::requires --no-exit --path "${VALIDATOR}" )" && [[ -x "${validator:-}" ]]; then
+		if validator="$( type -pf "${VALIDATOR}" 2>/dev/null )" && [[ -x "${validator:-}" ]]; then
 			debug "Using '${validator}' to validate data"
 		else
 			if (( force || dryrun )); then
