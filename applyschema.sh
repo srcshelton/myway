@@ -246,22 +246,27 @@ function main() {
 	debug "CLUSTERHOSTS:\n${hosts}\n"
 	debug "DATABASES:\n${databases}\n"
 
+	# The 'grep' build used by gitbash doesn't support '-m'!
+	# (... but does, surprisingly, apparently support '-P')
+	local grepm='grep -m 1'
+	grep -m 1 'x' <<<'x' >/dev/null 2>&1 || grepm='grep'
+
 	if [[ -n "${db:-}" ]]; then
-		local name="$( grep -om 1 "^${db}$" <<<"${databases}" )"
+		local name="$( ${grepm} -o "^${db}$" <<<"${databases}" )"
 		[[ -n "${name:-}" ]] || die "Database '${db}' not defined in '${filename}'"
 
 		local details="$( std::getfilesection "${filename}" "${name}" | sed -r 's/#.*$// ; /^[^[:space:]]+\.[^[:space:]]+\s*=/s/\./_/' | grep -Ev '^\s*$' | sed -r 's/\s*=\s*/=/' )"
 		[[ -n "${details:-}" ]] || die "Database '${db}' lacks a configuration block in '${filename}'"
 		debug "${db}:\n${details}\n"
 
-		local host="$( grep -m 1 "host=" <<<"${details}" | cut -d'=' -f 2 )"
+		local host="$( ${grepm} "host=" <<<"${details}" | cut -d'=' -f 2 )"
 		if [[ -n "${host:-}" ]]; then
 			output "Database '${db}' has write master '${host}'"
 		else
-			local cluster="$( grep -m 1 "cluster=" <<<"${details}" | cut -d'=' -f 2 )"
+			local cluster="$( ${grepm} "cluster=" <<<"${details}" | cut -d'=' -f 2 )"
 			[[ -n "${cluster:-}" ]] || die "Database '${db}' has no defined cluster membership in '${filename}'"
 
-			local master="$( grep -m 1 "^${cluster}=" <<<"${hosts}" | cut -d'=' -f 2 )"
+			local master="$( ${grepm} "^${cluster}=" <<<"${hosts}" | cut -d'=' -f 2 )"
 			[[ -n "${master:-}" ]] || die "Cluster '${cluster}' (of which '${db}' is a stated member) is not defined in '${filename}'"
 
 			output "Database '${db}' is a member of cluster '${cluster}' with write master '${master}'"
@@ -270,11 +275,34 @@ function main() {
 		exit 0
 	fi
 
+	unset grepm
+
 	local -i result rc=0 founddb=0
 
 	debug "Establishing lock ..."
 
-	[[ -e "${lockfile}" ]] && die "Lock file '${lockfile}' (belonging to PID '$( <"${lockfile}" 2>/dev/null )') exists - aborting"
+	if [[ -s "${lockfile}" ]]; then
+		local -i blockingpid
+		blockingpid="$( <"${lockfile}" )"
+		if (( blockingpid > 1 )); then
+			if kill -0 ${blockingpid} >/dev/null 2>&1; then
+				local processname="$( ps -e | grep "^${blockingpid}" | rev | cut -d' ' -f 1 | rev )"
+				die "Lock file '${lockfile}' (belonging to process '${processname}', PID '${blockingpid}') exists - aborting"
+			else
+				warn "Lock file '${lockfile}' (belonging to obsolete PID '${blockingpid}') exists - removing stale lock"
+				rm -f "${lockfile}" || die "Lock file removal failed: ${?}"
+			fi
+		else
+			warn "Lock file '${lockfile}' exists with invalid content '$( head -n 1 "${lockfile}" )' - removing broken lock"
+			rm -f "${lockfile}" || die "Lock file removal failed: ${?}"
+		fi
+	fi
+
+	if [[ -e "${lockfile}" ]]; then
+		warn "Lock file '${lockfile}' exists, but is empty - removing broken lock"
+		rm -f "${lockfile}" || die "Lock file removal failed: ${?}"
+	fi
+
 	lock "${lockfile}" || die "Creating lock file '${lockfile}' failed - aborting"
 	sleep 0.1
 

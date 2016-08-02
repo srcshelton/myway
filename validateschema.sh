@@ -70,7 +70,7 @@ function validate() {
 	local version="" migrationversion=""
 	local newversion="" newmigrationversion="" metadescription=""
 	local description="" environment="" filetype="" fullname="" engine=""
-	local schema="" environmentdirective=""
+	local schema="" environmentdirective="" defaulttype="ddl"
 	local -l desc=""
 	local -i std_PARSEARGS_parsed=0 rc=0 warnings=0 notices=0 styles=0
 	local -a files=()
@@ -87,6 +87,11 @@ function validate() {
 	}
 
 	(( ${#files[@]} )) || return 1
+
+	grep -P 'x' <<<'x' >/dev/null 2>&1 || {
+		error "Your 'grep' binary ($( type -pf grep 2>/dev/null )) does not support '-P'erl-mode - aborting"
+		return 1
+	}
 
 	case "${type:-}" in
 		metadata|procedure|schema|vertica-schema)
@@ -162,6 +167,7 @@ function validate() {
 					if [[ ! "${name}" =~ ^V.*__V.*__ ]] && [[ ! "${name}" =~ \.d[dmc]l\.sql$ ]]; then
 						note "File '${name}' SHOULD contain 'ddl', 'dml', or 'dcl' to indicate its change-type"
 						(( notices++ ))
+						warn "Assuming '${name}' is of type '${defaulttype}'"
 					fi
 				fi
 				if grep -Eq 'V.*[A-Z]' <<<"${name}"; then
@@ -175,7 +181,7 @@ function validate() {
 				environment="$( grep -Po "\\Q${description:-}\\E\.(not-)?.*?\." <<<"${name}" | cut -d'.' -f 2 )"
 				filetype="$( grep -o '\.d[dmc]l\.sql$' <<<"${name}" | cut -d'.' -f 2 )"
 				[[ "${environment}" == "${filetype}" ]] && unset environment
-				fullname="V${version:-<version>}${migrationversion:+__V${migrationversion}}__${description:-<description>}${environment:+.${environment}}.${filetype:-dml}.sql"
+				fullname="V${version:-<version>}${migrationversion:+__V${migrationversion}}__${description:-<description>}${environment:+.${environment}}.${filetype:-${defaulttype}}.sql"
 				debug "version is '${version:-}'"
 				debug "migrationversion is '${migrationversion:-}'"
 				debug "description is '${description:-}'"
@@ -468,7 +474,7 @@ function validate() {
 			done < <( awk -- "${script:-}" "${file}" ) # while read -r line
 
 			if [[ -n "${newversion:-}" ]]; then
-				note "File '${name}' contains legacy version string '${version}' - suggest migration to new naming scheme 'V${newversion}${newmigrationversion:+__V${newmigrationversion}}__${metadescription:-${description:-<description>}}${environment:+.${environment}}.${filetype:-dml}.sql'"
+				note "File '${name}' contains legacy version string '${version}' - suggest migration to new naming scheme 'V${newversion}${newmigrationversion:+__V${newmigrationversion}}__${metadescription:-${description:-<description>}}${environment:+.${environment}}.${filetype:-${defaulttype}}.sql'"
 				(( notices++ ))
 			fi
 
@@ -531,40 +537,45 @@ function validate() {
 
 			debug "Finished checking metadata"
 
-			case "${filetype:-dml}" in
+			# Does gitbash support coloured output?
+			# Best not assume...
+			local cgrep='grep --colour=always'
+			${cgrep} 'x' <<<'x' >/dev/null 2>&1 || cgrep='grep'
+
+			case "${filetype:-${defaulttype}}" in
 				dml)
-					if sed -r 's|/\*.*\*/|| ; s/(CREATE|DROP)\s+TEMPORARY\s+TABLE//' "${file}" | grep -Eiq '\s+(CREATE|ALTER|DROP)\s+'; then # DDL
+					if sed -r 's|/\*.*\*/|| ; s/--.*// ; s/#.*$// ; s/(CREATE|DROP)\s+TEMPORARY\s+TABLE//' "${file}" | grep -Eiq '\s+(CREATE|ALTER|DROP)\s+'; then # DDL
 						warn "Detected DDL in DML-only file '${name}':"
-						warn "$( grep -Ei '\s+(CREATE|ALTER|DROP)\s+' "${file}" | grep -Ev "(CREATE|DROP)\s+TEMPORARY\s+TABLE)" )"
+						warn "$( ${cgrep} -Ei '\s+(CREATE|ALTER|DROP)\s+' "${file}" | grep -Ev "(CREATE|DROP)\s+TEMPORARY\s+TABLE)" )"
 						(( warnings++ ))
 					fi
-					if sed 's|/\*.*\*/||' "${file}" | grep -Eiq '\s+(GRANT|REVOKE)\s+'; then # DCL
+					if sed 's|/\*.*\*/|| ; s/--.*// ; s/#.*$//' "${file}" | grep -Eiq '\s+(GRANT|REVOKE)\s+'; then # DCL
 						warn "Detected DCL in DML-only file '${name}':"
-						warn "$( grep -Ei '\s+(GRANT|REVOKE)\s+' )"
+						warn "$( ${cgrep} -Ei '\s+(GRANT|REVOKE)\s+' "${file}" )"
 						(( warnings++ ))
 					fi
 					;;
 				ddl)
-					if sed 's|/\*.*\*/||' "${file}" | grep -Eiq '\s+(UPDATE|INSERT|DELETE\s+FROM)\s+'; then # DML
+					if sed 's|/\*.*\*/|| ; s/--.*// ; s/#.*$//' "${file}" | grep -Eiq '\s+(UPDATE|INSERT|DELETE\s+FROM)\s+'; then # DML
 						warn "Detected DML in DDL-only file '${name}':"
-						warn "$( grep -Ei '\s+(UPDATE|INSERT|DELETE\s+FROM)\s+' )"
+						warn "$( ${cgrep} -Ei '\s+(UPDATE|INSERT|DELETE\s+FROM)\s+' "${file}" )"
 						(( warnings++ ))
 					fi
-					if sed 's|/\*.*\*/||' "${file}" | grep -Eiq '\s+(GRANT|REVOKE)\s+'; then # DCL
+					if sed 's|/\*.*\*/|| ; s/--.*// ; s/#.*$//' "${file}" | grep -Eiq '\s+(GRANT|REVOKE)\s+'; then # DCL
 						warn "Detected DCL in DDL-only file '${name}':"
-						warn "$( grep -Ei '\s+(GRANT|REVOKE)\s+' )"
+						warn "$( ${cgrep} -Ei '\s+(GRANT|REVOKE)\s+' "${file}" )"
 						(( warnings++ ))
 					fi
 					;;
 				dcl)
-					if sed 's|/\*.*\*/||' "${file}" | grep -Eiq '\s+(UPDATE|INSERT|DELETE\s+FROM)\s+'; then # DML
+					if sed 's|/\*.*\*/|| ; s/--.*// ; s/#.*$//' "${file}" | grep -Eiq '\s+(UPDATE|INSERT|DELETE\s+FROM)\s+'; then # DML
 						warn "Detected DML in DCL-only file '${name}':"
-						warn "$( grep -Ei '\s+(UPDATE|INSERT|DELETE\s+FROM)\s+' )"
+						warn "$( ${cgrep} -Ei '\s+(UPDATE|INSERT|DELETE\s+FROM)\s+' "${file}" )"
 						(( warnings++ ))
 					fi
-					if sed -r 's|/\*.*\*/|| ; s/(CREATE|DROP)\s+TEMPORARY\s+TABLE//' "${file}" | grep -Eiq '\s+(CREATE|ALTER|DROP)\s+'; then # DDL
+					if sed -r 's|/\*.*\*/|| ; s/--.*// ; s/#.*$// ; s/(CREATE|DROP)\s+TEMPORARY\s+TABLE//' "${file}" | grep -Eiq '\s+(CREATE|ALTER|DROP)\s+'; then # DDL
 						warn "Detected DDL in DCL-only file '${name}':"
-						warn "$( grep -Ei '\s+(CREATE|ALTER|DROP)\s+' "${file}" | grep -Ev "(CREATE|DROP)\s+TEMPORARY\s+TABLE)" )"
+						warn "$( ${cgrep} -Ei '\s+(CREATE|ALTER|DROP)\s+' "${file}" | grep -Ev "(CREATE|DROP)\s+TEMPORARY\s+TABLE)" )"
 						(( warnings++ ))
 					fi
 					;;
@@ -572,6 +583,8 @@ function validate() {
 					warn "Unknown SQL type '${filetype:-}'"
 					;;
 			esac
+
+			unset cgrep
 
 			if (( warnings )); then
 				warn "Completed checking schema file '${name}': ${warnings} Fatal Errors or Warnings, ${notices} Notices, ${styles} Comments"
@@ -723,22 +736,27 @@ function main() {
 	debug "CLUSTERHOSTS:\n${hosts}\n"
 	debug "DATABASES:\n${databases}\n"
 
+	# The 'grep' build used by gitbash doesn't support '-m'!
+	# (... but does, surprisingly, apparently support '-P')
+	local mgrep='grep -m 1'
+	${mgrep} 'x' <<<'x' >/dev/null 2>&1 || mgrep='grep'
+
 	if [[ -n "${db:-}" ]]; then
-		local name="$( grep -om 1 "^${db}$" <<<"${databases}" )"
+		local name="$( ${mgrep} -o "^${db}$" <<<"${databases}" )"
 		[[ -n "${name:-}" ]] || die "Database '${db}' not defined in '${filename}'"
 
 		local details="$( std::getfilesection "${filename}" "${name}" | sed -r 's/#.*$// ; /^[^[:space:]]+\.[^[:space:]]+\s*=/s/\./_/' | grep -Ev '^\s*$' | sed -r 's/\s*=\s*/=/' )"
 		[[ -n "${details:-}" ]] || die "Database '${db}' lacks a configuration block in '${filename}'"
 		debug "${db}:\n${details}\n"
 
-		local host="$( grep -m 1 "host=" <<<"${details}" | cut -d'=' -f 2 )"
+		local host="$( ${mgrep} "host=" <<<"${details}" | cut -d'=' -f 2 )"
 		if [[ -n "${host:-}" ]]; then
 			output "Database '${db}' has write master '${host}'"
 		else
-			local cluster="$( grep -m 1 "cluster=" <<<"${details}" | cut -d'=' -f 2 )"
+			local cluster="$( ${mgrep} "cluster=" <<<"${details}" | cut -d'=' -f 2 )"
 			[[ -n "${cluster:-}" ]] || die "Database '${db}' has no defined cluster membership in '${filename}'"
 
-			local master="$( grep -m 1 "^${cluster}=" <<<"${hosts}" | cut -d'=' -f 2 )"
+			local master="$( ${mgrep} "^${cluster}=" <<<"${hosts}" | cut -d'=' -f 2 )"
 			[[ -n "${master:-}" ]] || die "Cluster '${cluster}' (of which '${db}' is a stated member) is not defined in '${filename}'"
 
 			output "Database '${db}' is a member of cluster '${cluster}' with write master '${master}'"
@@ -747,11 +765,34 @@ function main() {
 		exit 0
 	fi
 
+	unset mgrep
+
 	local -i result rc=0 founddb=0
 
 	debug "Establishing lock ..."
 
-	[[ -e "${lockfile}" ]] && die "Lock file '${lockfile}' (belonging to PID '$( <"${lockfile}" 2>/dev/null )') exists - aborting"
+	if [[ -s "${lockfile}" ]]; then
+		local -i blockingpid
+		blockingpid="$( <"${lockfile}" )"
+		if (( blockingpid > 1 )); then
+			if kill -0 ${blockingpid} >/dev/null 2>&1; then
+				local processname="$( ps -e | grep "^${blockingpid}" | rev | cut -d' ' -f 1 | rev )"
+				die "Lock file '${lockfile}' (belonging to process '${processname}', PID '${blockingpid}') exists - aborting"
+			else
+				warn "Lock file '${lockfile}' (belonging to obsolete PID '${blockingpid}') exists - removing stale lock"
+				rm -f "${lockfile}" || die "Lock file removal failed: ${?}"
+			fi
+		else
+			warn "Lock file '${lockfile}' exists with invalid content '$( head -n 1 "${lockfile}" )' - removing broken lock"
+			rm -f "${lockfile}" || die "Lock file removal failed: ${?}"
+		fi
+	fi
+
+	if [[ -e "${lockfile}" ]]; then
+		warn "Lock file '${lockfile}' exists, but is empty - removing broken lock"
+		rm -f "${lockfile}" || die "Lock file removal failed: ${?}"
+	fi
+
 	lock "${lockfile}" || die "Creating lock file '${lockfile}' failed - aborting"
 	sleep 0.1
 
