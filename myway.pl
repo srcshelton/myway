@@ -2316,7 +2316,7 @@ sub processfile( $$;$$$$ );
 sub dbopen( $$$$;$$ );
 sub dbclose( ;$$ );
 sub dbdump( $;$$$$ );
-sub dbrestore( $$ );
+sub dbrestore( $$;$ );
 sub setverticasearchpath( $$;$$ );
 sub checkdbconnection( $ );
 sub dosql( $$ );
@@ -4261,8 +4261,8 @@ sub dbdump( $;$$$$ ) { # {{{
 	return( undef );
 } # dbdump # }}}
 
-sub dbrestore( $$ ) { # {{{
-	my( $auth, $file ) = @_;
+sub dbrestore( $$;$ ) { # {{{
+	my( $auth, $file, $progress ) = @_;
 
 	return( undef ) unless( defined( $auth -> { 'user' } ) and length( $auth -> { 'user' } ) );
 	return( undef ) unless( defined( $auth -> { 'password' } ) and length( $auth -> { 'password' } ) );
@@ -4337,18 +4337,24 @@ EOF
 	$command .= "$verbose " if( defined( $verbose ) );
 	$command .= '2>&1 ; }';
 
-	if( which( 'pv' ) ) {
-		my ( $columns, $rows );
+	if( not( defined( $progress ) and ( $progress eq 'never' ) ) and which( 'pv' ) ) {
+		my ( $pv, $columns, $rows );
+		$pv = 'pv';
 		$columns = $rows = '';
+
+		if( defined( $progress ) and ( lc( $progress ) eq 'always' ) ) {
+			$pv='pv -f';
+		}
 		if( defined( $ENV{ 'COLUMNS' } ) and $ENV{ 'COLUMNS' } ) {
 			$columns = ' -w ' . $ENV{ 'COLUMNS' };
 		}
 		if( defined( $ENV{ 'LINES' } ) and $ENV{ 'LINES' } ) {
 			$rows = ' -H ' . $ENV{ 'LINES' };
 		}
-		$command = 'pv -e -p -t -r -a -b -c ' . $columns . $rows . ' -N "' . basename( $file ) . '" ' . $command;
+
+		$command = $pv . ' -e -p -t -r -a -b -c ' . $columns . $rows . ' -N "' . basename( $file ) . '" ' . $command;
 	} else {
-		warn( "$warning Cannot locate 'pv' executable: only errors will be reported\n\n" );
+		warn( "$warning Cannot locate 'pv' executable: only errors will be reported\n\n" ) unless( defined( $progress ) and ( $progress eq 'never' ) );
 
 		$command = 'cat ' . $command;
 	}
@@ -5430,8 +5436,9 @@ sub applyschema( $$$$;$ ) { # {{{
 	$action_migrate = $actions -> { 'migrate' } if( exists( $actions -> { 'migrate' } ) );
 
 	my( $tmpdir, $mode, $marker, $first, $backupdir, $safetyoff, $strict );
-	my( $skipmeta, $extinsert, $unsafe, $desc, $pretend, $quiet, $silent );
-	my( $shortcut, $environment, $limit, $clear, $compat, $force );
+	my( $skipmeta, $extinsert, $unsafe, $desc, $pretend, $progress );
+	my( $quiet, $silent, $shortcut, $environment, $limit, $clear );
+	my( $compat, $force );
 	$backupdir   = $variables -> { 'backupdir' }   if( exists( $variables -> { 'backupdir' } ) );
 	$clear       = $variables -> { 'clear' }       if( exists( $variables -> { 'clear' } ) );
 	$compat      = $variables -> { 'compat' }      if( exists( $variables -> { 'compat' } ) );
@@ -5444,6 +5451,7 @@ sub applyschema( $$$$;$ ) { # {{{
 	$marker      = $variables -> { 'marker' }      if( exists( $variables -> { 'marker' } ) );
 	$mode        = $variables -> { 'mode' }        if( exists( $variables -> { 'mode' } ) );
 	$pretend     = $variables -> { 'pretend' }     if( exists( $variables -> { 'pretend' } ) );
+	$progress    = $variables -> { 'progress' }    if( exists( $variables -> { 'progress' } ) );
 	$quiet       = $variables -> { 'quiet' }       if( exists( $variables -> { 'quiet' } ) );
 	$safetyoff   = $variables -> { 'safetyoff' }   if( exists( $variables -> { 'safetyoff' } ) );
 	$shortcut    = $variables -> { 'shortcut' }    if( exists( $variables -> { 'shortcut' } ) );
@@ -6659,7 +6667,7 @@ SQL
 								} else {
 									if( $safetyoff ) {
 										dbclose( \$dbh );
-										dbrestore( $auth, $restorefile );
+										dbrestore( $auth, $restorefile, $progress );
 										my $error = dbopen( \$dbh, $dsn, $user, $pass, $strict );
 										die( $error ."\n" ) if $error;
 										migratemetadataschema( \$dbh, $db, $vschm, $variables );
@@ -7435,7 +7443,7 @@ sub main( @ ) { # {{{
 
 	my( $action_backup, $action_restore, $action_init );
 	my( $action_migrate, $action_check );
-	my( $mode, $dosub );
+	my( $mode, $dosub, $progress );
 	my( $help, $showversion, $desc, @paths, $file, $unsafe, $keepbackups );
 	my( $compat, $relaxed, $strict );
 	my( $lock, $keeplock );
@@ -7471,6 +7479,8 @@ sub main( @ ) { # {{{
 	, 'r|restore=s'					=> \$action_restore
 	, 'i|init|baseline:s'				=> \$action_init
 	, 'c|check!'					=> \$action_check
+
+	,   'progress:s'				=> \$progress
 
 	, 'o|mode=s'					=> \$mode
 	,   'substitute|versionate|sub!'		=> \$dosub
@@ -7549,6 +7559,17 @@ sub main( @ ) { # {{{
 		}
 	} else {
 		$mode = 'schema';
+	}
+
+	if( defined( $progress ) and length( $progress ) ) {
+		if( lc( $progress ) =~ m/^(always|auto|never)$/ ) {
+			$progress = lc( $progress );
+		} else {
+			$progress = undef;
+			$ok = FALSE;
+		}
+	} else {
+		$progress = 'auto';
 	}
 
 	if( defined( $syntax ) and length( $syntax ) ) {
@@ -7843,18 +7864,19 @@ sub main( @ ) { # {{{
 			print( ( " " x $length ) . "| <--dsn <dsn>> [[:syntax:]] ...\n" ) if( $odbcok );
 			print(       "Usage: $myway -u <username> -p <password> -h <host> -d <database> [-P <port>]\n" ) if( not( $odbcok ) );
 			print( ( " " x $length ) . "<--backup [directory] [:backup options:]|...\n" );
-			print( ( " " x $length ) . " --restore <file>|--init [version]>|...\n" );
+			print( ( " " x $length ) . " --restore <file> [:restore options:]|--init [version]>|...\n" );
 			print( ( " " x $length ) . "[--migrate|--check] <--scripts <directory>|--file <schema>> ...\n" );
 			print( ( " " x $length ) . "[--target-limit <version>] [[:mode:]] [[:syntax:]] ...\n" );
 			print( ( " " x $length ) . "[--mysql-compat] [--no-backup|--keep-backup] ...\n" );
 			print( ( " " x $length ) . "[--clear-metadata] [--force] [--dry-run] [--silent] [--quiet]\n" );
 			print( ( " " x $length ) . "[--notice] [--warn] [--debug] [--verbose]\n" );
 			print( "\n" );
-			#print( ( " " x $length ) . "backup options:   [--compress [:scheme:]] [--small-dataset]\n" );
 			print( ( " " x $length ) . "backup options:   [--compress [:scheme:]] [--transactional]\n" );
 			print( ( " " x $length ) . "                  [--lock [--keep-lock]] [--separate-files]\n" );
 			print( ( " " x $length ) . "                  [--skip-metadata] [--extended-insert]\n" );
 			print( ( " " x $length ) . "scheme:           <gzip|bzip2|xz|lzma>\n" );
+			print( "\n" );
+			print( ( " " x $length ) . "restore options:  [--progress[=<always|auto|never>]]\n" );
 			print( "\n" );
 			print( ( " " x $length ) . "mode:              --mode <schema|procedure>\n" );
 			print( ( " " x $length ) . "                  [--substitute [--marker <marker>]\n" );
@@ -7916,6 +7938,7 @@ sub main( @ ) { # {{{
 		warn( "Cannot specify argument '--separate-files' without option '--backup'\n" ) if( $split and not( defined( $action_backup ) ) );
 		warn( "Cannot specify argument '--skip-metadata' without option '--backup'\n" ) if( $skipmeta and not( defined( $action_backup ) ) );
 		warn( "Cannot specify argument '--extended-insert' without option '--backup'\n" ) if( $extinsert and not( defined( $action_backup ) ) );
+		warn( "Argument '--progress' must have value 'always', 'auto', or 'never'\n" ) unless( defined( $progress ) );
 		warn( "Cannot specify argument '--trust-filename' without option '--no-backup'\n" ) if( $shortcut and not( $unsafe ) );
 		warn( "Cannot specify argument '--keep-lock' without option '--lock'\n" ) if( $keeplock and not( $lock ) );
 		warn( "Cannot specify argument '--clear-metadata' without option '--force'\n" ) if( $clear and not( $force ) );
@@ -8009,7 +8032,7 @@ sub main( @ ) { # {{{
 	};
 
 	if( defined( $action_restore ) and length( $action_restore ) ) {
-		if( dbrestore( $auth, $action_restore ) ) {
+		if( dbrestore( $auth, $action_restore, $progress ) ) {
 			die( "Datbase restoration failed for file '$action_restore'\n" );
 		} else {
 			exit( 0 );
@@ -8530,6 +8553,7 @@ sub main( @ ) { # {{{
 	$variables -> { 'marker' }      = $marker if( $dosub );
 	$variables -> { 'mode' }        = $mode;
 	$variables -> { 'pretend' }     = $pretend;
+	$variables -> { 'progress' }    = $progress;
 	$variables -> { 'quiet' }       = $quiet;
 	$variables -> { 'safetyoff' }   = $safetyoff;
 	$variables -> { 'shortcut' }    = $shortcut;

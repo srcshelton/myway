@@ -110,6 +110,7 @@ function main() {
 	fi
 
 	local arg schema db dblist clist
+	local -l progress='auto'
 	local -i dryrun=0 quiet=0 silent=0 keepgoing=0 force=0 validate=1
 	local -a extra=()
 	while [[ -n "${1:-}" ]]; do
@@ -139,7 +140,7 @@ function main() {
 				force=1
 				;;
 			-h|--help)
-				export std_USAGE="[--config <file>] [--schema <path>] [ [--databases <database>[,...]] | [--clusters <cluster>[,...]] ] [--keep-going] [--dry-run] [--force] [--no-validate] [ [--quiet] | [--silent] ] | [--locate <database>]"
+				export std_USAGE="[--config <file>] [--schema <path>] [ [--databases <database>[,...]] | [--clusters <cluster>[,...]] ] [--keep-going] [--dry-run] [--force] [--no-validate] [ [--quiet] | [--silent] ] [--progress=<always|auto|never>] | [--locate <database>]"
 				std::usage
 				;;
 			-k|--keep-going|--keepgoing)
@@ -153,6 +154,22 @@ function main() {
 					die "Argument '${1}' to option ${arg} looks like an option... aborting"
 				else
 					db="${1}"
+				fi
+				;;
+			-p|--progress|--progress=*)
+				if grep -Fq '=' <<<"${arg}"; then
+					progress="$( cut -d'=' -f 2- <<<"${arg}" )"
+					arg="$( cut -d'=' -f 1- <<<"${arg}" )"
+				else
+					shift
+					progress="${1:-}"
+				fi
+				if [[ -z "${progress:-}" ]]; then
+					die "Option ${arg} requires an argument"
+				elif [[ "${progress}" =~ ^-- ]]; then
+					die "Argument '${progress}' to option ${arg} looks like an option... aborting"
+				elif ! [[ "${progress}" =~ always|auto|never ]]; then
+					die "Argument to option ${arg} must have value 'always', 'auto', or 'never': '${progress}' is not recognised... aborting"
 				fi
 				;;
 			-q|--quiet)
@@ -503,6 +520,8 @@ function main() {
 		fi
 		grep -Eiq "${truthy}" <<<"${parser_trustname:-}" && params+=( --trust-filename )
 		grep -Eiq "${truthy}" <<<"${parser_allowdrop:-}" && params+=( --allow-unsafe )
+
+		[[ -n "${progress:-}" ]] && params+=( --progress=${progress} )
 
 		founddb=1
 
