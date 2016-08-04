@@ -13,7 +13,11 @@ withEnv( [
 		env.JENKINS_SERVER_TAGS = getSCPTags()
 
 		stage 'Checkout'
-		checkout scm
+		sh 'mkdir -p src'
+		dir( 'src' ) {
+			gitClean()
+			checkout scm
+		}
 
 		stage 'Build'
 		try {
@@ -129,3 +133,32 @@ def getSCPTags() {
 	def matcher = env.BRANCH_NAME =~ 'feature'
 	matcher ? 'ops-tools-dev' : 'all'
 }
+
+/**
+ * Clean a Git project workspace.
+ * Uses 'git clean' if there is a repository found.
+ * Uses Pipeline 'deleteDir()' function if no .git directory is found.
+ */
+def gitClean() {
+	timeout(time: 60, unit: 'SECONDS') {
+		if( fileExists( '.git' ) ) {
+			echo 'Found git repository: using git to clean the tree.'
+			// The sequence of reset --hard and clean -fdx first
+			// in the root and then using submodule foreach
+			// is based on how the Jenkins Git SCM clean before checkout
+			// feature works.
+			sh 'git reset --hard'
+			// Note: -e is necessary to exclude the temp directory
+			// .jenkins-XXXXX in the workspace where Pipeline puts the
+			// batch file for the 'bat' command.
+			sh 'git clean -ffdx -e ".jenkins-*/"'
+			sh 'git submodule foreach --recursive git reset --hard'
+			sh 'git submodule foreach --recursive git clean -ffdx'
+		} else {
+			echo 'No git repository found: using deleteDir() to clean workspace'
+			deleteDir()
+		}
+	}
+}
+
+// vi: set syntax=groovy:
