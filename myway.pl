@@ -5665,16 +5665,22 @@ sub applyschema( $$$$;$ ) { # {{{
 			if( defined( $limit ) ) {
 				my $match = $1;
 
-				my( $mcode, $mchange, $mstep, $mhotfix ) = ( $match =~ m/^([[:xdigit:]]+)(?:\.(\d+)(?:\.(\d+)(?:\.(\d+))?)?)?$/ );
-				my( $lcode, $lchange, $lstep, $lhotfix ) = ( $limit =~ m/^([[:xdigit:]]+)(?:\.(\d+)(?:\.(\d+)(?:\.(\d+))?)?)?$/ );
+				my( $mcode, $mchange, $mstep, $mhotfix, $mother ) = ( $match =~ m/^([[:xdigit:]]+)(?:\.(\d+)(?:\.(\d+)(?:\.(\d+))?)?)?(.*?)$/ );
+				my( $lcode, $lchange, $lstep, $lhotfix, $lother ) = ( $limit =~ m/^([[:xdigit:]]+)(?:\.(\d+)(?:\.(\d+)(?:\.(\d+))?)?)?(.*?)$/ );
 
 				if( not( defined( $mcode ) and ( ( 0 == $mcode ) or $mcode ) ) ) {
-					warn( "!> Could not determine major version number from filename '$schmfile' version '$match'\n" );
+					warn( "!> Could not determine major version number from filename '$schmfile' version '$match' during shortcut processing\n" );
 					$mcode = 0;
 				}
+				if( defined( $mother )  and length( $mother ) ) {
+					warn( "!> Filename '$schmfile' contains additional ignored element(s) '$mother' in version number\n" );
+				}
 				if( not( defined( $lcode ) and ( ( 0 == $lcode ) or $lcode ) ) ) {
-					warn( "!> Could not determine major version number from specified limit '$limit'\n" );
+					warn( "!> Could not determine major version number from specified limit '$limit' during shortcut processing\n" );
 					$lcode = 0;
+				}
+				if( defined( $lother ) and length( $lother ) ) {
+					warn( "!> Limit '$limit' contains additional ignored element(s) '$lother' in version number\n" );
 				}
 				$mchange = 0 unless( defined( $mchange ) and $mchange );
 				$mstep = 0 unless( defined( $mstep ) and $mstep );
@@ -5761,10 +5767,13 @@ sub applyschema( $$$$;$ ) { # {{{
 					#$schmversion = '0' unless( defined( $schmversion ) and length( $schmversion ) );
 					my $metadataversions = getsqlvalues( \$dbh, "SELECT DISTINCT `version` FROM `$verticadb$flywaytablename` WHERE `success` IS TRUE" );
 
-					my( $scode, $schange, $sstep, $shotfix ) = ( $schmversion =~ m/^([[:xdigit:]]+)(?:\.(\d+)(?:\.(\d+)(?:\.(\d+))?)?)?$/ );
+					my( $scode, $schange, $sstep, $shotfix, $sother ) = ( $schmversion =~ m/^([[:xdigit:]]+)(?:\.(\d+)(?:\.(\d+)(?:\.(\d+))?)?)?(.*?)$/ );
 					if( not( defined( $scode ) and ( ( 0 == $scode ) or $scode ) ) ) {
-						warn( "!> Could not determine major version number from filename '$schmfile' version '$schmversion'\n" );
+						warn( "!> Could not determine major version number from filename '$schmfile' version '$schmversion' during shortcut processing\n" );
 						$scode = 0;
+					}
+					if( defined( $sother )  and length( $sother ) ) {
+						warn( "!> File '$schmfile' schema version '$schmversion' contains additional ignored element(s) '$sother' in version number\n" );
 					}
 					$schange = 0 unless( defined( $schange ) and $schange );
 					$sstep = 0 unless( defined( $sstep ) and $sstep );
@@ -5942,10 +5951,10 @@ sub applyschema( $$$$;$ ) { # {{{
 		# Still issue a warning, but don't abort here - placeholder
 		# schema should be allowed to fill gaps due to reorganisation.
 		#
-		if( defined( $action_init ) ) {
-			# Don't alert - base initialisers aren't supposed to
-			# have content...
-		} elsif( ( $schmfile =~ m/V(.*?)__V(.*?)__/ ) or ( $force ) ) {
+		if( defined( $action_init ) or ( $schmfile =~ m/V(.*?)__V(.*?)__/ ) ) {
+			# Don't alert - base initialisers and migration schema
+			# aren't supposed to have content...
+		} elsif( $force ) {
 			warn( "!> No valid SQL statements found in file '$schmfile', but continuing for now ...\n" ) unless( $silent );
 		} else {
 			# OTOH, we do want to fail if we read a schema-file
@@ -6217,16 +6226,22 @@ SQL
 						my $match = $1;
 
 						if( defined( $limit ) ) {
-							my( $mcode, $mchange, $mstep, $mhotfix ) = ( $match =~ m/^([[:xdigit:]]+)(?:\.(\d+)(?:\.(\d+)(?:\.(\d+))?)?)?$/ );
-							my( $lcode, $lchange, $lstep, $lhotfix ) = ( $limit =~ m/^([[:xdigit:]]+)(?:\.(\d+)(?:\.(\d+)(?:\.(\d+))?)?)?$/ );
+							my( $mcode, $mchange, $mstep, $mhotfix, $mother ) = ( $match =~ m/^([[:xdigit:]]+)(?:\.(\d+)(?:\.(\d+)(?:\.(\d+))?)?)?(.*?)$/ );
+							my( $lcode, $lchange, $lstep, $lhotfix, $lother ) = ( $limit =~ m/^([[:xdigit:]]+)(?:\.(\d+)(?:\.(\d+)(?:\.(\d+))?)?)?(.*?)$/ );
 
 							if( not( defined( $mcode ) and ( ( 0 == $mcode ) or $mcode ) ) ) {
 								warn( "!> Could not determine major version number from filename '$schmfile' version '$match'\n" );
 								$mcode = 0;
 							}
+							if( defined( $mother )  and length( $mother ) ) {
+								warn( "!> Filename '$schmfile' contains additional ignored element(s) '$mother' in version number\n" );
+							}
 							if( not( defined( $lcode ) and ( ( 0 == $lcode ) or $lcode ) ) ) {
 								warn( "!> Could not determine major version number from specified limit '$limit'\n" );
 								$lcode = 0;
+							}
+							if( defined( $lother ) and length( $lother ) ) {
+								warn( "!> Limit '$limit' contains additional ignored element(s) '$lother' in version number\n" );
 							}
 							$mchange = 0 unless( defined( $mchange ) and $mchange );
 							$mstep = 0 unless( defined( $mstep ) and $mstep );
@@ -6640,7 +6655,13 @@ SQL
 							warn( "!> $warning File-name version '$1' differs from metadata version '$schmtarget' from file '$schmfile'\n" );
 						}
 						if( defined( $schmversion ) and length( $schmversion ) and not( $schmversion eq '0' ) and not( $schmversion =~ m/^$schmtarget(?:\.\d+)?(?:.0+)?$/ ) ) {
-							warn( "!> $warning Metadata version '$schmtarget' differs from command-line argument '$schmversion'\n" );
+							if( $schmfile =~ m/V(.*?)__V(.*?)__/ ) {
+								if( not( ( $schmversion eq $1 ) and ( $schmtarget eq $2 ) ) ) {
+									warn( "!> $warning Migration schema declares transition from version '$1' to version '$2', but working-set is for the transition from '$schmversion' to '$schmtarget'\n" );
+								}
+							} else {
+								warn( "!> $warning Metadata version '$schmtarget' differs from command-line argument '$schmversion'\n" );
+							}
 						}
 
 						if( defined( $restorefile ) and length( $restorefile ) ) {
@@ -7276,8 +7297,11 @@ SQL
 		#$status = 1 if( not( 'procedure' eq $mode ) );
 		#$status = 1;
 		# FIXME: This is still pretty bare-bones...
-		if( $state or ( 0 == $executed ) ) {
-			warn( "!> \$state is '$state', statements executed is $executed - failing\n" );
+		if( $state ) {
+			warn( "!> \$state is '$state' - failing\n" );
+			$status = 0; # Failed
+		} elsif( ( 0 == $executed ) and not( ( $schmfile =~ m/V(.*?)__V(.*?)__/ ) ) ) {
+			warn( "!> statements executed is $executed - failing\n" );
 			$status = 0; # Failed
 		} else {
 			$status = 1; # Succeeded

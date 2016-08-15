@@ -610,7 +610,10 @@ function main() {
 				fi
 
 				local ppath
+				local -i sploaded=0
 				while read -r ppath; do
+					[[ -f "${ppath}/${db}.metadata" ]] || continue
+
 					extraparams=( --scripts "${ppath}" )
 					#if (( ${#extra[@]} )); then
 					if [[ -n "${extra[*]:-}" ]]; then
@@ -644,10 +647,24 @@ function main() {
 						else
 							die "Loading of stored procedures to database '${db}' (${myway} ${params[*]} ${extraparams[*]}${extra[*]:+ ${extra[*]}}) failed: ${result}"
 						fi
+					else
+						sploaded=1
 					fi
-				done < <( find "${procedurepath}"/ -mindepth 1 -maxdepth 1 -type d -name "${db}" 2>/dev/null | "${reorder[@]}" )
+				done < <( find "${procedurepath}"/ -mindepth 1 -maxdepth 2 -type d 2>/dev/null | grep "${db}" | "${reorder[@]}" )
+
+				if ! (( sploaded )); then
+					if (( keepgoing )); then
+						warn "Stored procedure load requested for database '${db}', but no valid Stored Procedures were processed"
+						output "\n\nContinuing to next database, if any ...\n"
+						rc=1
+					else
+						die "Stored procedure load requested for database '${db}', but no valid Stored Procedures were processed"
+					fi
+				fi
 
 				debug "Stored Procedures loaded for database '${db}'\n"
+
+				unset sploaded ppath procedurepath reorder procparams
 			fi
 
 			# ... and finally, perform schema deployment.
@@ -701,6 +718,9 @@ function main() {
 		# shellcheck disable=SC2015
 		(( rc )) && false || true
 
+		# Run in sub-shell so that the following is not necessary...
+		unset response allowfail option extraparams params messages details
+
 		)
 
 		result=${?}
@@ -725,10 +745,9 @@ function main() {
 				rc+=${result}
 				;;
 		esac
-	done
+	done # db in ${databases}
 
 	(( std_TRACE )) && set +o xtrace
-
 
 	debug "Releasing lock ..."
 	[[ -e "${lockfile}" && "$( <"${lockfile}" )" == "${$}" ]] && rm "${lockfile}"

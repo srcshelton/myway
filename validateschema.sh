@@ -145,6 +145,17 @@ function validate() {
 
 	else
 		for file in "${files[@]:-}"; do
+			if ! [[ -r "${file}" ]]; then
+				error "Cannot read file '${file}' - skipping verification"
+				(( warnings++ ))
+				continue
+			fi
+
+			if ! (( $( tail -n 1 "${file}" | wc -l ) )); then
+				error "File '${file}' is lacking a trailing newline at the end of the file - the last statement may be lost"
+				(( warnings++ ))
+			fi
+
 			name="$( basename "${file}" )"
 			if [[ "${type}" == "metadata" ]]; then
 				if ! [[ "${file}" =~ /${name%.metadata}/ ]]; then
@@ -159,29 +170,59 @@ function validate() {
 				if ! [[ "${name}" =~ __ ]]; then
 					error "File '${name}' MUST contain a '__' character sequence to separate version and description components"
 					(( warnings++ ))
+				else
+					case $(( $( grep '__' <<<"${name}" | wc -l ) )) in
+						0)
+							# Dealt with above...
+							:
+							;;
+						1)
+							# Normal schema file...
+							:
+							;;
+						2)
+							# Migration schema?
+							if ! [[ "${name}" =~ ^V[0-9.]+__V[0-9.]+__ ]]; then
+								error "File '${name}' is not a migration schema, and contains too many '__' sequences"
+								(( warnings++ ))
+							fi
+							;;
+						*)
+							error "File '${name}' contains too many '__' sequences"
+							(( warnings++ ))
+							;;
+					esac
 				fi
 				if ! [[ "${name}" =~ \.sql$ ]]; then
 					error "File '${name}' MUST end with '.sql'"
 					(( warnings++ ))
 				else
-					if [[ ! "${name}" =~ ^V.*__V.*__ ]] && [[ ! "${name}" =~ \.d[dmc]l\.sql$ ]]; then
+					if [[ "${name}" =~ ^V[0-9.]+__V[0-9.]+__ ]]; then
+						unset defaulttype
+					elif [[ ! "${name}" =~ \.d[dmc]l\.sql$ ]]; then
 						note "File '${name}' SHOULD contain 'ddl', 'dml', or 'dcl' to indicate its change-type"
 						(( notices++ ))
 						warn "Assuming '${name}' is of type '${defaulttype}'"
 					fi
 				fi
-				if grep -Eq 'V.*[A-Z]' <<<"${name}"; then
+				if [[ "${name}" =~ ^V[0-9.]+__V[0-9.]+__ ]]; then
+					if [[ "${name}" =~ ^V[0-9.]+__V[0-9.]+__.*[A-Z] ]]; then
+						note "File '${name}' SHOULD be entirely lower-case after the initial capital 'V'"
+						(( notices++ ))
+					fi
+				elif [[ "${name}" =~ ^V[0-9.]+__.*[A-Z] ]]; then
 					note "File '${name}' SHOULD be entirely lower-case after the initial capital 'V'"
 					(( notices++ ))
 				fi
-				version="$( grep -Po '^V.*?__' <<<"${name}" | sed 's/^V// ; s/__$//' )"
-				migrationversion="$( grep -Po '__V.*?__' <<<"${name}" | sed 's/^__V// ; s/__$//' )"
-				description="$( grep -Po '__.*?\.' <<<"${name}" | sed 's/^__// ; s/\.$//' )"
+				version="$( grep -oP '^V.*?__' <<<"${name}" | sed 's/^V// ; s/__$//' )"
+				migrationversion="$( grep -oP '__V.*?__' <<<"${name}" | sed 's/^__V// ; s/__$//' )"
+				description="$( grep -oP '__.*?\.' <<<"${name}" | tail -n 1 | sed 's/^__// ; s/\.$//' )"
 				desc="$( sed 's/[^A-Za-z]/_/g' <<<"${description:-}" )"
-				environment="$( grep -Po "\\Q${description:-}\\E\.(not-)?.*?\." <<<"${name}" | cut -d'.' -f 2 )"
+				environment="$( grep -oP "\\Q${description:-}\\E\.(not-)?.*?\." <<<"${name}" | cut -d'.' -f 2 )"
 				filetype="$( grep -o '\.d[dmc]l\.sql$' <<<"${name}" | cut -d'.' -f 2 )"
 				[[ "${environment}" == "${filetype}" ]] && unset environment
-				fullname="V${version:-<version>}${migrationversion:+__V${migrationversion}}__${description:-<description>}${environment:+.${environment}}.${filetype:-${defaulttype}}.sql"
+				fullname="V${version:-<version>}${migrationversion:+__V${migrationversion}}__${description:-<description>}${environment:+.${environment}}.${filetype:-${defaulttype:-}}.sql"
+				[[ -z "${defaulttype:-}" ]] && fullname="${fullname/../.}" # Fix migration schema <sigh>
 				debug "version is '${version:-}'"
 				debug "migrationversion is '${migrationversion:-}'"
 				debug "description is '${description:-}'"
@@ -197,32 +238,41 @@ function validate() {
 						(( styles++ ))
 					fi
 				fi
-				if grep -Pq '^0*\d+\.0*\d+(\.0*\d+)(\.0*\d+)$' <<<"${version}"; then
+				if ! grep -Pq '^0*\d+\.0*\d+(\.0*\d+)?(\.0*\d+)?$' <<<"${version}"; then
+					if grep -Pq '^0*\d+\.0*\d+(\.0*\d+)?(\.0*\d+)?' <<<"${version}"; then
+						error "Filename '${name}' does not include a recognised version number - too many sets of digits?"
+						version="$( grep -oP '^0*\d+\.0*\d+(\.0*\d+)?(\.0*\d+)?' <<<"${version}" )"
+					else
+						error "Filename '${name}' does not include a recognised version number"
+					fi
+					(( warnings++ ))
+				fi
+				if grep -Pq '^0*\d+\.0*\d+(\.0*\d+)?(\.0*\d+)?$' <<<"${version}"; then
 					if grep -Eq '^0|\.0' <<<"${version}"; then
 						newversion="$( sed -r 's/^0+// ; s/^\.// ; s/^0+// ; s/\.0+$// ; s/\.0+$//' <<<"${version}" )"
 						local -i digit=0
 						if grep -Pq '^\d+\.\d+\.\d+$' <<<"${newversion}"; then
-							digit=$( cut -d'.' -f 3 <<<"${newversion}" )
+							digit=$( cut -d'.' -f 3 <<<"${newversion}" | sed 's/^0\+//' )
 							(( digit++ ))
 							newversion="$( cut -d'.' -f 1,2 <<<"${newversion}" ).${digit}"
 						fi
 						if grep -Pq '^\d+\.\d+$' <<<"${newversion}"; then
-							digit=$( cut -d'.' -f 2 <<<"${newversion}" )
+							digit=$( cut -d'.' -f 2 <<<"${newversion}" | sed 's/^0\+//' )
 							(( digit++ ))
 							newversion="$( cut -d'.' -f 1 <<<"${newversion}" ).${digit}"
 						fi
 						if grep -Pq '^\d+$' <<<"${newversion}"; then
 							newversion+=".1"
 						fi
-						if [[ -n "${migrationversion:-}" ]] && grep -Pq '^0*\d+\.0*\d+(\.0*\d+)(\.0*\d+)$' <<<"${migrationversion}"; then
+						if [[ -n "${migrationversion:-}" ]] && grep -Pq '^0*\d+\.0*\d+(\.0*\d+)?(\.0*\d+)?$' <<<"${migrationversion}"; then
 							newmigrationversion="$( sed -r 's/^0+// ; s/^\.// ; s/^0+// ; s/\.0+$// ; s/\.0+$//' <<<"${migrationversion}" )"
 							if grep -Pq '^\d+\.\d+\.\d+$' <<<"${newmigrationversion}"; then
-								digit=$( cut -d'.' -f 3 <<<"${newmigrationversion}" )
+								digit=$( cut -d'.' -f 3 <<<"${newmigrationversion}" | sed 's/^0\+//' )
 								(( digit++ ))
 								newmigrationversion="$( cut -d'.' -f 1,2 <<<"${newmigrationversion}" ).${digit}"
 							fi
 							if grep -Pq '^\d+\.\d+$' <<<"${newmigrationversion}"; then
-								digit=$( cut -d'.' -f 2 <<<"${newmigrationversion}" )
+								digit=$( cut -d'.' -f 2 <<<"${newmigrationversion}" | sed 's/^0\+//' )
 								(( digit++ ))
 								newmigrationversion="$( cut -d'.' -f 1 <<<"${newmigrationversion}" ).${digit}"
 							fi
@@ -418,7 +468,8 @@ function validate() {
 								(( warnings++ ))
 							fi
 
-							if ! [[ "${type}" == "metadata" || "${name}" =~ ^V${value}__ ]]; then
+							# Lack of caret before V allows matching migration schema files...
+							if ! [[ "${type}" == "metadata" || "${name}" =~ V${value}__ ]]; then
 								warn "Metadata from file '${name}' specifies 'Target Version: ${value}', which does not match filename"
 								(( warnings++ ))
 							fi
@@ -474,7 +525,10 @@ function validate() {
 			done < <( awk -- "${script:-}" "${file}" ) # while read -r line
 
 			if [[ -n "${newversion:-}" ]]; then
-				note "File '${name}' contains legacy version string '${version}' - suggest migration to new naming scheme 'V${newversion}${newmigrationversion:+__V${newmigrationversion}}__${metadescription:-${description:-<description>}}${environment:+.${environment}}.${filetype:-${defaulttype}}.sql'"
+				fullname="V${newversion}${newmigrationversion:+__V${newmigrationversion}}__${metadescription:-${description:-<description>}}${environment:+.${environment}}.${filetype:-${defaulttype:-}}.sql"
+				[[ -z "${defaulttype:-}" ]] && fullname="${fullname/../.}" # Fix migration schema <sigh>
+
+				note "File '${name}' contains legacy version string '${version}' - suggest migration to new naming scheme '${fullname}'"
 				(( notices++ ))
 			fi
 
@@ -542,8 +596,8 @@ function validate() {
 			local cgrep='grep --colour=always'
 			${cgrep} 'x' <<<'x' >/dev/null 2>&1 || cgrep='grep'
 
-			case "${filetype:-${defaulttype}}" in
-				dml)
+			case "${filetype:-${defaulttype:-}}" in
+				'dml')
 					if sed -r 's|/\*.*\*/|| ; s/--.*// ; s/#.*$// ; s/(CREATE|DROP)\s+TEMPORARY\s+TABLE//' "${file}" | grep -Eiq '\s+(CREATE|ALTER|DROP)\s+'; then # DDL
 						warn "Detected DDL in DML-only file '${name}':"
 						warn "$( ${cgrep} -Ei '\s+(CREATE|ALTER|DROP)\s+' "${file}" | grep -Ev "(CREATE|DROP)\s+TEMPORARY\s+TABLE)" )"
@@ -555,10 +609,10 @@ function validate() {
 						(( warnings++ ))
 					fi
 					;;
-				ddl)
-					if sed 's|/\*.*\*/|| ; s/--.*// ; s/#.*$//' "${file}" | grep -Eiq '\s+(UPDATE|INSERT|DELETE\s+FROM)\s+'; then # DML
+				'ddl')
+					if sed 's|/\*.*\*/|| ; s/--.*// ; s/#.*$//' "${file}" | grep -Eiq '\s+(UPDATE\s+.*SET\s+|INSERT|DELETE\s+FROM)\s+'; then # DML
 						warn "Detected DML in DDL-only file '${name}':"
-						warn "$( ${cgrep} -Ei '\s+(UPDATE|INSERT|DELETE\s+FROM)\s+' "${file}" )"
+						warn "$( ${cgrep} -Ei '\s+(UPDATE\s+.*SET|INSERT|DELETE\s+FROM)\s+' "${file}" )"
 						(( warnings++ ))
 					fi
 					if sed 's|/\*.*\*/|| ; s/--.*// ; s/#.*$//' "${file}" | grep -Eiq '\s+(GRANT|REVOKE)\s+'; then # DCL
@@ -567,15 +621,22 @@ function validate() {
 						(( warnings++ ))
 					fi
 					;;
-				dcl)
-					if sed 's|/\*.*\*/|| ; s/--.*// ; s/#.*$//' "${file}" | grep -Eiq '\s+(UPDATE|INSERT|DELETE\s+FROM)\s+'; then # DML
+				'dcl')
+					if sed 's|/\*.*\*/|| ; s/--.*// ; s/#.*$//' "${file}" | grep -Eiq '\s+(UPDATE\s+.*SET\s+|INSERT|DELETE\s+FROM)\s+'; then # DML
 						warn "Detected DML in DCL-only file '${name}':"
-						warn "$( ${cgrep} -Ei '\s+(UPDATE|INSERT|DELETE\s+FROM)\s+' "${file}" )"
+						warn "$( ${cgrep} -Ei '\s+(UPDATE\s+.*SET|INSERT|DELETE\s+FROM)\s+' "${file}" )"
 						(( warnings++ ))
 					fi
 					if sed -r 's|/\*.*\*/|| ; s/--.*// ; s/#.*$// ; s/(CREATE|DROP)\s+TEMPORARY\s+TABLE//' "${file}" | grep -Eiq '\s+(CREATE|ALTER|DROP)\s+'; then # DDL
 						warn "Detected DDL in DCL-only file '${name}':"
 						warn "$( ${cgrep} -Ei '\s+(CREATE|ALTER|DROP)\s+' "${file}" | grep -Ev "(CREATE|DROP)\s+TEMPORARY\s+TABLE)" )"
+						(( warnings++ ))
+					fi
+					;;
+				'')
+					if sed 's|/\*.*\*/|| ; s/--.*// ; s/#.*$//' "${file}" | grep -Eiq '[a-z]'; then # Anything!
+						warn "Detected non-commented statements in migration file '${name}':"
+						sed 's|/\*.*\*/|| ; s/--.*// ; s/#.*$//' "${file}" | grep -v '^\s*$'
 						(( warnings++ ))
 					fi
 					;;
@@ -618,10 +679,15 @@ function main() {
 
 	local -i novsort=0
 	if ! sort -V <<<"" >/dev/null 2>&1; then
-		warn "Version sort unavailable - Stored Procedure load-order" \
-		     "cannot be guaranteed."
+		warn "Version sort unavailable - Stored Procedure and Schema" \
+		     "file load-order cannot be guaranteed."
+		error "You may see spurious warnings about missing prior" \
+		      "versions if you continue."
+		info "To resolve this issue, please upgrade to the latest" \
+		     "git-for-windows release..."
+		echo
 		warn "Press ctrl+c now to abort ..."
-		sleep 5
+		sleep 10
 		warn "Proceeding ..."
 		novsort=1
 		(( warnings++ ))
@@ -927,7 +993,7 @@ function main() {
 		if grep -Eiq "${truthy}" <<<"${procedures:-}"; then
 			local -a reorder=( sort -V )
 			if (( novsort )); then
-				reorder=( tac )
+				reorder=( cat )
 			fi
 
 			local procedurepath="${path}/procedures"
@@ -936,29 +1002,54 @@ function main() {
 			fi
 
 			local ppath
+			local hasfile=0 hasdir=0
 			while read -r ppath; do
-				for filename in "${ppath}"/*; do
-					if [[ -f "${filename}" && "${filename}" =~ \.sql$ ]]; then
+				while read -r filename; do
+					if [[ -f "${filename}" ]]; then
+						hasfile=1
+						(( hasdir )) && break
+					elif [[ -d "${filename}" ]]; then
+						hasdir=1
+						(( hasfile )) && break
+					elif ! [[ -e "${filename}" ]]; then
+						die "LOGIC ERROR: (1): Filesystem object '${filename}' does not exist"
+					fi
+				done < <( find "${ppath}"/ -mindepth 1 -maxdepth 1 2>/dev/null | "${reorder[@]}" )
+				while read -r filename; do
+					if [[ -f "${filename}" && "$( basename "${filename}" )" =~ \.sql$ ]]; then
+						if (( hasdir )); then
+							warn "Invalid mix of files and directories at same level"
+							(( warnings++ ))
+						fi
 						validate -type 'procedure' -files "${filename}"
 						(( rc += ${?} ))
 						founddb=1
 					elif [[ -d "${filename}" ]]; then
-						note "Directory '${filename}' should not be present in directory '${ppath}' and will be ignored"
-						(( notices++ ))
+						if (( hasfile )); then
+							note "Directory '$( basename "${filename}" )' should not be present in directory '${ppath}' and will be ignored during Stored Procedure processing"
+							(( notices++ ))
+						fi
 					elif [[ -f "${filename}" ]]; then
-						if [[ "${filename}" =~ \.metadata$ ]]; then
-							debug "File '${filename}' is Stored Procedure metadata"
-							validate -type 'metadata' -files "${filename}"
-						else
-							warn "File '${filename}' does not end in '.sql' and so should not be present in directory '${ppath}'"
+						if (( hasdir )); then
+							warn "Invalid mix of files and directories at same level"
 							(( warnings++ ))
 						fi
-					else
-						warn "Object '${filename}' should not be present in directory '${ppath}' and will be ignored"
+						if [[ "$( basename "${filename}" )" =~ \.metadata$ ]]; then
+							debug "File '$( basename "${filename}" )' is Stored Procedure metadata"
+							validate -type 'metadata' -files "${filename}"
+						else
+							warn "File '$( basename "${filename}" )' does not end in '.sql' and so should not be present in directory '${ppath}'"
+							(( warnings++ ))
+						fi
+					elif [[ -e "${filename}" ]]; then
+						warn "Object '$( basename "${filename}" )' should not be present in directory '${ppath}' and will be ignored during Stored Procedure processing"
 						(( warnings++ ))
+					else
+						die "LOGIC ERROR: (2): Filesystem object '${filename}' does not exist"
 					fi
-				done
-			done < <( find "${procedurepath}"/ -mindepth 1 -maxdepth 1 -type d -name "${db}" 2>/dev/null | "${reorder[@]}" )
+				done < <( find "${ppath}"/ -mindepth 1 -maxdepth 1 2>/dev/null | "${reorder[@]}" )
+			done < <( find "${procedurepath}"/ -mindepth 1 -maxdepth 2 -type d 2>/dev/null | grep "${db}" | "${reorder[@]}" )
+			unset hasdir hasfile ppath
 
 			debug "Stored Procedures processed for database '${db}'\n"
 
@@ -974,25 +1065,44 @@ function main() {
 		else
 			ppath="${path}/schema/${db}"
 		fi
-		for filename in $( find "${ppath}" -mindepth 1 -maxdepth 1 -print0 | sort -Vz | xargs -r0 echo ); do
-			if [[ -f "${filename}" && "${filename}" =~ \.sql$ ]]; then
+		#for filename in $( find "${ppath}" -mindepth 1 -maxdepth 1 -print0 | sort -Vz | xargs -r0 echo ); do
+		for filename in $(
+			local k o v
+			local -A prefices=()
+
+			while read -r o; do
+				v="$( cut -d'_' -f 1 <<<"$( basename "${o}" )" )"
+				prefices["${v}"]="${o}"
+			done < <( find "${ppath}"/ -mindepth 1 -maxdepth 1 -print 2>/dev/null )
+
+			while read -r v; do
+				echo "${prefices["${v}"]}"
+			done < <( for k in "${!prefices[@]}"; do echo "${k}"; done | sort -V )
+
+			unset prefices v o k
+		); do
+			# This is not always guaranteed to be the case, so
+			# let's ensure that we always have the same data...
+			filename="$( basename "${filename}" )"
+
+			if [[ -f "${ppath}/${filename}" && "${filename}" =~ \.sql$ ]]; then
 				if [[ -n "${syntax:-}" && "${syntax}" == "vertica" ]]; then
-					validate -type 'vertica-schema' ${version_max:+-max "${version_max}" }-files "${filename}"
+					validate -type 'vertica-schema' ${version_max:+-max "${version_max}" }-files "${ppath}/${filename}"
 				else
-					validate -type 'schema' ${version_max:+-max "${version_max}" }-files "${filename}"
+					validate -type 'schema' ${version_max:+-max "${version_max}" }-files "${ppath}/${filename}"
 				fi
 				(( rc += ${?} ))
 				founddb=1
-			elif [[ -d "${filename}" ]]; then
-				note "Directory '${filename}' should not be present in directory '${ppath}' and will be ignored"
+			elif [[ -d "${ppath}/${filename}" ]]; then
+				note "Directory '${filename}' should not be present in directory '${ppath}' and will be ignored during schema file processing"
 				(( notices++ ))
-			elif [[ -f "${filename}" ]]; then
+			elif [[ -f "${ppath}/${filename}" ]]; then
 
 				# TODO: Alternatively, any referenced files
 				#       could be returned by validate()...
 
 				if grep -Eiq "${truthy}" <<<"${procedures:-}" && [[ "${filename}" =~ \.metadata$ ]]; then
-					debug "File '${filename}' is Stored Procedure metadata"
+					debug "File '${filename}' in directory '${ppath}' is Stored Procedure metadata"
 				else
 					local script restorefiles files
 					std::define script <<-EOF
@@ -1002,16 +1112,16 @@ function main() {
 						/\*\//		{ exit }
 					EOF
 					if (( std_DEBUG )); then
-						for files in "${ppath}"/*; do
+						find "${ppath}" -mindepth 1 -maxdepth 1 | while read -r files; do
 							debug "Checking file '${files}' for 'Restore:' directive ..."
 							awk -- "${script:-}" "${files}"
 							awk -- "${script:-}" "${files}" | grep --colour -o 'Restore:\s*[^[:space:]]\+\s*'
 						done
 					fi
-					restorefiles="$( for files in "${ppath}"/*; do
+					restorefiles="$( find "${ppath}" -mindepth 1 -maxdepth 1 | while read -r files; do
 						awk -- "${script:-}" "${files}" | grep -o 'Restore:\s*[^[:space:]]\+\s*'
 					done | cut -d':' -f 2- | xargs echo )"
-					if ! grep -qw "$( basename "${filename}" )" <<<"${restorefiles}"; then
+					if ! grep -qw "${filename}" <<<"${restorefiles}"; then
 						warn "File '${filename}' does not end in '.sql' and so should not be present in directory '${ppath}'"
 						(( warnings++ ))
 					else
@@ -1019,7 +1129,7 @@ function main() {
 					fi
 				fi
 			else
-				warn "Object '${filename}' should not be present in directory '${ppath}' and will be ignored"
+				warn "Object '${filename}' should not be present in directory '${ppath}' and will be ignored during schema file processing"
 				(( warnings++ ))
 			fi
 		done
