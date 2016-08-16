@@ -51,7 +51,13 @@ fi
 
 # Override `die` to return '2' on fatal error...
 function die() {
-	[[ -n "${*:-}" ]] && std_DEBUG=1 std::log >&2 "FATAL: " "${*}"
+	if [[ -n "${*:-}" ]]; then
+		if [[ 'function' == "$( type -t std::colour )" ]]; then
+			std_DEBUG=1 std::log >&2 "$( std::colour "FATAL: " )" "${*}"
+		else
+			std_DEBUG=1 std::log >&2 "FATAL: " "${*}"
+		fi
+	fi
 	std::cleanup 2
 
 	# Unreachable

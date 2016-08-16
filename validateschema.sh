@@ -238,16 +238,16 @@ function validate() {
 						(( styles++ ))
 					fi
 				fi
-				if ! grep -Pq '^0*\d+\.0*\d+(\.0*\d+)?(\.0*\d+)?$' <<<"${version}"; then
-					if grep -Pq '^0*\d+\.0*\d+(\.0*\d+)?(\.0*\d+)?' <<<"${version}"; then
+				if ! grep -Pq '^0*\d+(\.0*\d+)?(\.0*\d+)?(\.0*\d+)?$' <<<"${version}"; then
+					if grep -Pq '^0*\d+(\.0*\d+)?(\.0*\d+)?(\.0*\d+)?' <<<"${version}"; then
 						error "Filename '${name}' does not include a recognised version number - too many sets of digits?"
-						version="$( grep -oP '^0*\d+\.0*\d+(\.0*\d+)?(\.0*\d+)?' <<<"${version}" )"
+						version="$( grep -oP '^0*\d+(\.0*\d+)?(\.0*\d+)?(\.0*\d+)?' <<<"${version}" )"
 					else
 						error "Filename '${name}' does not include a recognised version number"
 					fi
 					(( warnings++ ))
 				fi
-				if grep -Pq '^0*\d+\.0*\d+(\.0*\d+)?(\.0*\d+)?$' <<<"${version}"; then
+				if grep -Pq '^0*\d+(\.0*\d+)?(\.0*\d+)?(\.0*\d+)?$' <<<"${version}"; then
 					if grep -Eq '^0|\.0' <<<"${version}"; then
 						newversion="$( sed -r 's/^0+// ; s/^\.// ; s/^0+// ; s/\.0+$// ; s/\.0+$//' <<<"${version}" )"
 						local -i digit=0
@@ -264,7 +264,7 @@ function validate() {
 						if grep -Pq '^\d+$' <<<"${newversion}"; then
 							newversion+=".1"
 						fi
-						if [[ -n "${migrationversion:-}" ]] && grep -Pq '^0*\d+\.0*\d+(\.0*\d+)?(\.0*\d+)?$' <<<"${migrationversion}"; then
+						if [[ -n "${migrationversion:-}" ]] && grep -Pq '^0*\d+(\.0*\d+)?(\.0*\d+)?(\.0*\d+)?$' <<<"${migrationversion}"; then
 							newmigrationversion="$( sed -r 's/^0+// ; s/^\.// ; s/^0+// ; s/\.0+$// ; s/\.0+$//' <<<"${migrationversion}" )"
 							if grep -Pq '^\d+\.\d+\.\d+$' <<<"${newmigrationversion}"; then
 								digit=$( cut -d'.' -f 3 <<<"${newmigrationversion}" | sed 's/^0\+//' )
