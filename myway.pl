@@ -5513,7 +5513,7 @@ sub applyschema( $$$$;$ ) { # {{{
 
 		( $schmfile, $schmpath, $schmext ) = fileparse( realpath( $file ), qr/\.[^.]+/ );
 		if( not( defined( $desc ) and length( $desc ) ) ) {
-			if( $schmfile =~ m/^V.*?__(.*?)(?:\.d[dm]l)?$/ ) {
+			if( $schmfile =~ m/^(?:V[[:xdigit:].]+__)?V[[:xdigit:].]+__(.*?)(?:\.d[dmc]l)?(?:\..*?)?$/ ) {
 				( $desc = $1 ) =~ s/_/ /g;
 			}
 		}

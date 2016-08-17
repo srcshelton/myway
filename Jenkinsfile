@@ -2,8 +2,9 @@ withEnv( [
 	  'JENKINS_SFTP_SERVERS=/var/lib/jenkins/iod/software_servers.cfg'
 	, 'JENKINS_SERVER_TAGS=all'
 	, 'JENKINS_BUILD_TAG=master'
-	, 'JENKINS_COMPONENT_CFG=.build/package.cfg'
+	, 'JENKINS_COMPONENT_CFG=src/.build/package.cfg'
 	, 'JENKINS_HISTORY_DIR=/var/lib/jenkins/iod/history'
+	, 'JENKINS_FORCE_REBUILD=1'
 ] ) {
 	def nodeTag = getNode()
 
