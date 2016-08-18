@@ -2228,7 +2228,7 @@ no if ( $] >= 5.02 ), warnings => 'experimental::autoderef';
 # ... in actual fact, diagnostics causes more problems than it solves.  It does
 # appear to be, in reality, quite silly.
 
-use constant VERSION     =>  "1.2.0.2";
+use constant VERSION     =>  "1.2.0.11";
 
 use constant TRUE        =>  1;
 use constant FALSE       =>  0;
@@ -2318,7 +2318,7 @@ sub dbclose( ;$$ );
 sub dbdump( $;$$$$ );
 sub dbrestore( $$;$ );
 sub setverticasearchpath( $$;$$ );
-sub checkdbconnection( $ );
+sub checkdbconnection( $;$ );
 sub dosql( $$ );
 sub preparesql( $$ );
 sub executesql( $$$;@ );
@@ -2349,6 +2349,11 @@ our $tokenise = FALSE;
 
 # XXX: We're seeing random disconnects after successful commands with Vertica
 #      so this provides a temporary way to alert and attempt to reconnect...
+# The logic here is that if retries is defined, which is usually the case, then
+# standard error-checking is performed.  If retries is undefined then we return
+# without further error-checking on the assumption that we've been called from
+# *within* an error-checking function, and don't want to spiral off into
+# infinity...
 our $connection;
 our $retries = 0;
 #      ... and, of course, Vertica is very special :(
@@ -2440,12 +2445,12 @@ DDL
 	  , "installed_on"	TIMESTAMP	DEFAULT now()             NOT NULL
 	  , "execution_time"	INT		                          NOT NULL
 	  , "success"		BOOLEAN		                          NOT NULL
-	  , PRIMARY KEY ("version")
+	  , PRIMARY KEY ("version") ENABLED
 	)
 	ORDER BY "version", "version_rank", "installed_rank", "success"
 	SEGMENTED BY HASH( "version" ) ALL NODES;
-	ALTER TABLE __SCHEMA__"$flywaytablename" ADD CONSTRAINT "${flywaytablename}_pk" PRIMARY KEY ("version") ENABLED;
 DDL
+	#ALTER TABLE __SCHEMA__"$flywaytablename" ADD CONSTRAINT "${flywaytablename}_pk" PRIMARY KEY ("version") ENABLED;
 } else {
 	$flywayddl = <<DDL;
 	CREATE TABLE IF NOT EXISTS `$flywaytablename` (
@@ -2475,12 +2480,12 @@ DDL
 	  , "installed_on"	TIMESTAMP	DEFAULT now()             NOT NULL
 	  , "execution_time"	INT		                          NOT NULL
 	  , "success"		BOOLEAN		                          NOT NULL
-	  , PRIMARY KEY ("version")
+	  , PRIMARY KEY ("version") ENABLED
 	)
 	ORDER BY "version"
 	SEGMENTED BY HASH( "version" ) ALL NODES;
-	ALTER TABLE __SCHEMA__"$flywaytablename" ADD CONSTRAINT "${flywaytablename}_pk" PRIMARY KEY ("installed_rank") ENABLED;
 DDL
+	#ALTER TABLE __SCHEMA__"$flywaytablename" ADD CONSTRAINT "${flywaytablename}_pk" PRIMARY KEY ("installed_rank") ENABLED;
 }
 
 # Note that field-lengths in myway* tables are not arbitrary, but instead are
@@ -2589,7 +2594,7 @@ CREATE TABLE IF NOT EXISTS __SCHEMA__"$mywayactionsname" (
   , "state"		CHAR(5)
   , PRIMARY KEY ("id") ENABLED
   , CONSTRAINT   "${mywayactionsname}_schema_id_${mywaytablename}_id"
-    FOREIGN KEY ("schema_id") REFERENCES __SCHEMA__"$mywaytablename" ("id") ENABLED
+    FOREIGN KEY ("schema_id") REFERENCES __SCHEMA__"$mywaytablename" ("id")
 )
 ORDER BY "schema_id"
 SEGMENTED BY HASH( "schema_id" ) ALL NODES;
@@ -4168,11 +4173,16 @@ sub dbdump( $;$$$$ ) { # {{{
 			#      10.0.13 and above only (although earlier 10.1.x versions
 			#      may also lack the option...)
 			if( qx( mysqldump --version ) =~ m/ Distrib ([^-,]+)[-,]/ ) {
-				my @sortedversions = sort { versioncmp( $a, $b ) } ( $1, '10.0.12' );
-				my $latest = pop( @sortedversions );
-				if( not( $latest eq '10.0.12' )  ) {
-					print( "\n*> mysqldump supports Global Transaction IDs - adding '--gtid' option\n" );
-					$optdump .= ' --gtid';
+				my $match = $1;
+				if( not( defined( $match ) and length( $match ) ) ) {
+					print( "\n*> Unable to determine mysqldump version, not enabling GTID support\n" );
+				} else {
+					my @sortedversions = sort { versioncmp( $a, $b ) } ( $match, '10.0.12' );
+					my $latest = pop( @sortedversions );
+					if( not( $latest eq '10.0.12' )  ) {
+						print( "\n*> mysqldump supports Global Transaction IDs - adding '--gtid' option\n" );
+						$optdump .= ' --gtid';
+					}
 				}
 			}
 		}
@@ -4410,38 +4420,40 @@ sub setverticasearchpath( $$;$$ ) { # {{{
 	return( dosql( \$dbh, $searchpath ) );
 } # setverticasearchpath # }}}
 
-sub checkdbconnection( $ ) { # {{{
-	my( $dbh ) = @_;
-
-	#
-	# Vertica's ODBC interface appears to be horrendously broken, such that
-	# use of invalid syntax doesn't get reported, but causes the database
-	# to drop the connection.  If this is then re-established then there
-	# appears to be an off-by-one issue when you will then receive, in
-	# response to the next statement dispatched to the database (whether
-	# valid or not) the error associated with the *previous* statement!
-	#
+sub checkdbconnection( $;$ ) { # {{{
+	my( $dbh, $sth ) = @_;
 
 	return( undef ) unless( defined( $dbh ) );
 	die( "LOGIC: " . ( caller( 1 ) )[ 3 ] . "(" . ( caller( 0 ) )[ 2 ] . ") -> " . ( caller( 0 ) )[ 3 ] . ": arg1 must be passed by reference (" . ref( $dbh ) . ")\n" ) unless( 'REF' eq ref( $dbh ) );
 	die( "LOGIC: " . ( caller( 1 ) )[ 3 ] . "(" . ( caller( 0 ) )[ 2 ] . ") -> " . ( caller( 0 ) )[ 3 ] . ": \${ arg1 } must be of type DBI::db (" . ref( ${ $dbh } ) . ")\n" ) unless( 'DBI::db' eq ref( ${ $dbh } ) );
+	if( defined( $sth ) ) {
+		die( "LOGIC: " . ( caller( 1 ) )[ 3 ] . "(" . ( caller( 0 ) )[ 2 ] . ") -> " . ( caller( 0 ) )[ 3 ] . ": arg2 must be passed by reference (" . ref( $sth ) . ")\n" ) unless( 'REF' eq ref( $sth ) );
+		die( "LOGIC: " . ( caller( 1 ) )[ 3 ] . "(" . ( caller( 0 ) )[ 2 ] . ") -> " . ( caller( 0 ) )[ 3 ] . ": \${ arg2 } must be of type DBI::st (" . ref( ${ $sth } ) . ")\n" ) unless( 'DBI::st' eq ref( ${ $sth } ) );
+	}
 
+	my $statement = ${ $sth } -> { 'Statement' } if( defined( $sth ) );
+	$statement = ${ $dbh } -> { 'Statement' } unless( defined( $statement ) );
+
+	# When executed via ODBC against Vertica, ping() causes corruption of
+	# the database handle which results in the current prepared statement
+	# always appearing to be "SQLTables_PING" - but the statement stored in
+	# any active statement handle is unaffected and with the current
+	# implmenetation the correct statement still seems to be executed
+	# regardless...
 	return( TRUE ) if( ${ $dbh } -> ping() );
 
 	my $err = ${ $dbh } -> err();
 	my $errstr = ${ $dbh } -> errstr();
 	my $state = ${ $dbh } -> state();
 
-	my $statement = ${ $dbh } -> { Statement };
-	$statement = "<statement corrupted by known Vertica bug>" if( $statement eq 'SQLTables_PING' );
-
 	# Just in case we have anything cached...
+	${ $sth } -> finish() if( defined( $sth ) );
 	${ $dbh } -> disconnect();
 
 	warn( "$warning Database unexpectedly dropped connection!\n" );
 
 	if( not( defined( $connection ) and ( $connection -> { 'dsn' } ) ) ) {
-		die( "No prior connection string saved - attempt to re-use closed connection?\n" );
+		die( "No prior connection string saved - attempting to re-use closed connection?\n" );
 	}
 
 	warn( "!> Attempting to reconnect using last connection string:\n" );
@@ -4573,7 +4585,7 @@ sub dosql( $$ ) { # {{{
 			}
 
 			if( not( defined( $retries ) ) ) {
-				return( FALSE );
+				return( TRUE );
 			} else {
 				$retries ++;
 				if( not( checkdbconnection( $dbh ) ) ) {
@@ -4613,7 +4625,7 @@ sub dosql( $$ ) { # {{{
 	} else {
 
 		if( not( defined( $retries ) ) ) {
-			return( FALSE );
+			return( TRUE );
 		} else {
 			$retries ++;
 			if( not( checkdbconnection( $dbh ) ) ) {
@@ -4693,10 +4705,10 @@ sub preparesql( $$ ) { # {{{
 		}
 
 		if( not( defined( $retries ) ) ) {
-			return( FALSE );
+			return( undef );
 		} else {
 			$retries ++;
-			if( not( checkdbconnection( $dbh ) ) ) {
+			if( not( checkdbconnection( $dbh, ( defined( $sth ) ? \$sth : undef ) ) ) ) {
 				return( undef ) unless( $retries < 4 );
 				warn( "!> Retrying SQL statement \"$st\" after $retries failures ...\n" );
 				return( preparesql( $dbh, $st ) );
@@ -4710,10 +4722,10 @@ sub preparesql( $$ ) { # {{{
 		#       interaction!
 
 		if( not( defined( $retries ) ) ) {
-			return( FALSE );
+			return( $sth );
 		} else {
 			$retries ++;
-			if( not( checkdbconnection( $dbh ) ) ) {
+			if( not( checkdbconnection( $dbh, ( defined( $sth ) ? \$sth : undef ) ) ) ) {
 				return( undef ) unless( $retries < 4 );
 				warn( "!> Retrying SQL statement \"$st\" after $retries failures ...\n" );
 				return( preparesql( $dbh, $st ) );
@@ -4756,11 +4768,11 @@ sub executesql( $$$;@ ) { # {{{
 		if( defined( $st ) and length( $st )  ) {
 			warn( "\n$warning Database connection failed $retries time(s) when executing statement \"$st\"\n" );
 		} else {
-			warn( "\n$warning Database connection failed $retries time(s) when executing prepared statement \"" . ${ $dbh } -> { 'Statement' } . "\"\n" );
+			warn( "\n$warning Database connection failed $retries time(s) when executing prepared statement \"" . $sth -> { 'Statement' } . "\"\n" );
 		}
 	}
 
-	pdebug( 'SQL: Executing: "' . join( ' ', split( /\s*\n+\s*/, ${ $dbh } -> { 'Statement' } ) ) . '"' ) if( defined( ${ $dbh } -> { 'Statement' } ) );
+	pdebug( 'SQL: Executing: "' . join( ' ', split( /\s*\n+\s*/, $sth -> { 'Statement' } ) ) . '"' ) if( defined( $sth -> { 'Statement' } ) );
 	pdebug( 'SQL: Parameters: "' . join( '", "', grep defined, @values ) . '"' ) if( @values and scalar( @values ) );
 	eval {
 		my $result = $sth -> execute( @values );
@@ -4807,13 +4819,13 @@ sub executesql( $$$;@ ) { # {{{
 		}
 
 		if( not( defined( $retries ) ) ) {
-			return( FALSE );
+			return( undef );
 		} else {
 			$retries ++;
-			if( not( checkdbconnection( $dbh ) ) ) {
+			if( not( checkdbconnection( $dbh, ( defined( $sth ) ? \$sth : undef ) ) ) ) {
 				return( undef ) unless( $retries < 4 );
 				my $statement = $st;
-				$statement = $dbh -> { Statement } unless( defined( $st ) and length( $st ) );
+				$statement = $dbh -> { 'Statement' } unless( defined( $st ) and length( $st ) );
 				warn( "!> Retrying SQL statement \"$statement\" after $retries failures ...\n" );
 				return( executesql( $dbh, $sth, $st, @values ) );
 			}
@@ -4827,13 +4839,13 @@ sub executesql( $$$;@ ) { # {{{
 		#       interaction!
 
 		if( not( defined( $retries ) ) ) {
-			return( FALSE );
+			return( $sth );
 		} else {
 			$retries ++;
-			if( not( checkdbconnection( $dbh ) ) ) {
+			if( not( checkdbconnection( $dbh, ( defined( $sth ) ? \$sth : undef ) ) ) ) {
 				return( undef ) unless( $retries < 4 );
 				my $statement = $st;
-				$statement = $dbh -> { Statement } unless( defined( $st ) and length( $st ) );
+				$statement = $sth -> { 'Statement' } unless( defined( $st ) and length( $st ) );
 				warn( "!> Retrying SQL statement \"$statement\" after $retries failures ...\n" );
 				return( executesql( $dbh, $sth, $st, @values ) );
 			}
@@ -5747,38 +5759,43 @@ sub applyschema( $$$$;$ ) { # {{{
 
 			if( 'mysql' eq $engine ) {
 				$availabledatabases = getsqlvalues( \$dbh, "SHOW DATABASES" );
-				die( 'Unable to retrieve list of available databases' . ( defined( $dbh -> errstr() ) ? ': ' . $dbh -> errstr() : '' ) . "\n" ) unless( scalar( $availabledatabases ) );
+				die( 'Unable to retrieve list of available databases' . ( defined( $dbh -> errstr() ) ? ': ' . $dbh -> errstr() : '' ) . "\n" ) unless( scalar( @{ $availabledatabases } ) );
 				$availabletables = getsqlvalues( \$dbh, "SHOW TABLES" );
 			}
 
-			if( not( scalar( $availabletables ) ) ) {
+			if( not( scalar( @{ $availabletables } ) ) ) {
 				warn( "\n$warning Unable to retrieve list of tables for database `$db`" . ( defined( $dbh -> errstr() ) ? ': ' . $dbh -> errstr() : '' ) . "\n" );
 			} else {
 				my $versions = getsqlvalues( \$dbh, "SELECT DISTINCT `version` FROM `$verticadb$flywaytablename` WHERE `success` IS TRUE AND ( `type` = '$flywayinit' OR `type` = 'INIT' )" );
-				my @sortedversions = sort { versioncmp( $a, $b ) } @{ $versions };
-				my $version = pop( @sortedversions );
+				my @sortedversions;
+				my $version;
+				if( scalar( @{ $versions } ) ) {
+					@sortedversions = sort { versioncmp( $a, $b ) } @{ $versions };
+					$version = pop( @sortedversions );
+				}
 				if( defined( $version ) and length( $version ) ) {
 					if( $schmfile =~ m/^(?:V[[:xdigit:].]+__)?V([[:xdigit:].]+)__/ ) {
 						my $match = $1;
-						my @sortedversions = sort { versioncmp( $a, $b ) } ( $version, $match );
-						my $latest = pop( @sortedversions );
-						my $previous = pop( @sortedversions );
-						if( not( $force ) ) {
-							if( ( $match eq $latest ) and ( $latest eq $previous ) ) {
-								print( "=> Skipping base initialiser file '$schmfile' ...\n" ) unless( $quiet or $silent );
-								dbclose( \$dbh );
-								return( TRUE );
-							} elsif( $match eq $previous ) {
-								print( "=> Skipping pre-initialisation file '$schmfile' ...\n" ) unless( $silent );
-								dbclose( \$dbh );
-								return( TRUE );
+						if( not( defined( $match ) and length( $match ) ) ) {
+							warn( "!> Could not determine version number from filename '$schmfile' during shortcut processing\n" );
+						} else {
+							my @sortedversions = sort { versioncmp( $a, $b ) } ( $version, $match );
+							my $latest = pop( @sortedversions );
+							my $previous = pop( @sortedversions );
+							if( not( $force ) ) {
+								if( ( $match eq $latest ) and ( $latest eq $previous ) ) {
+									print( "=> Skipping base initialiser file '$schmfile' ...\n" ) unless( $quiet or $silent );
+									dbclose( \$dbh );
+									return( TRUE );
+								} elsif( $match eq $previous ) {
+									print( "=> Skipping pre-initialisation file '$schmfile' ...\n" ) unless( $silent );
+									dbclose( \$dbh );
+									return( TRUE );
+								}
 							}
 						}
 					}
 
-					#$schmversion = $action_init;
-					#$schmversion = $1 if( not( defined( $schmversion ) and length( $schmversion ) ) and ( $schmfile =~ m/^(?:V[[:xdigit:].]+__)?V([[:xdigit:].]+)__/ ) );
-					#$schmversion = '0' unless( defined( $schmversion ) and length( $schmversion ) );
 					my $metadataversions = getsqlvalues( \$dbh, "SELECT DISTINCT `version` FROM `$verticadb$flywaytablename` WHERE `success` IS TRUE" );
 
 					my( $scode, $schange, $sstep, $shotfix, $sother ) = ( $schmversion =~ m/^([[:xdigit:]]+)(?:\.(\d+)(?:\.(\d+)(?:\.(\d+))?)?)?(.*?)$/ );
@@ -5805,7 +5822,6 @@ sub applyschema( $$$$;$ ) { # {{{
 					# metadata can only match without an
 					# extension.
 
-					#if( /^$schmversion$/ ~~ $metadataversions )
 					if( defined( $sv ) and ( qr/^$sv(?:\.0+)?$/ |M| $metadataversions ) ) {
 						if( $pretend ) {
 							if( $force ) {
@@ -5945,7 +5961,6 @@ sub applyschema( $$$$;$ ) { # {{{
 										#$table =~ s/\([^\)]*\)//g;
 										$table =~ s/`//g;
 
-										#if( not( /^$table$/ ~~ @dumptables ) )
 										if( defined( $table ) and ( not( scalar( @dumptables ) and ( qr/^$table$/ |M| \@dumptables ) ) ) ) {
 											print( "=> Adding table `$table` to backup list ...\n" );
 											push( @dumptables, $table );
@@ -6038,15 +6053,16 @@ sub applyschema( $$$$;$ ) { # {{{
 	#
 	if( 'mysql' eq $engine ) {
 		$availabledatabases = getsqlvalues( \$dbh, "SHOW DATABASES" );
-		die( 'Unable to retrieve list of available databases' . ( defined( $dbh -> errstr() ) ? ': ' . $dbh -> errstr() : '' ) . "\n" ) unless( scalar( $availabledatabases ) );
+		die( 'Unable to retrieve list of available databases' . ( defined( $dbh -> errstr() ) ? ': ' . $dbh -> errstr() : '' ) . "\n" ) unless( scalar( @{ $availabledatabases } ) );
 	}
 
 	if( 'vertica' eq $engine ) {
 		$availabletables = getsqlvalues( \$dbh, "SELECT `table_name` FROM `tables` WHERE `table_schema` = '$vschm'" );
+		$availabletables = getsqlvalues( \$dbh, "SELECT `table_name` FROM `tables` WHERE `table_schema` = '$vschm'" ) if( not( scalar( @{ $availabletables } ) ) )
 	} elsif( 'mysql' eq $engine ) {
 		$availabletables = getsqlvalues( \$dbh, "SHOW TABLES" );
 	}
-	warn( "\n$warning Unable to retrieve list of tables for database `$db`" . ( defined( $dbh -> errstr() ) ? ': ' . $dbh -> errstr() : '' ) . "\n" ) unless( scalar( $availabletables ) );
+	warn( "\n$warning Unable to retrieve list of tables for database `$db`" . ( defined( $dbh -> errstr() ) ? ': ' . $dbh -> errstr() : '' ) . "\n" ) unless( scalar( @{ $availabletables } ) );
 
 	#
 	# Populate tracking tables, if necessary # {{{
@@ -6065,8 +6081,9 @@ sub applyschema( $$$$;$ ) { # {{{
 	print( "\n" ) unless( defined( $action_init ) or $quiet or $silent );
 
 	if( not( 'procedure' eq $mode ) ) {
-		#if( not( /^$flywaytablename$/ ~~ @{ $availabletables } ) )
 		if( defined( $flywaytablename ) and not( qr/^$flywaytablename$/ |M| \@{ $availabletables } ) ) {
+			warn( "!> Examined " . scalar( @{ $availabletables } ) . " tables:\n" );
+			print Data::Dumper -> Dump( [ $availabletables ], [ qw( *availabletables ) ] );
 			if( $pretend ) {
 				warn( "!> flyway metadata table `$flywaytablename` does not exist" . ( ( 'vertica' eq $engine ) ? " in schema '$vschm'" : '' ) . ".\n" );
 			} else {
@@ -6085,22 +6102,24 @@ sub applyschema( $$$$;$ ) { # {{{
 					#        This should at least be made consistent...
 					#
 					my $versions = getsqlvalues( \$dbh, "SELECT DISTINCT `version` FROM `$verticadb$flywaytablename` WHERE `success` IS TRUE" );
-					my @sortedversions = sort { versioncmp( $a, $b ) } @{ $versions };
-					my $version = pop( @sortedversions );
-					print( ( ( $quiet or $silent ) ? '' : "\n" ) . "*> flyway metadata table `$flywaytablename` is already initialised to version '$version'.\n" );
-					if( $force ) {
-						if( $pretend ) {
-							print( "*> Would force re-initialisation to version '$schmversion'.\n" );
+					if( scalar( @{ $versions } ) ) {
+						my @sortedversions = sort { versioncmp( $a, $b ) } @{ $versions };
+						my $version = pop( @sortedversions );
+						print( ( ( $quiet or $silent ) ? '' : "\n" ) . "*> flyway metadata table `$flywaytablename` is already initialised to version '$version'.\n" );
+						if( $force ) {
+							if( $pretend ) {
+								print( "*> Would force re-initialisation to version '$schmversion'.\n" );
+							} else {
+								print( "*> Forcing re-initialisation to version '$schmversion' ...\n" );
+								$init = 0;
+							}
 						} else {
-							print( "*> Forcing re-initialisation to version '$schmversion' ...\n" );
-							$init = 0;
-						}
-					} else {
-						if( $pretend ) {
-							warn( "!> Database `$db` has already been initialised to version '$version' - please use '--clear-metadata' to discard.\n" );
-						} else {
-							#    "INFO:   xxx" - to match stdlib.sh widths from applyschema.sh
-							die( "        Database `$db` has already been initialised to version '$version' - please use '--clear-metadata' to discard.\n" );
+							if( $pretend ) {
+								warn( "!> Database `$db` has already been initialised to version '$version' - please use '--clear-metadata' to discard.\n" );
+							} else {
+								#    "INFO:   xxx" - to match stdlib.sh widths from applyschema.sh
+								die( "        Database `$db` has already been initialised to version '$version' - please use '--clear-metadata' to discard.\n" );
+							}
 						}
 					}
 				}
@@ -6223,8 +6242,12 @@ SQL
 				#            ^^^         ^^^         ^^^    ^^^
 				#
 				my $versions = getsqlvalues( \$dbh, "SELECT DISTINCT `version` FROM `$verticadb$flywaytablename` WHERE `success` IS TRUE AND ( `type` = '$flywayinit' OR `type` = 'INIT' )" );
-				my @sortedversions = sort { versioncmp( $a, $b ) } @{ $versions };
-				my $version = pop( @sortedversions );
+				my @sortedversions;
+				my $version;
+				if( scalar( @{ $versions } ) ) {
+					@sortedversions = sort { versioncmp( $a, $b ) } @{ $versions };
+					$version = pop( @sortedversions );
+				}
 				if( not( defined( $version ) and length( $version ) ) ) {
 					if( not( $force ) ) {
 						die( "Database metadata is in need of migration or has not been initialised with this tool - please re-run with '--init' and the appropriate schema-file version number.\n" );
@@ -6235,81 +6258,81 @@ SQL
 					if( $schmfile =~ m/^(?:V[[:xdigit:].]+__)?V([[:xdigit:].]+)__/ ) {
 						my $match = $1;
 
-						if( defined( $limit ) ) {
-							my( $fcode, $fchange, $fstep, $fhotfix, $fother ) = ( $match =~ m/^([[:xdigit:]]+)(?:\.(\d+)(?:\.(\d+)(?:\.(\d+))?)?)?(.*?)$/ );
-							my( $lcode, $lchange, $lstep, $lhotfix, $lother ) = ( $limit =~ m/^([[:xdigit:]]+)(?:\.(\d+)(?:\.(\d+)(?:\.(\d+))?)?)?(.*?)$/ );
+						if( not( defined( $match ) and length( $match ) ) ) {
+							warn( "!> Could not determine version number from filename '$schmfile' during shortcut processing\n" );
+						} else {
+							if( defined( $limit ) ) {
+								my( $fcode, $fchange, $fstep, $fhotfix, $fother ) = ( $match =~ m/^([[:xdigit:]]+)(?:\.(\d+)(?:\.(\d+)(?:\.(\d+))?)?)?(.*?)$/ );
+								my( $lcode, $lchange, $lstep, $lhotfix, $lother ) = ( $limit =~ m/^([[:xdigit:]]+)(?:\.(\d+)(?:\.(\d+)(?:\.(\d+))?)?)?(.*?)$/ );
 
-							if( not( defined( $fcode ) and ( ( 0 == $fcode ) or $fcode ) ) ) {
-								warn( "!> Could not determine major version number from filename '$schmfile' version '$match'\n" );
-								$fcode = 0;
-							}
-							if( defined( $fother )  and length( $fother ) ) {
-								warn( "!> Filename '$schmfile' contains additional ignored element(s) '$fother' in version number\n" );
-							}
-							if( not( defined( $lcode ) and ( ( 0 == $lcode ) or $lcode ) ) ) {
-								warn( "!> Could not determine major version number from specified limit '$limit'\n" );
-								$lcode = 0;
-							}
-							if( defined( $lother ) and length( $lother ) ) {
-								warn( "!> Limit '$limit' contains additional ignored element(s) '$lother' in version number\n" );
-							}
-							$fchange = 0 unless( defined( $fchange ) and $fchange );
-							$fstep = 0 unless( defined( $fstep ) and $fstep );
-							$fhotfix = 0 unless( defined( $fhotfix ) and $fhotfix );
-							$lchange = 0 unless( defined( $lchange ) and $lchange );
-							$lstep = 0 unless( defined( $lstep ) and $lstep );
-							$lhotfix = 0 unless( defined( $lhotfix ) and $lhotfix );
+								if( not( defined( $fcode ) and ( ( 0 == $fcode ) or $fcode ) ) ) {
+									warn( "!> Could not determine major version number from filename '$schmfile' version '$match'\n" );
+									$fcode = 0;
+								}
+								if( defined( $fother )  and length( $fother ) ) {
+									warn( "!> Filename '$schmfile' contains additional ignored element(s) '$fother' in version number\n" );
+								}
+								if( not( defined( $lcode ) and ( ( 0 == $lcode ) or $lcode ) ) ) {
+									warn( "!> Could not determine major version number from specified limit '$limit'\n" );
+									$lcode = 0;
+								}
+								if( defined( $lother ) and length( $lother ) ) {
+									warn( "!> Limit '$limit' contains additional ignored element(s) '$lother' in version number\n" );
+								}
+								$fchange = 0 unless( defined( $fchange ) and $fchange );
+								$fstep = 0 unless( defined( $fstep ) and $fstep );
+								$fhotfix = 0 unless( defined( $fhotfix ) and $fhotfix );
+								$lchange = 0 unless( defined( $lchange ) and $lchange );
+								$lstep = 0 unless( defined( $lstep ) and $lstep );
+								$lhotfix = 0 unless( defined( $lhotfix ) and $lhotfix );
 
-							my $fv = "$fcode.$fchange.$fstep.$fhotfix";
-							my $lv = "$lcode.$lchange.$lstep.$lhotfix";
+								my $fv = "$fcode.$fchange.$fstep.$fhotfix";
+								my $lv = "$lcode.$lchange.$lstep.$lhotfix";
 
-							if( not( $fv eq $lv ) ) {
-								my @sortedversions = sort { versioncmp( $a, $b ) } ( $fv, $lv );
-								my $latest = pop( @sortedversions );
-								if( $latest eq $fv ) {
-									if( $pretend ) {
-										if( $force ) {
-											warn( "!> Schema version from filename '$fv' is higher than specified target limit '$lv' for file '$schmfile' - would forcibly re-apply ...\n" );
-										} else {
-											warn( "!> Schema version from filename '$fv' is higher than specified target limit '$lv' for file '$schmfile' - skipping ...\n" );
-											dbclose( \$dbh );
-											return( TRUE );
-										}
-									} else { # not( $pretend )
-										if( $force ) {
-											warn( "!> Schema version from filename '$fv' is higher than specified target limit '$lv' for file '$schmfile' - forcibly re-applying ...\n" );
-										} else {
-											warn( "!> Schema version from filename '$fv' is higher than specified target limit '$lv' for file '$schmfile' - skipping ...\n\n" );
-											dbclose( \$dbh );
-											return( TRUE );
+								if( not( $fv eq $lv ) ) {
+									my @sortedversions = sort { versioncmp( $a, $b ) } ( $fv, $lv );
+									my $latest = pop( @sortedversions );
+									if( $latest eq $fv ) {
+										if( $pretend ) {
+											if( $force ) {
+												warn( "!> Schema version from filename '$fv' is higher than specified target limit '$lv' for file '$schmfile' - would forcibly re-apply ...\n" );
+											} else {
+												warn( "!> Schema version from filename '$fv' is higher than specified target limit '$lv' for file '$schmfile' - skipping ...\n" );
+												dbclose( \$dbh );
+												return( TRUE );
+											}
+										} else { # not( $pretend )
+											if( $force ) {
+												warn( "!> Schema version from filename '$fv' is higher than specified target limit '$lv' for file '$schmfile' - forcibly re-applying ...\n" );
+											} else {
+												warn( "!> Schema version from filename '$fv' is higher than specified target limit '$lv' for file '$schmfile' - skipping ...\n\n" );
+												dbclose( \$dbh );
+												return( TRUE );
+											}
 										}
 									}
 								}
 							}
-						}
 
-						my @sortedversions = sort { versioncmp( $a, $b ) } ( $version, $match );
-						my $latest = pop( @sortedversions );
-						my $previous = pop( @sortedversions );
-						if( not( $force ) ) {
-							if( ( $match eq $latest ) and ( $latest eq $previous ) ) {
-								print( "=> Skipping base initialiser file '$schmfile' ...\n" ) unless( $quiet or $silent );
-								dbclose( \$dbh );
-								return( TRUE );
-							} elsif( $match eq $previous ) {
-								print( "=> Skipping pre-initialisation file '$schmfile' ...\n" ) unless( $silent );
-								dbclose( \$dbh );
-								return( TRUE );
+							my @sortedversions = sort { versioncmp( $a, $b ) } ( $version, $match );
+							my $latest = pop( @sortedversions );
+							my $previous = pop( @sortedversions );
+							if( not( $force ) ) {
+								if( ( $match eq $latest ) and ( $latest eq $previous ) ) {
+									print( "=> Skipping base initialiser file '$schmfile' ...\n" ) unless( $quiet or $silent );
+									dbclose( \$dbh );
+									return( TRUE );
+								} elsif( $match eq $previous ) {
+									print( "=> Skipping pre-initialisation file '$schmfile' ...\n" ) unless( $silent );
+									dbclose( \$dbh );
+									return( TRUE );
+								}
 							}
 						}
 					}
 				}
 
-				#$schmversion = $action_init;
-				#$schmversion = $1 if( not( defined( $schmversion ) and length( $schmversion ) ) and ( $schmfile =~ m/^(?:V[[:xdigit:].]+__)?V([[:xdigit:].]+)__/ ) );
-				#$schmversion = '0' unless( defined( $schmversion ) and length( $schmversion ) );
 				my $metadataversions = getsqlvalues( \$dbh, "SELECT DISTINCT `version` FROM `$verticadb$flywaytablename` WHERE `success` IS TRUE" );
-				#if( /^$schmversion$/ ~~ $metadataversions )
 				if( defined( $schmversion ) and ( qr/^$schmversion$/ |M| $metadataversions ) ) {
 					if( $pretend ) {
 						if( $force ) {
@@ -6399,7 +6422,6 @@ SQL
 			if( $pretend ) {
 				print( "\nS> User alterations detected - would back-up MySQL `users` tables.\n" );
 			} else {
-				#if( not( /^mysql$/ ~~ @{ $availabledatabases } ) )
 				if( not( qr/^$systemdb$/ |M| \@{ $availabledatabases } ) ) {
 					warn( "\n$failed `$systemdb` database does not appear to exist.  Detected databases were:\n" );
 					foreach my $database ( @{ $availabledatabases } ) {
@@ -6421,7 +6443,7 @@ SQL
 				die( $systemerror ."\n" ) if $systemerror;
 
 				$availablesystemtables = getsqlvalues( $systemdbh, "SHOW TABLES" );
-				warn( "\n$warning Unable to retrieve list of tables for database `$systemdb`" . ( defined( $systemdbh -> errstr() ) ? ': ' . $systemdbh -> errstr() : '' ) . "\n" ) unless( scalar( $availablesystemtables ) );
+				warn( "\n$warning Unable to retrieve list of tables for database `$systemdb`" . ( defined( $systemdbh -> errstr() ) ? ': ' . $systemdbh -> errstr() : '' ) . "\n" ) unless( scalar( @{ $availablesystemtables } ) );
 
 				dbclose( $systemdbh );
 
@@ -6429,7 +6451,6 @@ SQL
 				my @backuptables;
 				my $showtables = FALSE;
 				foreach my $table ( @usertables ) {
-					#if( not( /^$table$/ ~~ @{ $availablesystemtables } ) )
 					if( qr/^$table$/ |M| \@{ $availablesystemtables } ) {
 						push( @backuptables, $table );
 					} else {
@@ -6468,7 +6489,6 @@ SQL
 			# more helpful to have individual files per table...
 			#
 			foreach my $table ( @dumptables ) {
-				#if( not( /^$table$/ ~~ @{ $availabletables } ) )
 				if( defined( $table ) and not( qr/^$table$/ |M| \@{ $availabletables } ) ) {
 					print( "=> Referenced table `$table` has not yet been created ...\n" );
 				} else {
@@ -6691,7 +6711,7 @@ SQL
 							( my $sst = $schmtarget ) =~ s/(?:\.0+)+$//;
 							( my $sl = $limit ) =~ s/(?:\.0+)+$//;
 
-							if( not( $sst eq $sl ) ) {
+							if( defined( $sst ) and defined ( $sl ) and not( $sst eq $sl ) ) {
 								my @sortedversions = sort { versioncmp( $a, $b ) } ( $sst, $sl );
 								my $latest = pop( @sortedversions );
 								if( $latest eq $sst ) {
@@ -6762,7 +6782,14 @@ SQL
 												return( \$schmversion );
 											} else {
 												my $versions = getsqlvalues( \$dbh, "SELECT DISTINCT `version` FROM `$verticadb$flywaytablename` WHERE `success` IS TRUE" );
+
 												dbclose( \$dbh );
+
+												if( not( scalar( @{ $versions } ) ) ) {
+													warn( "!> Restored data appears to lack metadata content - further migrations may fail\n" );
+													return( \$schmversion );
+												}
+
 												my @sortedversions = sort { versioncmp( $a, $b ) } @{ $versions };
 												my $version = pop( @sortedversions );
 												return( \$version );
@@ -6803,7 +6830,6 @@ SQL
 									warn( "!> No target version defined in metadata comments from file '$schmfile'- not validating target installation chain\n" );
 								}
 
-							#} elsif( not( /^$flywaytablename$/ ~~ @{ $availabletables } ) )
 							} elsif( defined( $tablename ) and not( qr/^$tablename$/ |M| \@{ $availabletables } ) ) {
 								warn( "!> metadata table `$tablename` does not exist - not validating target installation chain for file '$schmfile'\n" );
 
@@ -6816,7 +6842,6 @@ SQL
 								# various variations we might be trying to throw at it...
 								#
 								my $installedversions = getsqlvalues( \$dbh, "SELECT DISTINCT `version` FROM `$verticadb$tablename` WHERE `$statuscolumn` = $status" );
-								die( 'Unable to retrieve list of installed ' . ( 'procedure' eq $mode  ? 'stored procedures' : 'schema versions' ) . ( defined( $dbh -> errstr() ) ? ': ' . $dbh -> errstr() : '' ) . "\n" ) unless( scalar( $installedversions ) );
 
 								my( $codeversion, $changeversion, $stepversion, $hotfixversion, $otherversion );
 								if( 'procedure' eq $mode ) {
@@ -6828,8 +6853,7 @@ SQL
 								my $okay = TRUE;
 								my $fresh = TRUE;
 
-								#if( /^$schmtarget$/ ~~ $installedversions )
-								if( qr/^$schmtarget$/ |M| $installedversions ) {
+								if( scalar( @{ $installedversions } ) and ( qr/^$schmtarget$/ |M| $installedversions ) ) {
 									if( not( $first ) and ( 'procedure' eq $mode ) ) {
 										# Duplicate installs are the norm for Stored Procedure installations, as each
 										# definition is applied with the same metadata version.
@@ -6862,10 +6886,14 @@ SQL
 								# we're forcing re-installation.
 								# XXX: ... or if we're in dry-run mode(?)
 
-								my @sortedversions = sort { versioncmp( $a, $b ) } ( @{ $installedversions } );
-								my $latest = pop( @sortedversions );
-								@sortedversions = sort { versioncmp( $a, $b ) } ( @sortedversions, $schmtarget );
-								my $target = pop( @sortedversions );
+								my $latest;
+								my $target;
+								if( scalar( @{ $installedversions } ) ) {
+									my @sortedversions = sort { versioncmp( $a, $b ) } ( @{ $installedversions } );
+									$latest = pop( @sortedversions );
+									@sortedversions = sort { versioncmp( $a, $b ) } ( @sortedversions, $schmtarget );
+									$target = pop( @sortedversions );
+								}
 
 								# The logic here is slightly non-obvious:
 								#  $latest contains the highest version present
@@ -6944,7 +6972,6 @@ SQL
 
 							if( not( defined( $schmprevious ) ) ) {
 								print( "*> No previous version defined in schema comments - not validating previous installation chain\n" ) unless( $quiet or $silent );
-							#} elsif( not( /^$flywaytablename$/ ~~ @{ $availabletables } ) )
 							} elsif( defined( $tablename ) and not( qr/^$tablename$/ |M| \@{ $availabletables } ) ) {
 								warn( "!> metadata table `$tablename` does not exist - not validating previous installation chain\n" );
 							} else {
@@ -6954,11 +6981,7 @@ SQL
 								#
 								my $installedversions = getsqlvalues( \$dbh, "SELECT DISTINCT `version` FROM `$verticadb$tablename` WHERE `$statuscolumn` = $status" );
 								push( @{ $installedversions }, $schmvirtual ) if( defined( $schmvirtual ) );
-								die( 'Unable to retrieve list of installed schema versions' . ( defined( $dbh -> errstr() ) ? ': ' . $dbh -> errstr() : '' ) . "\n" ) unless( scalar( $installedversions ) );
 
-								#if( $schmprevious =~ m/^0(?:\.0+)?$/ ) {
-									#$schmprevious = '0(?:\.0+)?';
-								#}
 								my $schmpreviousmatch = $schmprevious;
 								my $regex = qr/.*?(?:(?:\.0+)+)?/;
 								if( $schmprevious =~ m/^$regex$/ ) {
@@ -6968,8 +6991,7 @@ SQL
 									print( "*> Not validating previous versions as target version has already been exceeded for file '$schmfile'\n" );
 								} else {
 
-									#if( /^$schmprevious$/ ~~ $installedversions )
-									if( defined( $schmpreviousmatch ) and ( qr/^$schmpreviousmatch$/ |M| $installedversions ) ) {
+									if( scalar( @{ $installedversions } ) and defined( $schmpreviousmatch ) and ( qr/^$schmpreviousmatch$/ |M| $installedversions ) ) {
 										if( 'procedure' eq $mode ) {
 											pdebug( "Prior Stored Procedure definitions '$schmprevious' exist in myway metadata" );
 										} else {
@@ -7377,7 +7399,6 @@ SQL
 		}
 	}
 
-	#if( not( /^$flywaytablename$/ ~~ @{ $availabletables } ) )
 	if( defined( $tablename ) and not( qr/^$tablename$/ |M| \@{ $availabletables } ) ) {
 		print( "*> Would update " . ( 'procedure' eq $mode ? '' : 'flyway ' ) . "metadata with version '$schmversion' for '$schmfile', if it existed ...\n" );
 	} else {
@@ -8500,7 +8521,8 @@ sub main( @ ) { # {{{
                                 }
                         }
 			if( $shouldsort ) {
-				@files = sort { versioncmp( ( basename( $a ) =~ /^V([[:xdigit:].]+)__/ )[ 0 ], ( basename( $b ) =~ /^V([[:xdigit:].]+)__/ )[ 0 ] ) } @{ $target };
+				# FIXME: How to handle non-matching filenames here?  Match should be undef and so items pool to the top/bottom of the results?
+				@files = sort { versioncmp( ( basename( $a ) =~ /^V([[:xdigit:].]+)__/ ), ( basename( $b ) =~ /^V([[:xdigit:].]+)__/ ) ) } @{ $target };
 			} else {
 				@files = @{ $target };
 			}
@@ -8595,12 +8617,7 @@ sub main( @ ) { # {{{
 			$verticadb = "$db`.`";
 			$path = $db;
 		}
-		if( defined( $path ) and length( $path ) ) {
-			#print( "\n=> Setting Vertica SEARCH_PATH to include `$path` ...\n" ) unless( $quiet or $silent );
-			#$searchpath = "SET SEARCH_PATH TO \"$path\", " . ( ( defined( $user ) and length( $user ) ) ? "\"$user\", " : '' ) . "PUBLIC, v_catalog, v_monitor, v_internal";
-			#dosql( \$dbh, $searchpath );
-			setverticasearchpath( \$dbh, $searchpath, $user, ( $quiet or $silent ) );
-		}
+		setverticasearchpath( \$dbh, $searchpath, $user, ( $quiet or $silent ) ) if( defined( $path ) and length( $path ) )
 	} elsif( defined( $engine ) and length( $engine ) and ( 'mysql' eq $engine ) ) {
 		print( "-> Successfully connected to MySQL database instance\n" );
 	} else {
@@ -8857,8 +8874,12 @@ sub main( @ ) { # {{{
 	migratemetadataschema( \$dbh, $db, $vschm, $variables );
 
 	my $versions = getsqlvalues( \$dbh, "SELECT DISTINCT `version` FROM `$verticadb$flywaytablename` WHERE `success` = '1'" );
-	my @sortedversions = sort { versioncmp( $a, $b ) } @{ $versions };
-	my $dbversion = pop( @sortedversions );
+	my $dbversion;
+
+	if( scalar( @{ $versions } ) ) {
+		my @sortedversions = sort { versioncmp( $a, $b ) } @{ $versions };
+		$dbversion = pop( @sortedversions );
+	}
 
 	print( "\n=> Disconnecting from database.\n" ) unless( $quiet or $silent );
 	$dbh -> disconnect;
