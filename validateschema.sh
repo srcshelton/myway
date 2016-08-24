@@ -73,7 +73,7 @@ function validate() {
 	local schema="" environmentdirective="" defaulttype="ddl"
 	local -l desc=""
 	local -i std_PARSEARGS_parsed=0 rc=0 warnings=0 notices=0 styles=0
-	local -a files=()
+	local -a files=() versionsegments=()
 	local -A seen=()
 	
 	eval std::inherit -- versions descriptions metadescriptions foundinit
@@ -246,8 +246,38 @@ function validate() {
 						error "Filename '${name}' does not include a recognised version number"
 					fi
 					(( warnings++ ))
-				fi
-				if grep -Pq '^0*\d+(\.0*\d+)?(\.0*\d+)?(\.0*\d+)?$' <<<"${version}"; then
+				else # if grep -Pq '^0*\d+(\.0*\d+)?(\.0*\d+)?(\.0*\d+)?$' <<<"${version}"; then
+
+					if grep -Pq '^\d+\.\d+\.\d+\.\d+$' <<<"${version}"; then
+						versionsegment[ 3 ]="$( cut -d'.' -f 4 <<<"${version}" | sed 's/^0\+//' )"
+					fi
+					if grep -Pq '^\d+\.\d+\.\d+' <<<"${version}"; then
+						versionsegment[ 2 ]="$( cut -d'.' -f 3 <<<"${version}" | sed 's/^0\+//' )"
+					fi
+					if grep -Pq '^\d+\.\d+' <<<"${version}"; then
+						versionsegment[ 1 ]="$( cut -d'.' -f 2 <<<"${version}" | sed 's/^0\+//' )"
+					fi
+					if grep -Pq '^\d+' <<<"${version}"; then
+						versionsegment[ 0 ]="$( cut -d'.' -f 1 <<<"${version}" | sed 's/^0\+//' )"
+					fi
+					if ! (( ${versionsegment[ 0 ]:-0} || ${versionsegment[ 1 ]:-0} || ${versionsegment[ 2 ]:-0} || ${versionsegment[ 3 ]:-0} )); then
+						if grep -q '[^0.]' <<<"${version}"; then
+							warn "Cannot determine valid version from file '${name}' version '${version}'"
+							(( warnings++ ))
+						else
+							note "Zero-versioned schema are valid only as baseline/initialiser schema, read '${version}'"
+						fi
+					else
+						info "$( sed 's/, $//' <<<"File '${name}' version '${version}' indicates ${versionsegment[ 0 ]:+Release '${versionsegment[ 0 ]}', }${versionsegment[ 1 ]:+Change '${versionsegment[ 1 ]}', }${versionsegment[ 2 ]:+Step '${versionsegment[ 2 ]}', }${versionsegment[ 3 ]:+Hotfix '${versionsegment[ 3 ]}', }" )"
+						if (( ${versionsegment[ 3 ]:-0} )); then
+							warn "This schema file is hot-fix '${versionsegment[ 3 ]}' to version '${versionsegment[ 0 ]:-0}.${versionsegment[ 1 ]:-0}.${versionsegment[ 2 ]:-0}', and will be applied in-sequence even if more highly versioned schema have already applied, unless already present"
+						fi
+					fi
+					if grep -q '[^0.]' <<<"${version}" && grep -Eq '(\.0+)+' <<<"${version}"; then
+						warn "Schema file version '${version}' appears to include extraneous version-zeroes: release versions may be zero; change, step, and hotfix versions should count up from one"
+						(( notices++ ))
+					fi
+
 					if grep -Eq '^0|\.0' <<<"${version}"; then
 						newversion="$( sed -r 's/^0+// ; s/^\.// ; s/^0+// ; s/\.0+$// ; s/\.0+$//' <<<"${version}" )"
 						local -i digit=0
@@ -364,7 +394,7 @@ function validate() {
 									;;
 								"vertica")
 									engine="vertica"
-									if (( $( sed 's/"[^"]*"//' "${filename}" | sed "s/'[^']*'//" | grep -o '`' | wc -l ) )); then
+									if (( $( sed 's/"[^"]*"//' "${file}" | sed "s/'[^']*'//" | grep -o '`' | wc -l ) )); then
 										warn "Vertica schema '${name}' appears to contain MySQL-style quoting"
 										(( warnings++ ))
 									fi
@@ -528,7 +558,7 @@ function validate() {
 				fullname="V${newversion}${newmigrationversion:+__V${newmigrationversion}}__${metadescription:-${description:-<description>}}${environment:+.${environment}}.${filetype:-${defaulttype:-}}.sql"
 				[[ -z "${defaulttype:-}" ]] && fullname="${fullname/../.}" # Fix migration schema <sigh>
 
-				note "File '${name}' contains legacy version string '${version}' - suggest migration to new naming scheme '${fullname}'"
+				note "File '${name}' appears to contain legacy version string '${version}' - suggest migration to new naming scheme '${fullname}'"
 				(( notices++ ))
 			fi
 

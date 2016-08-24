@@ -647,11 +647,11 @@ function main() {
 					result=${?}
 					if (( result )); then
 						if (( keepgoing )); then
-							warn "Loading of stored procedures to database '${db}' (${myway} ${params[*]} ${procparams[*]} ${extraparams[*]}${extra[*]:+ ${extra[*]}}) failed: ${result}"
+							warn "Loading of stored procedures into database '${db}' (${myway} ${params[*]} ${procparams[*]} ${extraparams[*]}${extra[*]:+ ${extra[*]}}) failed: ${result}"
 							output "\n\nContinuing to next database, if any ...\n"
 							rc=1
 						else
-							die "Loading of stored procedures to database '${db}' (${myway} ${params[*]} ${extraparams[*]}${extra[*]:+ ${extra[*]}}) failed: ${result}"
+							die "Loading of stored procedures into database '${db}' (${myway} ${params[*]} ${extraparams[*]}${extra[*]:+ ${extra[*]}}) failed: ${result}"
 						fi
 					else
 						sploaded=1

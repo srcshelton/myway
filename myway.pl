@@ -8577,12 +8577,12 @@ sub main( @ ) { # {{{
 		die( $fatal . ' ' . $error . "\n" . ' ' x length( $fatal ) . " Is the database instance running?\n" ) if $error;
 
 		if( $syntax eq 'mysql' ) {
-			dosql( \$dbh, "CREATE DATABASE IF NOT EXISTS `$db`" ) or die( "Failed to create database: " . $dbh -> errstr() . "\n" );
+			dosql( \$dbh, "CREATE DATABASE IF NOT EXISTS `$db`" ) or die( "Failed to create database" . ( ( defined( $dbh -> errstr() ) and length( $dbh -> errstr() ) ) ? ': ' . $dbh -> errstr() : '' ) . "\n" );
 		} elsif( $syntax eq 'vertica' ) {
 			if( defined( $vschm ) and length( $vschm ) ) {
-				dosql( \$dbh, "CREATE SCHEMA IF NOT EXISTS \"$vschm\"" ) or die( "Failed to create Vertica schema '$vschm': " . $dbh -> errstr() . "\n" );
+				dosql( \$dbh, "CREATE SCHEMA IF NOT EXISTS \"$vschm\"" ) or die( "Failed to create Vertica schema '$vschm'" . ( ( defined( $dbh -> errstr() ) and length( $dbh -> errstr() ) ) ? ': ' . $dbh -> errstr() : '' ) . "\n" );
 			} elsif( defined( $db ) and length( $db ) ) {
-				dosql( \$dbh, "CREATE SCHEMA IF NOT EXISTS \"$db\"" ) or die( "Failed to create Vertica schema '$db': " . $dbh -> errstr() . "\n" );
+				dosql( \$dbh, "CREATE SCHEMA IF NOT EXISTS \"$db\"" ) or die( "Failed to create Vertica schema '$db'" . ( ( defined( $dbh -> errstr() ) and length( $dbh -> errstr() ) ) ? ': ' . $dbh -> errstr() : '' ) . "\n" );
 			}
 		}
 
