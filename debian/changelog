@@ -1,3 +1,9 @@
+dbtools (2.2.1-1) stable; urgency=low
+
+  * v1.2.1.x releases - see `git log`
+
+ -- Stuart Shelton <stuart@elitebook-8570w>  Thu, 25 Aug 2016 19:57:07 +0100
+
 dbtools (2.0.0-1i) stable; urgency=low
 
   * See `git log`.

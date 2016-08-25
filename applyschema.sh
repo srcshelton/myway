@@ -39,7 +39,7 @@ std_DEBUG="${DEBUG:-0}"
 std_TRACE="${TRACE:-0}"
 
 SCRIPT="myway.pl"
-COMPATIBLE="1.2.0"
+COMPATIBLE="1.2.1"
 VALIDATOR="validateschema.sh"
 
 # We want to be able to debug applyschema.sh without debugging myway.pl...

@@ -2228,7 +2228,7 @@ no if ( $] >= 5.02 ), warnings => 'experimental::autoderef';
 # ... in actual fact, diagnostics causes more problems than it solves.  It does
 # appear to be, in reality, quite silly.
 
-use constant VERSION     =>  "1.2.0.11";
+use constant VERSION     =>  "1.2.1.0";
 
 use constant TRUE        =>  1;
 use constant FALSE       =>  0;
@@ -2322,7 +2322,7 @@ sub checkdbconnection( $;$ );
 sub dosql( $$ );
 sub preparesql( $$ );
 sub executesql( $$$;@ );
-sub getsqlvalue( $$ );
+sub getsqlvalue( $$;$ );
 sub getsqlvalues( $$;$ );
 sub outputtable( $$;$ );
 sub formatastable( $$$ );
@@ -2387,7 +2387,7 @@ CREATE TABLE IF NOT EXISTS `$mywayhistoryname` (
   , `description`	VARCHAR(200)	                          NOT NULL
   , `migrated`		BOOLEAN		DEFAULT '0'               NOT NULL
   , PRIMARY KEY (`id`)
-  , CONSTRAINT `${mywayhistoryname}_unique` UNIQUE (`myway_version`, `flyway_compatible`)
+  , CONSTRAINT `${mywayhistoryname}_unique` UNIQUE (`myway_version`)
 ) ENGINE='InnoDB' DEFAULT CHARSET='ASCII';
 DDL
 #INSERT IGNORE INTO `$mywayhistoryname` (`myway_version`, `flyway_compatible`, `type`, `description`) VALUES('1.1.2', '2.1', 'INIT', '<< Flyway Init >>');
@@ -2399,9 +2399,9 @@ CREATE TABLE IF NOT EXISTS __SCHEMA__"$mywayhistoryname" (
   , "flyway_compatible"	VARCHAR(15)	                          NOT NULL
   , "type"		VARCHAR(15)	                          NOT NULL
   , "description"	VARCHAR(200)	                          NOT NULL
-  , "migrated"		BOOLEAN		                          NOT NULL
+  , "migrated"		BOOLEAN		DEFAULT FALSE             NOT NULL
   , PRIMARY KEY ("id") ENABLED
-  , CONSTRAINT "${mywayhistoryname}_unique" UNIQUE ("myway_version", "flyway_compatible") ENABLED
+  , CONSTRAINT "${mywayhistoryname}_unique" UNIQUE ("myway_version") ENABLED
 )
 ORDER BY "id"
 SEGMENTED BY HASH( "myway_version" ) ALL NODES;
@@ -4411,13 +4411,21 @@ sub setverticasearchpath( $$;$$ ) { # {{{
 
 	return( undef ) unless( defined( $path ) and length( $path ) );
 
-	my $availableschema = getsqlvalues( \$dbh, "SELECT DISTINCT `table_schema` FROM `tables`" );
+	$user = ${ $dbh } -> { 'Username' } unless( defined( $user ) and length( $user ) );
+
+	my $availableschema = getsqlvalues( $dbh, "SELECT DISTINCT `table_schema` FROM `tables`" );
 	if( defined( $user ) and not( qr/^$user$/ |M| \@{ $availableschema } ) ) {
 		$user = undef;
 	}
 	print( "\n=> Setting Vertica SEARCH_PATH to include `$path` ...\n" ) unless( $quietorsilent );
-	$searchpath = "SET SEARCH_PATH TO \"$path\", " . ( ( defined( $user ) and length( $user ) ) ? "\"$user\", " : '' ) . "PUBLIC, v_catalog, v_monitor, v_internal";
-	return( dosql( \$dbh, $searchpath ) );
+	my $setsearchpath = "SET SEARCH_PATH TO \"$path\", " . ( ( defined( $user ) and length( $user ) ) ? "\"$user\", " : '' ) . "PUBLIC, v_catalog, v_monitor, v_internal";
+
+	if( dosql( $dbh, $setsearchpath ) ) {
+		$searchpath = $path;
+		return( TRUE );
+	}
+
+	return( FALSE );
 } # setverticasearchpath # }}}
 
 sub checkdbconnection( $;$ ) { # {{{
@@ -4466,8 +4474,8 @@ sub checkdbconnection( $;$ ) { # {{{
 	my $vendor = ${ $dbh } -> get_info( 17 );
 	die( "$fatal Database connection did not specify a vendor after reconnect.\n" ) unless( defined( $vendor ) and length( $vendor ) );
 
-	if( defined( $searchpath ) and length( $searchpath ) ) {
-		dosql( $dbh, $searchpath ) or die( "Unable to restore database connetion state.\n" );
+	if( ( lc( $vendor ) eq 'vertica database' ) and ( defined( $searchpath ) and length( $searchpath ) ) ) {
+		setverticasearchpath( \$dbh, $searchpath ) or die( "Unable to restore database connetion state.\n" );
 	}
 	my $text = 'Database responding';
 	my $savedretries = $retries;
@@ -4615,10 +4623,14 @@ sub dosql( $$ ) { # {{{
 			}
 			$retries = 0;
 
-			my $error = join( ' ', split( /\s*\n+\s*/, $errstr ) );
-			pdebug( "Restoring state $state (\"$error\"); omitting error value '$err'" );
-			# XXX: set_err automatically triggers RaiseError/PritnError/PrintWarn if $err is set?
-			${ $dbh } -> set_err( 0, $errstr, $state );
+			# Operation failed yet checkdbconnection returned TRUE
+			# indicating that the database connection is still
+			# valid - perhaps indicating a syntax error?
+
+			#my $error = join( ' ', split( /\s*\n+\s*/, $errstr ) );
+			#pdebug( "Restoring state $state (\"$error\"); omitting error value '$err'" );
+			## XXX: set_err automatically triggers RaiseError/PritnError/PrintWarn if $err is set?
+			#${ $dbh } -> set_err( 0, $errstr, $state );
 
 			return( FALSE );
 		}
@@ -4716,6 +4728,10 @@ sub preparesql( $$ ) { # {{{
 		}
 		$retries = 0;
 
+		# Operation failed yet checkdbconnection returned TRUE
+		# indicating that the database connection is still
+		# valid - perhaps indicating a syntax error?
+
 		return( undef );
 	} else {
 		# N.B.: $sth -> finish() must be called prior to the next SQL
@@ -4800,9 +4816,15 @@ sub executesql( $$$;@ ) { # {{{
 		} else {
 			warn( "\n$failed Error applying parameters \"" . join( '", "', @values ) . "\"\n" ) if( @values and scalar( @values ) );
 		}
-		warn( "Error was:\n" );
-		warn( "Statement:    " . $errstr . "\n" );
-		warn( "Database:     " . ${ $dbh } -> errstr() . "\n" ) if( defined( ${ $dbh } -> errstr() ) );
+		warn( "Error details:\n" );
+		warn( "Statement:    " . $sth -> { 'Statement' } . "\n" );
+		foreach my $value ( @values ) {
+			warn( "Parameter:    " . $value . "\n" );
+		}
+		warn( "Error:        " . $errstr . "\n" );
+		warn( "Error string: " . ${ $dbh } -> errstr() . "\n" ) if( defined( ${ $dbh } -> errstr() ) );
+		warn( "State:        " . ${ $dbh } -> state() . "\n" ) if( defined( ${ $dbh } -> state() ) );
+		warn( "\n" );
 		warn( "Statement debug:\n" );
 		warn( "Error:        " . $stherr . "\n" ) if( defined( $stherr ) );
 		warn( "Error string: " . $stherrstr . "\n" ) if( defined( $stherrstr ) );
@@ -4832,6 +4854,10 @@ sub executesql( $$$;@ ) { # {{{
 		}
 		$retries = 0;
 
+		# Operation failed yet checkdbconnection returned TRUE
+		# indicating that the database connection is still
+		# valid - perhaps indicating a syntax error?
+
 		return( undef );
 
 	} else {
@@ -4859,8 +4885,8 @@ sub executesql( $$$;@ ) { # {{{
 	return( undef );
 } # executesql # }}}
 
-sub getsqlvalue( $$ ) { # {{{
-	my( $dbh, $st ) = @_;
+sub getsqlvalue( $$;$ ) { # {{{
+	my( $dbh, $st, $column ) = @_;
 
 	return( undef ) unless( defined( $dbh ) );
 	die( "LOGIC: " . ( caller( 1 ) )[ 3 ] . "(" . ( caller( 0 ) )[ 2 ] . ") -> " . ( caller( 0 ) )[ 3 ] . ": arg1 must be passed by reference (" . ref( $dbh ) . ")\n" ) unless( 'REF' eq ref( $dbh ) );
@@ -4875,6 +4901,8 @@ sub getsqlvalue( $$ ) { # {{{
 	#}
 	return( undef ) unless( defined( $st ) and length( $st ) );
 
+	$column = 0 unless( defined( $column ) and ( $column =~ m/^\d+$/ ) and ( $column >= 0 ) );
+
 	my $response;
 
 	my $sth = executesql( $dbh, undef, $st );
@@ -4883,7 +4911,7 @@ sub getsqlvalue( $$ ) { # {{{
 		warn( "\n$failed Unable to create statement handle to execute '$st'" . ( defined( $errstr ) and length( $errstr ) ? ": " . $errstr : '' ) . "\n" );
 	} else {
 		while( my $ref = $sth -> fetchrow_arrayref() ) {
-			$response = @{ $ref }[ 0 ];
+			$response = @{ $ref }[ $column ];
 		}
 		$sth -> finish();
 	}
@@ -5047,21 +5075,23 @@ sub migratemetadataschema( $;$$$ ) { # {{{
 		$db = getsqlvalue( $dbh, "SELECT DATABASE()" );
 	}
 
-	my $verticadb = '';
 	# Apparently '17' (SQL_DBMS_NAME) canonically returns the database
 	# instance vendor...
 	if( not( defined( $engine ) and length( $engine ) ) ) {
 		$engine = lc( $dbh -> get_info( 17 ) );
 		if( defined( $engine ) and length( $engine ) and ( 'vertica database' eq $engine ) ) {
 			$engine = 'vertica';
-
-			if( defined( $vschm ) and length( $vschm ) ) {
-				$verticadb = "$vschm`.`";
-			} elsif( defined( $db ) and length( $db ) ) {
-				$verticadb = "$db`.`";
-			}
 		} elsif( not( defined( $engine ) and length( $engine ) and ( 'mysql' eq $engine ) ) ) {
+			warn( "\n$failed Database engine is neither Vertica nor MySQL - not migrating metadata\n" );
 			return( FALSE );
+		}
+	}
+	my $verticadb = '';
+	if ( 'vertica' eq $engine ) {
+		if( defined( $vschm ) and length( $vschm ) ) {
+			$verticadb = "$vschm`.`";
+		} elsif( defined( $db ) and length( $db ) ) {
+			$verticadb = "$db`.`";
 		}
 	}
 
@@ -5128,11 +5158,12 @@ sub migratemetadataschema( $;$$$ ) { # {{{
 		pdebug( "History metadata table '$mywayhistoryname' exists ..." );
 
 		if( defined( $vschm ) and length( $vschm ) ) {
-			# XXX: Should implement a check as per the above, but
+			# XXX: Should implement a check as per the below, but
 			#      Vertica never worked well enough to perform any
 			#      deployments with the previous schema...
+			$setmigrated = TRUE;
 		} else {
-			if( not( getsqlvalue( $dbh, "SELECT COUNT(*) FROM `$flywaytablename`" ) ) ) {
+			if( not( getsqlvalue( $dbh, "SELECT COUNT(*) FROM `$verticadb$flywaytablename`" ) ) ) {
 				# This is a fresh install, since we have no
 				# `schema_version` entries.
 				# XXX: If we have a database which had '--init'
@@ -5168,7 +5199,7 @@ sub migratemetadataschema( $;$$$ ) { # {{{
 				$sth -> finish();
 
 				if( $foundoldschema ) {
-					my $currentversion = getsqlvalue( $dbh, "SELECT DISTINCT `myway_version` FROM `$mywayhistoryname` WHERE `active` IS TRUE ORDER BY `myway_version` DESC LIMIT 1" );
+					my $currentversion = getsqlvalue( $dbh, "SELECT DISTINCT `myway_version` FROM `$verticadb$mywayhistoryname` WHERE `active` IS TRUE ORDER BY `myway_version` DESC LIMIT 1" );
 					pdebug( "Legacy history metadata table had active version '$currentversion'" );
 					if( $currentversion =~ m/^1\.2\.0/ ) {
 						pdebug( "Legacy version up to date - will skip migration ..." );
@@ -5218,19 +5249,32 @@ sub migratemetadataschema( $;$$$ ) { # {{{
 
 	if( not( $pretend ) ) {
 		# Populate history table...
-		dosql( $dbh, "INSERT IGNORE INTO `$mywayhistoryname` (`myway_version`, `flyway_compatible`, `type`, `description`) VALUES('1.1.2', '2.1', 'INIT', '<< Flyway Init >>')" );
-		dosql( $dbh, "INSERT IGNORE INTO `$mywayhistoryname` (`myway_version`, `flyway_compatible`, `type`, `description`) VALUES('1.2.0', '4.0', 'BASELINE', '<< Flyway Baseline >>')" );
-		dosql( $dbh, "UPDATE `$mywayhistoryname` SET `migrated` = TRUE WHERE myway_version = '1.1.2'" ) if( $setmigrated );
+
+		if( 'vertica' eq $engine ) {
+			dosql( $dbh, "INSERT INTO `$verticadb$mywayhistoryname` (`myway_version`, `flyway_compatible`, `type`, `description`) VALUES('1.1.2', '2.1', 'INIT', '<< Flyway Init >>')" ) unless( getsqlvalue( $dbh, "SELECT COUNT(*) FROM `$verticadb$mywayhistoryname` WHERE `myway_version` = '1.1.2'" ) );
+			dosql( $dbh, "INSERT INTO `$verticadb$mywayhistoryname` (`myway_version`, `flyway_compatible`, `type`, `description`) VALUES('1.2.0', '4.0', 'BASELINE', '<< Flyway Baseline >>')" ) unless( getsqlvalue( $dbh, "SELECT COUNT(*) FROM `$verticadb$mywayhistoryname` WHERE `myway_version` = '1.2.0'" ) );
+		} else {
+			dosql( $dbh, "INSERT IGNORE INTO `$mywayhistoryname` (`myway_version`, `flyway_compatible`, `type`, `description`) VALUES('1.1.2', '2.1', 'INIT', '<< Flyway Init >>')" );
+			dosql( $dbh, "INSERT IGNORE INTO `$mywayhistoryname` (`myway_version`, `flyway_compatible`, `type`, `description`) VALUES('1.2.0', '4.0', 'BASELINE', '<< Flyway Baseline >>')" );
+		}
+		dosql( $dbh, "UPDATE `$verticadb$mywayhistoryname` SET `migrated` = TRUE WHERE myway_version = '1.1.2'" ) if( $setmigrated );
+
 		# For future updates...
-		#dosql( $dbh, "UPDATE `$mywayhistoryname` SET `migrated` = TRUE WHERE myway_version = '1.2.0'" );
-		#dosql( $dbh, "UPDATE `$mywayhistoryname` SET `migrated` = TRUE WHERE myway_version = '1.3.0'" );
+		#dosql( $dbh, "UPDATE `$verticadb$mywayhistoryname` SET `migrated` = TRUE WHERE myway_version = '1.2.0'" );
+		#dosql( $dbh, "UPDATE `$verticadb$mywayhistoryname` SET `migrated` = TRUE WHERE myway_version = '1.3.0'" );
 		# ... etc.
 
 		my $mywayversion = getsqlvalue( $dbh, "SELECT DISTINCT `myway_version` FROM `$verticadb$mywayhistoryname` ORDER BY `myway_version` DESC LIMIT 1" );
-		my $flywayversion = getsqlvalue( $dbh, "SELECT DISTINCT `flyway_compatible` FROM `$verticadb$mywayhistoryname` ORDER BY `myway_version` DESC LIMIT 1" );
-		my $flywaydescription = getsqlvalue( $dbh, "SELECT DISTINCT `type` FROM `$verticadb$mywayhistoryname` ORDER BY `myway_version` DESC LIMIT 1" );
+		my $flywayversion;
+		my $flywaydescription;
+		if( defined( $mywayversion ) and length( $mywayversion ) ) {
+			$flywayversion = getsqlvalue( $dbh, "SELECT DISTINCT `flyway_compatible` FROM `$verticadb$mywayhistoryname` WHERE `myway_version` = '$mywayversion' LIMIT 1" );
+			$flywaydescription = getsqlvalue( $dbh, "SELECT DISTINCT `type` FROM `$verticadb$mywayhistoryname` WHERE `myway_version` = '$mywayversion' LIMIT 1" );
+		}
 
 		pdebug( "Metadata: myway '" . ( defined( $mywayversion ) ? $mywayversion : '<not set>' ) . "', flyway '" . ( defined( $flywayversion ) ? $flywayversion : '<not set>' ) . "', init string '" . ( defined( $flywaydescription ) ? $flywaydescription : '<not set>' ) . "'" );
+
+		my $oldversions;
 
 		if( defined( $mywayversion ) and length( $mywayversion ) ) {
 			my @sortedversions = sort { versioncmp( $a, $b ) } ( $mywayversion, VERSION );
@@ -5238,11 +5282,26 @@ sub migratemetadataschema( $;$$$ ) { # {{{
 			if( not( $latest eq VERSION )  ) {
 				die( "$fatal The metadata version '$latest' declared in `$mywayhistoryname` is more recent than can be understood by version '$mywayversion' of this tool - aborting in order to maintain data integrity\n" );
 			}
+
+			$oldversions = getsqlvalues( $dbh, "SELECT DISTINCT `myway_version` FROM `$verticadb$mywayhistoryname` WHERE `migrated` IS NOT TRUE AND `myway_version` != '$mywayversion' ORDER BY `myway_version`" );
+		} else {
+			# XXX: This should never happen, but we've seen Vertica
+			#      fail to execute the previous query... in which
+			#      case it's entirely unclear what we should do.
+			#      Luckily in this case, we should be able to
+			#      filter below...
+			$oldversions = getsqlvalues( $dbh, "SELECT DISTINCT `myway_version` FROM `$verticadb$mywayhistoryname` WHERE `migrated` IS NOT TRUE ORDER BY `myway_version`" );
 		}
 
-		my $oldversions = getsqlvalues( $dbh, "SELECT DISTINCT `myway_version` FROM `$verticadb$mywayhistoryname` WHERE `migrated` IS NOT TRUE AND `myway_version` != '$mywayversion' ORDER BY `myway_version`" );
-
 		foreach my $oldversion ( @{ $oldversions } ) {
+			if( not( defined( $mywayversion ) and length( $mywayversion ) ) ) {
+				warn( "\n$failed Unable to determine current version from database - migration may fail ...\n" );
+				if( $oldversion eq VERSION ) {
+					warn( "\n$failed Skipping version '$oldversion' on the assumption that we can't migrate away from the current release ...\n" );
+					next;
+				}
+			}
+
 			my $flywayversion = getsqlvalue( $dbh, "SELECT DISTINCT `flyway_compatible` FROM `$verticadb$mywayhistoryname` WHERE `myway_version` = '$mywayversion'" );
 			my $flywayoldinit = getsqlvalue( $dbh, "SELECT DISTINCT `type` FROM `$verticadb$mywayhistoryname` WHERE `myway_version` = '$oldversion'" );
 			my $flywayinit = getsqlvalue( $dbh, "SELECT DISTINCT `type` FROM `$verticadb$mywayhistoryname` WHERE `myway_version` = '$mywayversion'" );
@@ -5251,7 +5310,7 @@ sub migratemetadataschema( $;$$$ ) { # {{{
 
 			pdebug( "$oldversion -> $mywayversion($flywayversion): init($flywayoldinit=>$flywayinit) desc($flywayolddescription=>$flywaydescription)" );
 
-			if( ( '1.1.2' eq $oldversion ) and ( '1.2.0' eq $mywayversion ) ) {
+			if( defined( $oldversion ) and defined( $mywayversion ) and ( '1.1.2' eq $oldversion ) and ( '1.2.0' eq $mywayversion ) ) {
 				if( $pretend ) {
 					print( "\n=> Would upgrade metadata schema from version '$oldversion' to version '$mywayversion' (compatible with flyway version '$flywayversion') ...\n" ) unless( $quiet or $silent );
 				} else {
@@ -5267,6 +5326,8 @@ sub migratemetadataschema( $;$$$ ) { # {{{
 					#
 					# ... and in addition we've added a PK to myway_schema_actions.
 
+					my $continue = TRUE;
+
 					if( 'vertica' eq $engine ) {
 						# Vertica can't add AUTO_INCREMENT columns, so we'll
 						# have to just continue without the new Primary Key.
@@ -5277,6 +5338,13 @@ sub migratemetadataschema( $;$$$ ) { # {{{
 						#	warn( "!> Unable to update `$verticadb$mywayactionsname` table\n" );
 						#	return( FALSE );
 						#}
+
+						dosql( $dbh, "ALTER TABLE `$verticadb$flywaytablename` DROP COLUMN `version_rank`" ) or goto SCHEMA_UPDATE_FAILED;
+						dosql( $dbh, "ALTER TABLE `$verticadb$flywaytablename` DROP CONSTRAINT `C_PRIMARY`" ) or goto SCHEMA_UPDATE_FAILED;
+						dosql( $dbh, "ALTER TABLE `$verticadb$flywaytablename` ADD CONSTRAINT `${flywaytablename}_pk` PRIMARY KEY (`installed_rank`)" ) or goto SCHEMA_UPDATE_FAILED;
+						dosql( $dbh, "ALTER TABLE `$verticadb$flywaytablename` ALTER COLUMN `version` DROP NOT NULL" ) or goto SCHEMA_UPDATE_FAILED;
+						dosql( $dbh, "UPDATE `$verticadb$flywaytablename` SET `type` = '$flywayinit' WHERE `type` = '$flywayoldinit'" ) or goto SCHEMA_UPDATE_FAILED;
+						dosql( $dbh, "UPDATE `$verticadb$flywaytablename` SET `description` = '$flywaydescription' WHERE `description` = '$flywayolddescription'" ) or goto SCHEMA_UPDATE_FAILED;
 					} else {
 						my $st = "DESCRIBE `$mywayactionsname`";
 						my $sth = executesql( $dbh, undef, $st );
@@ -5308,52 +5376,45 @@ sub migratemetadataschema( $;$$$ ) { # {{{
 								}
 							}
 						}
-					}
 
-					if( not( 'vertica' eq $engine ) ) {
-						if( not( dosql( $dbh, "DROP TEMPORARY TABLE IF EXISTS `$verticadb${flywaytablename}_backup`" ) ) ) {
-							warn( "!> Dropping temporary table `$verticadb${flywaytablename}_backup` failed\n" );
+						if( not( dosql( $dbh, "DROP TEMPORARY TABLE IF EXISTS `${flywaytablename}_backup`" ) ) ) {
+							warn( "!> Dropping temporary table `${flywaytablename}_backup` failed\n" );
 							return( FALSE );
 						}
-						if( not( dosql( $dbh, "CREATE TEMPORARY TABLE IF NOT EXISTS `$verticadb${flywaytablename}_backup` LIKE `$flywaytablename`" ) ) ) {
-							warn( "!> Creating temporary table `$verticadb${flywaytablename}_backup` failed\n" );
+						if( not( dosql( $dbh, "CREATE TEMPORARY TABLE IF NOT EXISTS `${flywaytablename}_backup` LIKE `$flywaytablename`" ) ) ) {
+							warn( "!> Creating temporary table `${flywaytablename}_backup` failed\n" );
 							return( FALSE );
 						}
-						if( not( dosql( $dbh, "INSERT INTO `$verticadb${flywaytablename}_backup` SELECT * FROM `$flywaytablename`" ) ) ) {
-							warn( "!> Populating temporary table `$verticadb${flywaytablename}_backup` failed\n" );
+						if( not( dosql( $dbh, "INSERT INTO `${flywaytablename}_backup` SELECT * FROM `$flywaytablename`" ) ) ) {
+							warn( "!> Populating temporary table `${flywaytablename}_backup` failed\n" );
 							return( FALSE );
 						}
-					}
 
-					my $continue = TRUE;
-					if( not( 'vertica' eq $engine ) ) {
-						if( $continue ) {
-							my $st = "SHOW INDEX FROM `$flywaytablename`";
-							my $sth = executesql( $dbh, undef, $st );
-							if( not( defined( $sth ) and $sth ) ) {
-								my $errstr = $dbh -> errstr();
-								warn( "\n$failed Unable to create statement handle to execute '$st'" . ( defined( $errstr ) and length( $errstr ) ? ": " . $errstr : '' ) . "\n" );
+						$st = "SHOW INDEX FROM `$flywaytablename`";
+						$sth = executesql( $dbh, undef, $st );
+						if( not( defined( $sth ) and $sth ) ) {
+							my $errstr = $dbh -> errstr();
+							warn( "\n$failed Unable to create statement handle to execute '$st'" . ( defined( $errstr ) and length( $errstr ) ? ": " . $errstr : '' ) . "\n" );
 
-								$continue = FALSE;
-							} else {
-								my $foundidx = 0;
+							$continue = FALSE;
+						} else {
+							my $foundidx = 0;
 
-								ROWS: while( my $ref = $sth -> fetchrow_arrayref() ) {
-									my $key = @{ $ref }[ 2 ];
+							ROWS: while( my $ref = $sth -> fetchrow_arrayref() ) {
+								my $key = @{ $ref }[ 2 ];
 
-									if( ( $key eq 'schema_version_vr_idx' ) ) {
-										dosql( $dbh, "DROP INDEX `schema_version_vr_idx` ON `$flywaytablename`" );
-										$foundidx ++;
-									} elsif( ( $key eq 'schema_version_ir_idx' ) ) {
-										dosql( $dbh, "DROP INDEX `schema_version_ir_idx` ON `$flywaytablename`" );
-										$foundidx ++;
-									}
+								if( ( $key eq 'schema_version_vr_idx' ) ) {
+									dosql( $dbh, "DROP INDEX `schema_version_vr_idx` ON `$flywaytablename`" );
+									$foundidx ++;
+								} elsif( ( $key eq 'schema_version_ir_idx' ) ) {
+									dosql( $dbh, "DROP INDEX `schema_version_ir_idx` ON `$flywaytablename`" );
+									$foundidx ++;
 								}
-
-								$sth -> finish();
-
-								$continue = FALSE unless( $foundidx == 2 );
 							}
+
+							$sth -> finish();
+
+							$continue = FALSE unless( $foundidx == 2 );
 						}
 
 						if( $continue ) {
@@ -5388,34 +5449,12 @@ sub migratemetadataschema( $;$$$ ) { # {{{
 								}
 							}
 						}
-					}
-
-					if( not( $continue ) or ( not( 'vertica' eq $engine ) and not(
-						dosql( $dbh, "ALTER TABLE `$flywaytablename` DROP PRIMARY KEY, ADD CONSTRAINT `${flywaytablename}_pk` PRIMARY KEY (`installed_rank`)" )
-						and
-						dosql( $dbh, "ALTER TABLE `$flywaytablename` MODIFY `version` VARCHAR(50)" )
-						and
-						dosql( $dbh, "UPDATE `$flywaytablename` SET `type` = '$flywayinit' WHERE `type` = '$flywayoldinit'" )
-						and
-						dosql( $dbh, "UPDATE `$flywaytablename` SET `description` = '$flywaydescription' WHERE `description` = '$flywayolddescription'" )
-					) ) or ( ( 'vertica' eq $engine ) and not(
-						dosql( $dbh, "ALTER TABLE `$verticadb$flywaytablename` DROP COLUMN `version_rank`" )
-						and
-						dosql( $dbh, "ALTER TABLE `$verticadb$flywaytablename` DROP CONSTRAINT `C_PRIMARY`" )
-						and
-						dosql( $dbh, "ALTER TABLE `$verticadb$flywaytablename` ADD CONSTRAINT `${flywaytablename}_pk` PRIMARY KEY (`installed_rank`)" )
-						and
-						dosql( $dbh, "ALTER TABLE `$verticadb$flywaytablename` ALTER COLUMN `version` DROP NOT NULL" )
-						and
-						dosql( $dbh, "UPDATE `$verticadb$flywaytablename` SET `type` = '$flywayinit' WHERE `type` = '$flywayoldinit'" )
-						and
-						dosql( $dbh, "UPDATE `$verticadb$flywaytablename` SET `description` = '$flywaydescription' WHERE `description` = '$flywayolddescription'" )
-					) ) ) {
-						# We could automatically restore the backup table, but
-						# for now we want to be able to inspect what failed.
-						# FIXME: Restore backup on failure
-						warn( "!> Error applying schema updates" . ( 'vertica' eq $engine ? '' : " - original table exists as '${flywaytablename}_backup', please manually inspect the differences" ) . "\n" );
-						die( "$fatal Database state is inconsistent\n" );
+						if( $continue ) {
+							dosql( $dbh, "ALTER TABLE `$flywaytablename` DROP PRIMARY KEY, ADD CONSTRAINT `${flywaytablename}_pk` PRIMARY KEY (`installed_rank`)" ) or goto SCHEMA_UPDATE_FAILED;
+							dosql( $dbh, "ALTER TABLE `$flywaytablename` MODIFY `version` VARCHAR(50)" ) or goto SCHEMA_UPDATE_FAILED;
+							dosql( $dbh, "UPDATE `$flywaytablename` SET `type` = '$flywayinit' WHERE `type` = '$flywayoldinit'" ) or goto SCHEMA_UPDATE_FAILED;
+							dosql( $dbh, "UPDATE `$flywaytablename` SET `description` = '$flywaydescription' WHERE `description` = '$flywayolddescription'" ) or goto SCHEMA_UPDATE_FAILED;
+						}
 					}
 
 					dosql( $dbh, "UPDATE `$verticadb$mywayhistoryname` SET `migrated` = TRUE WHERE `myway_version` = '$oldversion' AND `migrated` IS FALSE" ) or die( "Populating '$mywayhistoryname' failed" . ( defined( $dbh -> errstr() ) ? " with: " . $dbh -> errstr() : '' ) . "\n" );
@@ -5425,6 +5464,13 @@ sub migratemetadataschema( $;$$$ ) { # {{{
 	}
 
 	return( TRUE );
+
+	SCHEMA_UPDATE_FAILED:
+		# We could automatically restore the backup table, but
+		# for now we want to be able to inspect what failed.
+		# FIXME: Restore backup on failure
+		warn( "!> Error applying schema updates" . ( 'vertica' eq $engine ? '' : " - original table exists as '${flywaytablename}_backup', please manually inspect the differences" ) . "\n" );
+		die( "$fatal Database state is inconsistent\n" );
 } # migratemetadataschema # }}}
 
 sub applyschema( $$$$;$ ) { # {{{
