@@ -763,7 +763,7 @@ function main() {
 		if (( rc )) && (( dryrun )); then
 			warn "Load completed with errors, or database doesn't exist"
 		elif (( rc )); then
-			warn "Load completed with errors"
+			error "Load completed with errors"
 		elif (( !( founddb ) )); then
 			error "Specified database(s) not present in configuration file"
 			rc=1

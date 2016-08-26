@@ -2228,7 +2228,7 @@ no if ( $] >= 5.02 ), warnings => 'experimental::autoderef';
 # ... in actual fact, diagnostics causes more problems than it solves.  It does
 # appear to be, in reality, quite silly.
 
-use constant VERSION     =>  "1.2.1.0";
+use constant VERSION     =>  "1.2.1.1";
 
 use constant TRUE        =>  1;
 use constant FALSE       =>  0;
@@ -5760,14 +5760,14 @@ sub applyschema( $$$$;$ ) { # {{{
 								warn( "!> Schema version from filename '$fv' is higher than specified target limit '$lv' for file '$schmfile' - would forcibly re-apply ...\n" );
 							} else {
 								warn( "!> Schema version from filename '$fv' is higher than specified target limit '$lv' for file '$schmfile' - skipping ...\n" );
-								return( TRUE );
+								return( FALSE );
 							}
 						} else { # not( $pretend )
 							if( $force ) {
 								warn( "!> Schema version from filename '$fv' is higher than specified target limit '$lv' for file '$schmfile' - forcibly re-applying ...\n" );
 							} else {
-								warn( "!> Schema version from filename '$fv' is higher than specified target limit '$lv' for file '$schmfile' - skipping ...\n\n" );
-								return( TRUE );
+								warn( "!> Schema version from filename '$fv' is higher than specified target limit '$lv' for file '$schmfile' - skipping ...\n" );
+								return( FALSE );
 							}
 						}
 					}
@@ -8970,7 +8970,7 @@ sub main( @ ) { # {{{
 						print( "*> This session now has base " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure ' : '' ) . "version '$version'\n" ) unless( $quiet or $silent );
 					} elsif( ref( $version ) eq '' ) {
 						if( not( $version ) ) {
-							die( "Fatal error encountered whilst applying file '$item' - aborting\n" );
+							die( "Schema application failed to return a valid version\n" );
 						}
 						$version = '__NOT_APPLIED__';
 					} else {
@@ -8999,9 +8999,9 @@ sub main( @ ) { # {{{
 					$error = join( ' ', split( /\s*\n+\s*/, $error ) );
 					chomp( $error );
 					if( defined( $action_init ) ) {
-						die( "\n$warning Failed to initialise from schema file '$item':\n$error\n" );
+						die( "\n$warning Failed to initialise from schema file '$item':\n" . ( ' ' x ( length( $fatal ) + 1 ) ) . "$error\n" );
 					} else {
-						die( "\n$fatal Error when applying schema file '$item':\n$error\n" );
+						die( "\n$fatal Error when applying schema file '$item':\n" . ( ' ' x ( length( $fatal ) + 1 ) ) . "$error\n" );
 					}
 				}
 				$variables -> { 'first' } = FALSE if( $variables -> { 'first' } );
