@@ -2,13 +2,13 @@
 
 # stdlib.sh should be in /usr/local/lib/stdlib.sh, which can be found as
 # follows by scripts located in /usr/local/{,s}bin/...
-declare std_LIB="stdlib.sh"
+declare std_LIB='stdlib.sh'
 for std_LIBPATH in							\
 	"$( dirname -- "${BASH_SOURCE:-${0:-.}}" )"			\
-	"."								\
+	'.'								\
 	"$( dirname -- "$( type -pf "${std_LIB}" 2>/dev/null )" )"	\
 	"$( dirname -- "${BASH_SOURCE:-${0:-.}}" )/../lib"		\
-	"/usr/local/lib"						\
+	'/usr/local/lib'						\
 	 ${FPATH:+${FPATH//:/ }}					\
 	 ${PATH:+${PATH//:/ }}
 do
@@ -38,9 +38,9 @@ done
 std_DEBUG="${DEBUG:-0}"
 std_TRACE="${TRACE:-0}"
 
-SCRIPT="myway.pl"
-COMPATIBLE="1.2.1"
-VALIDATOR="validateschema.sh"
+SCRIPT='myway.pl'
+COMPATIBLE='1.2.1'
+VALIDATOR='validateschema.sh'
 
 # We want to be able to debug applyschema.sh without debugging myway.pl...
 if [[ -n "${MYDEBUG:-}" ]]; then
@@ -53,9 +53,9 @@ fi
 function die() {
 	if [[ -n "${*:-}" ]]; then
 		if [[ 'function' == "$( type -t std::colour )" ]]; then
-			std_DEBUG=1 std::log >&2 "$( std::colour "FATAL: " )" "${*}"
+			std_DEBUG=1 std::log >&2 "$( std::colour 'FATAL: ' )" "${*}"
 		else
-			std_DEBUG=1 std::log >&2 "FATAL: " "${*}"
+			std_DEBUG=1 std::log >&2 'FATAL: ' "${*}"
 		fi
 	fi
 	std::cleanup 2
@@ -84,15 +84,15 @@ function lock() {
 function main() {
 	local myway="$( std::requires --path "${SCRIPT}" )"
 
-	local truthy="^(on|y(es)?|true|1)$"
-	local falsy="^(off|n(o)?|false|0)$"
+	local truthy='^(on|y(es)?|true|1)$'
+	local falsy='^(off|n(o)?|false|0)$'
 	#local silentfilter='^((Useless|Use of|Cannot parse|!>) |\s*$)'
 
 	local actualpath filename validator
 	local lockfile="/var/lock/${NAME}.lock"
 
-	# Ensure that 'fuser' will work...
-	#(( EUID )) && die "This script must be run with super-user privileges"
+	# Sigh...
+	[[ -d '/opt/vertica/bin' ]] && export PATH="${PATH:+${PATH}:}/opt/vertica/bin"
 
 	${myway} --help >/dev/null 2>&1 || die "${myway} is failing to" \
 		"execute - please confirm that all required perl modules are" \
@@ -106,12 +106,12 @@ function main() {
 	fi
 
 	local -i novsort=0
-	if ! sort -V <<<"" >/dev/null 2>&1; then
-		warn "Version sort unavailable - Stored Procedure load-order" \
-		     "cannot be guaranteed."
-		warn "Press ctrl+c now to abort ..."
+	if ! sort -V <<<'' >/dev/null 2>&1; then
+		warn 'Version sort unavailable - Stored Procedure load-order' \
+		     'cannot be guaranteed.'
+		warn 'Press ctrl+c now to abort ...'
 		sleep 5
-		warn "Proceeding ..."
+		warn 'Proceeding ...'
 		novsort=1
 	fi
 
@@ -146,7 +146,7 @@ function main() {
 				force=1
 				;;
 			-h|--help)
-				export std_USAGE="[--config <file>] [--schema <path>] [ [--databases <database>[,...]] | [--clusters <cluster>[,...]] ] [--keep-going] [--dry-run] [--force] [--no-validate] [ [--quiet] | [--silent] ] [--progress=<always|auto|never>] | [--locate <database>]"
+				export std_USAGE='[--config <file>] [--schema <path>] [ [--databases <database>[,...]] | [--clusters <cluster>[,...]] ] [--keep-going] [--dry-run] [--force] [--no-validate] [ [--quiet] | [--silent] ] [--progress=<always|auto|never>] | [--locate <database>]'
 				std::usage
 				;;
 			-k|--keep-going|--keepgoing)
@@ -225,21 +225,18 @@ function main() {
 	done
 
 	if [[ -n "${dblist:-}" && -n "${clist:-}" ]]; then
-		die "Options --databases and --clusters are mutually exclusive"
+		die 'Options --databases and --clusters are mutually exclusive'
 	fi
 
-	#for filename in "${filename:-}" /etc/iod/schema.conf /etc/schema.conf ~/schema.conf "$( dirname "$( readlink -e "${0}" )" )"/schema.conf; do
-	#	[[ -r "${filename:-}" ]] && break
-	#done
-	filename="$( std::findfile -app dbtools -name schema.conf -dir /etc ${filename:+-default "${filename}"} )"
+	filename="$( std::findfile -app 'dbtools' -name 'schema.conf' -dir '/etc' ${filename:+-default "${filename}"} )"
 	if [[ ! -r "${filename}" ]]; then
-		die "Cannot read configuration file"
+		die 'Cannot read configuration file'
 	else
 		(( silent )) || info "Using configuration file '${filename}' ..."
 	fi
 
 	if ! (( validate )); then
-		warn "Validation disabled - applied schema may not be standards compliant"
+		warn 'Validation disabled - applied schema may not be standards compliant'
 	else
 		# stdlib.sh prior to v2.0.0 incorrectly didn't accept
 		# multi-argument calls to std::requires
@@ -259,9 +256,9 @@ function main() {
 		fi
 	fi
 
-	local defaults="$( std::getfilesection "${filename}" "DEFAULT" | sed -r 's/#.*$// ; /^[^[:space:]]+\.[^[:space:]]+\s*=/s/\./_/' | grep -Ev '^\s*$' | sed -r 's/\s*=\s*/=/' )"
-	local hosts="$( std::getfilesection "${filename}" "CLUSTERHOSTS" | sed -r 's/#.*$// ; /^[^[:space:]]+\.[^[:space:]]+\s*=/s/\./_/' | grep -Ev '^\s*$' | sed -r 's/\s*=\s*/=/' )"
-	local databases="$( std::getfilesection "${filename}" "DATABASES" | sed -r 's/#.*$// ; /^[^[:space:]]+\.[^[:space:]]+\s*=/s/\./_/' | grep -Ev '^\s*$' | sed -r 's/\s*=\s*/=/' )"
+	local defaults="$( std::getfilesection "${filename}" 'DEFAULT' | sed -r 's/#.*$// ; /^[^[:space:]]+\.[^[:space:]]+\s*=/s/\./_/' | grep -Ev '^\s*$' | sed -r 's/\s*=\s*/=/' )"
+	local hosts="$( std::getfilesection "${filename}" 'CLUSTERHOSTS' | sed -r 's/#.*$// ; /^[^[:space:]]+\.[^[:space:]]+\s*=/s/\./_/' | grep -Ev '^\s*$' | sed -r 's/\s*=\s*/=/' )"
+	local databases="$( std::getfilesection "${filename}" 'DATABASES' | sed -r 's/#.*$// ; /^[^[:space:]]+\.[^[:space:]]+\s*=/s/\./_/' | grep -Ev '^\s*$' | sed -r 's/\s*=\s*/=/' )"
 
 	[[ -n "${databases:-}" ]] || die "No databases defined in '${filename}'"
 
@@ -282,11 +279,11 @@ function main() {
 		[[ -n "${details:-}" ]] || die "Database '${db}' lacks a configuration block in '${filename}'"
 		debug "${db}:\n${details}\n"
 
-		local host="$( ${grepm} "host=" <<<"${details}" | cut -d'=' -f 2 )"
+		local host="$( ${grepm} 'host=' <<<"${details}" | cut -d'=' -f 2 )"
 		if [[ -n "${host:-}" ]]; then
 			output "Database '${db}' has write master '${host}'"
 		else
-			local cluster="$( ${grepm} "cluster=" <<<"${details}" | cut -d'=' -f 2 )"
+			local cluster="$( ${grepm} 'cluster=' <<<"${details}" | cut -d'=' -f 2 )"
 			[[ -n "${cluster:-}" ]] || die "Database '${db}' has no defined cluster membership in '${filename}'"
 
 			local master="$( ${grepm} "^${cluster}=" <<<"${hosts}" | cut -d'=' -f 2 )"
@@ -302,7 +299,7 @@ function main() {
 
 	local -i result rc=0 founddb=0
 
-	debug "Establishing lock ..."
+	debug 'Establishing lock ...'
 
 	if [[ -s "${lockfile}" ]]; then
 		local -i blockingpid
@@ -449,13 +446,21 @@ function main() {
 		else
 			die "Neither 'host' nor 'cluster' membership is defined for database '${db}' in '${filename}'"
 		fi
-		if [[ -n "${syntax:-}" && "${syntax}" == "vertica" && -z "${dsn:-}" ]]; then
+		if [[ -n "${syntax:-}" && "${syntax}" == 'vertica' && -z "${dsn:-}" ]]; then
 			die "'dsn' is a mandatory parameter when 'syntax' is set to '${syntax}'"
+		fi
+
+		if [[ 'vertica' == "${syntax}" ]]; then
+			if ! std::requires --no-exit --no-quiet 'vsql'; then
+				warn "Vertica 'vsql' binary cannot be found - some integrity checks will be skipped, and errors may occur if databases or schema aren't in the anticipated state"
+			fi
+		else
+			std::requires --no-quiet 'mysql'
 		fi
 
 		debug "Attempting to resolve host '${host}' ..."
 		if (( std_DEBUG )); then
-			debug "Not performing host resolution in DEBUG mode - skipping"
+			debug 'Not performing host resolution in DEBUG mode - skipping'
 		else
 			std::ensure "Failed to resolve host '${host}'" getent hosts "${host}"
 		fi
@@ -466,8 +471,8 @@ function main() {
 
 		if (( validate )); then
 			info "Validating database '${db}' ..."
-			#${validator} ${filename:+--config "${filename}"} -d "${db}" -s "${actualpath:-${path}/schema}" $( (( keepgoing )) && echo -- "-k" ) $( (( dryrun )) && echo "--dry-run" ) $( (( quiet )) && echo "--quiet" ) $( (( silent )) && echo "--silent" ) --from-applyschema || die "Validation of database '${db}' failed - aborting"
-			${validator} ${filename:+--config "${filename}"} -d "${db}" -s "${actualpath:-${path}/schema}" $( (( keepgoing )) && echo -- "-k" ) $( (( dryrun )) && echo "--dry-run" ) $( (( quiet )) && echo "--quiet" ) $( (( silent )) && echo "--silent" ) --from-applyschema || error "Validation of database '${db}' failed - in the future, will abort"
+			#${validator} ${filename:+--config "${filename}"} -d "${db}" -s "${actualpath:-${path}/schema}" $( (( keepgoing )) && echo '-k' ) $( (( dryrun )) && echo '--dry-run' ) $( (( quiet )) && echo '--quiet' ) $( (( silent )) && echo '--silent' ) --from-applyschema || die "Validation of database '${db}' failed - aborting"
+			${validator} ${filename:+--config "${filename}"} -d "${db}" -s "${actualpath:-${path}/schema}" $( (( keepgoing )) && echo '-k' ) $( (( dryrun )) && echo '--dry-run' ) $( (( quiet )) && echo '--quiet' ) $( (( silent )) && echo '--silent' ) --from-applyschema || error "Validation of database '${db}' failed - in the future, will abort"
 		fi
 
 		if [[ -n "${dsn:-}" ]]; then
@@ -489,7 +494,7 @@ function main() {
 					if [[ -n "${schema:-}" ]]; then
 						params+=( --vertica-schema "${schema}" )
 					else
-						warn "No 'schema' value specified for Vertica database - unless 'SEARCH_PATH' is set appropraitely, statements may fail"
+						warn "No 'schema' value specified for Vertica database - unless 'SEARCH_PATH' is set appropriately, statements may fail"
 					fi
 					;;
 				'')
@@ -506,7 +511,7 @@ function main() {
 		for option in force verbose warn debug quiet silent; do
 			eval echo "\${options_${option}:-}" | grep -Eiq "${truthy}" && params+=( --${option} )
 		done
-		if [[ "${syntax:-}" != "vertica" ]]; then
+		if [[ "${syntax:-}" != 'vertica' ]]; then
 			for option in compat relaxed; do
 				eval echo "\${mysql_${option}:-}" | grep -Eiq "${truthy}" && params+=( --mysql-${option} )
 			done
@@ -546,7 +551,7 @@ function main() {
 			extraparams+=( "${extra[@]}" )
 		fi
 		if (( dryrun )); then
-			extraparams+=( "--dry-run" )
+			extraparams+=( '--dry-run' )
 		fi
 
 		debug "About to prepare schema: '${myway} ${params[*]} ${extraparams[*]}'"
@@ -555,13 +560,20 @@ function main() {
 			allowfail=1
 			keepgoing=1
 		else
-			if mysql -u "${dbadmin}" -p"${passwd}" -h "${host}" "${db}" <<<'QUIT' >/dev/null 2>&1; then
-				# We may still have an empty database with no
-				# metadata tracking tables...
-				allowfail=1
+			# We may still have an empty database (or schema, in
+			# Vertica terms) with no metadata tracking tables...
+			#
+			if [[ 'vertica' == "${syntax:-}" ]]; then
+				if type -pf vsql >/dev/null 2>&1 && vsql -U "${dbadmin}" -w "${passwd}" -h "${host}" -d "${db}" <<<'\q' >/dev/null 2>&1; then
+					allowfail=1
+				fi
+			else
+				if mysql -u "${dbadmin}" -p"${passwd}" -h "${host}" "${db}" <<<'QUIT' >/dev/null 2>&1; then
+					allowfail=1
+				fi
 			fi
 		fi
-		local response=""
+		local response=''
 		if (( silent )); then
 			${myway} "${params[@]}" "${extraparams[@]}" --init >/dev/null 2>&1
 		elif (( quiet )); then
@@ -581,7 +593,7 @@ function main() {
 			else
 				if (( keepgoing )); then
 					warn "Initialisation of database '${db}' (${myway} ${params[*]} ${extraparams[*]} --init) failed: ${result}"
-					output "\n\nContinuing to next database, if any ...\n"
+					output $'\n\nContinuing to next database, if any ...\n'
 					rc=1
 				else
 					output >&2 "${response}"
@@ -590,87 +602,93 @@ function main() {
 			fi
 		fi
 
-		if ! mysql -u "${dbadmin}" -p"${passwd}" -h "${host}" "${db}" <<<'QUIT' >/dev/null 2>&1; then
+		if [[ 'vertica' != "${syntax}" ]] && ! mysql -u "${dbadmin}" -p"${passwd}" -h "${host}" "${db}" <<<'QUIT' >/dev/null 2>&1; then
 			warn "Skipping further simulation for non-existent database '${db}'"
+		elif [[ 'vertica' == "${syntax}" ]] && type -pf vsql >/dev/null 2>&1 && ! vsql -U "${dbadmin}" -w "${passwd}" -h "${host}" -d "${db}" <<<'\q' >/dev/null 2>&1; then
+			warn "Skipping further simulation for non-existent Vertica database '${db}'"
 		else
-			# Load stored-procedures next, as references to tables aren't
-			# checked until the SP is actually executed, but SPs may be
-			# invoked as part of schema deployment.
+			# N.B. Vertica does not support Stored Procedures.
 			#
-			if grep -Eiq "${truthy}" <<<"${procedures:-}"; then
-				local -a procparams=( --mode procedure )
-				if [[ -n "${procedures_marker:-}" ]]; then
-					procparams+=( --substitute --marker "${procedures_marker}" )
-				else
-					procparams+=( --substitute )
-				fi
-
-				local -a reorder=( sort -V )
-				if (( novsort )); then
-					reorder=( tac )
-				fi
-
-				local procedurepath="${path}/procedures"
-				if [[ -d "${path}"/schema/"${db}"/procedures ]]; then
-					procedurepath="${path}"/schema/"${db}"/procedures
-				fi
-
-				local ppath
-				local -i sploaded=0
-				while read -r ppath; do
-					[[ -f "${ppath}/${db}.metadata" ]] || continue
-
-					extraparams=( --scripts "${ppath}" )
-					#if (( ${#extra[@]} )); then
-					if [[ -n "${extra[*]:-}" ]]; then
-						extraparams+=( "${extra[@]}" )
-					fi
-					if (( dryrun )); then
-						extraparams+=( "--dry-run" )
-					fi
-
-					(( silent )) || info "Launching '${SCRIPT}' with path '${ppath}' to update Stored Procedures for database '${db}' ..."
-
-					debug "About to apply Stored Procedures: ${myway} ${params[*]} ${procparams[*]} ${extraparams[*]} ${extra[*]:-}"
-					if (( silent )); then
-						${myway} "${params[@]}" "${procparams[@]}" "${extraparams[@]}" >/dev/null 2>&1
-					elif (( quiet )); then
-						# Loses return code to grep :(
-						#${myway} "${params[@]}" "${procparams[@]}" "${extraparams[@]}" 2>&1 >/dev/null | grep -Ev --line-buffered "${silentfilter}"
-
-						# Throw away stdout but redirect stderr to stdout...
-						# shellcheck disable=SC2069
-						${myway} "${params[@]}" "${procparams[@]}" "${extraparams[@]}" 2>&1 >/dev/null
+			if [[ 'vertica' != "${syntax}" ]]; then
+				# Load stored-procedures next, as references to tables aren't
+				# checked until the SP is actually executed, but SPs may be
+				# invoked as part of schema deployment.
+				#
+				if grep -Eiq "${truthy}" <<<"${procedures:-}"; then
+					local -a procparams=( --mode procedure )
+					if [[ -n "${procedures_marker:-}" ]]; then
+						procparams+=( --substitute --marker "${procedures_marker}" )
 					else
-						${myway} "${params[@]}" "${procparams[@]}" "${extraparams[@]}"
+						procparams+=( --substitute )
 					fi
-					result=${?}
-					if (( result )); then
+
+					local -a reorder=( sort -V )
+					if (( novsort )); then
+						reorder=( tac )
+					fi
+
+					local procedurepath="${path}/procedures"
+					if [[ -d "${path}"/schema/"${db}"/procedures ]]; then
+						procedurepath="${path}"/schema/"${db}"/procedures
+					fi
+
+					local ppath
+					local -i sploaded=0
+					while read -r ppath; do
+						[[ -f "${ppath}/${db}.metadata" ]] || continue
+
+						extraparams=( --scripts "${ppath}" )
+						#if (( ${#extra[@]} )); then
+						if [[ -n "${extra[*]:-}" ]]; then
+							extraparams+=( "${extra[@]}" )
+						fi
+						if (( dryrun )); then
+							extraparams+=( '--dry-run' )
+						fi
+
+						(( silent )) || info "Launching '${SCRIPT}' with path '${ppath}' to update Stored Procedures for database '${db}' ..."
+
+						debug "About to apply Stored Procedures: ${myway} ${params[*]} ${procparams[*]} ${extraparams[*]} ${extra[*]:-}"
+						if (( silent )); then
+							${myway} "${params[@]}" "${procparams[@]}" "${extraparams[@]}" >/dev/null 2>&1
+						elif (( quiet )); then
+							# Loses return code to grep :(
+							#${myway} "${params[@]}" "${procparams[@]}" "${extraparams[@]}" 2>&1 >/dev/null | grep -Ev --line-buffered "${silentfilter}"
+
+							# Throw away stdout but redirect stderr to stdout...
+							# shellcheck disable=SC2069
+							${myway} "${params[@]}" "${procparams[@]}" "${extraparams[@]}" 2>&1 >/dev/null
+						else
+							${myway} "${params[@]}" "${procparams[@]}" "${extraparams[@]}"
+						fi
+						result=${?}
+						if (( result )); then
+							if (( keepgoing )); then
+								warn "Loading of stored procedures into database '${db}' (${myway} ${params[*]} ${procparams[*]} ${extraparams[*]}${extra[*]:+ ${extra[*]}}) failed: ${result}"
+								output $'\n\nContinuing to next database, if any ...\n'
+								rc=1
+							else
+								die "Loading of stored procedures into database '${db}' (${myway} ${params[*]} ${extraparams[*]}${extra[*]:+ ${extra[*]}}) failed: ${result}"
+							fi
+						else
+							sploaded=1
+						fi
+					done < <( find "${procedurepath}"/ -mindepth 1 -maxdepth 2 -type d 2>/dev/null | grep "${db}" | "${reorder[@]}" )
+
+					if ! (( sploaded )); then
 						if (( keepgoing )); then
-							warn "Loading of stored procedures into database '${db}' (${myway} ${params[*]} ${procparams[*]} ${extraparams[*]}${extra[*]:+ ${extra[*]}}) failed: ${result}"
-							output "\n\nContinuing to next database, if any ...\n"
+							warn "Stored procedure load requested for database '${db}', but no valid Stored Procedures were processed"
+							output $'\n\nContinuing to next database, if any ...\n'
 							rc=1
 						else
-							die "Loading of stored procedures into database '${db}' (${myway} ${params[*]} ${extraparams[*]}${extra[*]:+ ${extra[*]}}) failed: ${result}"
+							die "Stored procedure load requested for database '${db}', but no valid Stored Procedures were processed"
 						fi
-					else
-						sploaded=1
 					fi
-				done < <( find "${procedurepath}"/ -mindepth 1 -maxdepth 2 -type d 2>/dev/null | grep "${db}" | "${reorder[@]}" )
 
-				if ! (( sploaded )); then
-					if (( keepgoing )); then
-						warn "Stored procedure load requested for database '${db}', but no valid Stored Procedures were processed"
-						output "\n\nContinuing to next database, if any ...\n"
-						rc=1
-					else
-						die "Stored procedure load requested for database '${db}', but no valid Stored Procedures were processed"
-					fi
+					debug "Stored Procedures loaded for database '${db}'\n"
+
+					unset sploaded ppath procedurepath reorder procparams
 				fi
-
-				debug "Stored Procedures loaded for database '${db}'\n"
-
-				unset sploaded ppath procedurepath reorder procparams
 			fi
 
 			# ... and finally, perform schema deployment.
@@ -688,7 +706,7 @@ function main() {
 				extraparams+=( "${extra[@]}" )
 			fi
 			if (( dryrun )); then
-				extraparams+=( "--dry-run" )
+				extraparams+=( '--dry-run' )
 			fi
 
 			debug "About to apply schema: '${myway} ${params[*]} ${extraparams[*]}'"
@@ -708,7 +726,7 @@ function main() {
 			if (( result )); then
 				if (( keepgoing )); then
 					warn "Migration of database '${db}' (${myway} ${params[*]} ${extraparams[*]}) failed: ${result}"
-					output "\n\nContinuing to next database, if any ...\n"
+					output $'\n\nContinuing to next database, if any ...\n'
 					rc=1
 				else
 					die "Migration of database '${db}' (${myway} ${params[*]} ${extraparams[*]}) failed: ${result}"
@@ -755,7 +773,7 @@ function main() {
 
 	(( std_TRACE )) && set +o xtrace
 
-	debug "Releasing lock ..."
+	debug 'Releasing lock ...'
 	[[ -e "${lockfile}" && "$( <"${lockfile}" )" == "${$}" ]] && rm "${lockfile}"
 
 	(( silent )) || {
@@ -763,19 +781,19 @@ function main() {
 		if (( rc )) && (( dryrun )); then
 			warn "Load completed with errors, or database doesn't exist"
 		elif (( rc )); then
-			error "Load completed with errors"
+			error 'Load completed with errors'
 		elif (( !( founddb ) )); then
-			error "Specified database(s) not present in configuration file"
+			error 'Specified database(s) not present in configuration file'
 			rc=1
 		else
-			info "Load completed"
+			info 'Load completed'
 		fi
 	}
 
 	return ${rc}
 } # main
 
-export LC_ALL="C"
+export LC_ALL='C'
 set -o pipefail
 
 std::requires --no-quiet 'perl'
