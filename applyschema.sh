@@ -450,7 +450,7 @@ function main() {
 			die "'dsn' is a mandatory parameter when 'syntax' is set to '${syntax}'"
 		fi
 
-		if [[ 'vertica' == "${syntax}" ]]; then
+		if [[ 'vertica' == "${syntax:-}" ]]; then
 			if ! std::requires --no-exit --no-quiet 'vsql'; then
 				warn "Vertica 'vsql' binary cannot be found - some integrity checks will be skipped, and errors may occur if databases or schema aren't in the anticipated state"
 			fi
@@ -602,14 +602,14 @@ function main() {
 			fi
 		fi
 
-		if [[ 'vertica' != "${syntax}" ]] && ! mysql -u "${dbadmin}" -p"${passwd}" -h "${host}" "${db}" <<<'QUIT' >/dev/null 2>&1; then
+		if [[ 'vertica' != "${syntax:-}" ]] && ! mysql -u "${dbadmin}" -p"${passwd}" -h "${host}" "${db}" <<<'QUIT' >/dev/null 2>&1; then
 			warn "Skipping further simulation for non-existent database '${db}'"
-		elif [[ 'vertica' == "${syntax}" ]] && type -pf vsql >/dev/null 2>&1 && ! vsql -U "${dbadmin}" -w "${passwd}" -h "${host}" -d "${db}" <<<'\q' >/dev/null 2>&1; then
+		elif [[ 'vertica' == "${syntax:-}" ]] && type -pf vsql >/dev/null 2>&1 && ! vsql -U "${dbadmin}" -w "${passwd}" -h "${host}" -d "${db}" <<<'\q' >/dev/null 2>&1; then
 			warn "Skipping further simulation for non-existent Vertica database '${db}'"
 		else
 			# N.B. Vertica does not support Stored Procedures.
 			#
-			if [[ 'vertica' != "${syntax}" ]]; then
+			if [[ 'vertica' != "${syntax:-}" ]]; then
 				# Load stored-procedures next, as references to tables aren't
 				# checked until the SP is actually executed, but SPs may be
 				# invoked as part of schema deployment.
