@@ -2228,7 +2228,7 @@ no if ( $] >= 5.02 ), warnings => 'experimental::autoderef';
 # ... in actual fact, diagnostics causes more problems than it solves.  It does
 # appear to be, in reality, quite silly.
 
-use constant VERSION     =>  "1.2.1.1";
+use constant VERSION     =>  "1.2.1.2";
 
 use constant TRUE        =>  1;
 use constant FALSE       =>  0;
@@ -2321,7 +2321,7 @@ sub setverticasearchpath( $$;$$ );
 sub checkdbconnection( $;$ );
 sub dosql( $$ );
 sub preparesql( $$ );
-sub executesql( $$$;@ );
+sub executesql( $$;$@ );
 sub getsqlvalue( $$;$ );
 sub getsqlvalues( $$;$ );
 sub outputtable( $$;$ );
@@ -4756,7 +4756,7 @@ sub preparesql( $$ ) { # {{{
 	return( undef );
 } # preparesql # }}}
 
-sub executesql( $$$;@ ) { # {{{
+sub executesql( $$;$@ ) { # {{{
 	my( $dbh, $sth, $st, @values ) = @_;
 
 	return( undef ) unless( defined( $dbh ) );
@@ -4781,10 +4781,13 @@ sub executesql( $$$;@ ) { # {{{
 	}
 
 	if( $retries ) {
-		if( defined( $st ) and length( $st )  ) {
-			warn( "\n$warning Database connection failed $retries time(s) when executing statement \"$st\"\n" );
+		if( defined( $sth -> { 'Statement' } ) and length( $sth -> { 'Statement' } ) ) {
+			warn( "\n$warning Database connection failed $retries time(s) whilst executing prepared statement \"" . $sth -> { 'Statement' } . "\"\n" );
+		} elsif( defined( $st ) and length( $st )  ) {
+			warn( "\n$warning Database connection failed $retries time(s) whilst executing statement \"$st\"\n" );
 		} else {
-			warn( "\n$warning Database connection failed $retries time(s) when executing prepared statement \"" . $sth -> { 'Statement' } . "\"\n" );
+			# Unreachable?
+			warn( "\n$warning Database connection failed $retries time(s) whilst executing unknown statement\n" );
 		}
 	}
 
@@ -4799,6 +4802,7 @@ sub executesql( $$$;@ ) { # {{{
 	if( $@ ) {
 		my $errstr = $@;
 
+		my $sthst = $sth -> { 'Statement' } if( defined( $sth -> { 'Statement' } ) );
 		my $stherr = $sth -> err if( defined( $sth -> err ) );
 		my $stherrstr = $sth -> errstr if( defined( $sth -> errstr ) );
 		my $sthstate = $sth -> state if( defined( $sth -> state ) );
@@ -4813,22 +4817,25 @@ sub executesql( $$$;@ ) { # {{{
 		if( defined( $st ) ) {
 			warn( "\n$failed Error when processing SQL statement:\n$st\n" );
 			warn( '       ... with parameters "' . join( '", "', @values ) . "\"\n" ) if( scalar( @values ) );
+		} elsif( defined( $sthst ) ) {
+			warn( "\n$failed Error when processing statement from handle:\n$sthst\n" );
+			warn( '       ... with parameters "' . join( '", "', @values ) . "\"\n" ) if( scalar( @values ) );
 		} else {
 			warn( "\n$failed Error applying parameters \"" . join( '", "', @values ) . "\"\n" ) if( @values and scalar( @values ) );
 		}
 		warn( "Error details:\n" );
-		warn( "Statement:    " . $sth -> { 'Statement' } . "\n" );
+		warn( "Statement:    '" . $sthst . "'\n" ) if( defined( $sthst ) );
 		foreach my $value ( @values ) {
 			warn( "Parameter:    " . $value . "\n" );
 		}
-		warn( "Error:        " . $errstr . "\n" );
-		warn( "Error string: " . ${ $dbh } -> errstr() . "\n" ) if( defined( ${ $dbh } -> errstr() ) );
-		warn( "State:        " . ${ $dbh } -> state() . "\n" ) if( defined( ${ $dbh } -> state() ) );
+		warn( "Error:        '" . $errstr . "'\n" );
+		warn( "Error string: '" . ${ $dbh } -> errstr() . "'\n" ) if( defined( ${ $dbh } -> errstr() ) );
+		warn( "State:        '" . ${ $dbh } -> state() . "'\n" ) if( defined( ${ $dbh } -> state() ) );
 		warn( "\n" );
 		warn( "Statement debug:\n" );
-		warn( "Error:        " . $stherr . "\n" ) if( defined( $stherr ) );
-		warn( "Error string: " . $stherrstr . "\n" ) if( defined( $stherrstr ) );
-		warn( "State:        " . $sthstate . "\n" ) if( defined( $sthstate ) );
+		warn( "Error:        '" . $stherr . "'\n" ) if( defined( $stherr ) );
+		warn( "Error string: '" . $stherrstr . "'\n" ) if( defined( $stherrstr ) );
+		warn( "State:        '" . $sthstate . "'\n" ) if( defined( $sthstate ) );
 
 		if( not( ${ $dbh } -> state() ) or ( ${ $dbh } -> state() eq 'S1000' ) or ( ${ $dbh } -> state() eq '00000' ) ) {
 			if( ( ${ $dbh } -> errstr() ) and ( ${ $dbh } -> errstr() =~ m/ \(SQL-\d{5}\)$/ ) ) {
@@ -4844,7 +4851,7 @@ sub executesql( $$$;@ ) { # {{{
 			return( undef );
 		} else {
 			$retries ++;
-			if( not( checkdbconnection( $dbh, ( defined( $sth ) ? \$sth : undef ) ) ) ) {
+			if( not( checkdbconnection( $dbh ) ) ) {
 				return( undef ) unless( $retries < 4 );
 				my $statement = $st;
 				$statement = $dbh -> { 'Statement' } unless( defined( $st ) and length( $st ) );

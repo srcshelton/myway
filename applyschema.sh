@@ -564,7 +564,15 @@ function main() {
 			# Vertica terms) with no metadata tracking tables...
 			#
 			if [[ 'vertica' == "${syntax:-}" ]]; then
-				if type -pf vsql >/dev/null 2>&1 && vsql -U "${dbadmin}" -w "${passwd}" -h "${host}" -d "${db}" <<<'\q' >/dev/null 2>&1; then
+				if type -pf vsql >/dev/null 2>&1; then
+					if vsql -U "${dbadmin}" -w "${passwd}" -h "${host}" -d "${db}" <<<'\q' >/dev/null 2>&1; then
+						allowfail=1
+					fi
+				else
+					# We don't know, we'll just have to
+					# assume that we're good to continue,
+					# and hope that Vertica can manage
+					# things otherwise...
 					allowfail=1
 				fi
 			else
