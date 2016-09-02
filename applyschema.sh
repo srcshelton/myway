@@ -139,7 +139,7 @@ function main() {
 				elif [[ "${1}" =~ ^-- ]]; then
 					die "Argument '${1}' to option ${arg} looks like an option... aborting"
 				else
-					dblist="${1}"
+					dblist="${dblist:+,}${1}"
 				fi
 				;;
 			-f|--force)
@@ -198,7 +198,7 @@ function main() {
 				elif [[ "${1}" =~ ^-- ]]; then
 					die "Argument '${1}' to option ${arg} looks like an option... aborting"
 				else
-					clist="${1}"
+					clist="${clist:+,}${1}"
 				fi
 				;;
 			   --no-validate)
