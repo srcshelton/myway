@@ -1,10 +1,9 @@
 withEnv( [
 	  'JENKINS_SFTP_SERVERS=/var/lib/jenkins/iod/software_servers.cfg'
-	, 'JENKINS_SERVER_TAGS=all'
-	, 'JENKINS_BUILD_TAG=master'
 	, 'JENKINS_COMPONENT_CFG=src/.build/package.cfg'
 	, 'JENKINS_HISTORY_DIR=/var/lib/jenkins/iod/history'
 	, 'JENKINS_FORCE_REBUILD=1'
+	, 'GITLOG2DCL_PKG_NAME=dbtools'
 ] ) {
 	def nodeTag = getNode()
 
@@ -18,6 +17,17 @@ withEnv( [
 		dir( 'src' ) {
 			gitClean()
 			checkout scm
+		}
+		sh '''
+		test -d util && rm -r util
+		git clone https://github.com/srcshelton/gitlog2dcl.git util
+		chmod 755 util/gitlog2dcl.sh
+		'''
+		dir( 'src' ) {
+			sh '''
+			../util/gitlog2dcl.sh 2>/dev/null > debian/changelog
+			echo "dbtools_$( ../util/gitlog2dcl.sh 2>/dev/null | head -n 1 | cut -d'(' -f 2 | cut -d')' -f 1 )_noarch.deb database extra" > debian/files
+			'''
 		}
 
 		stage 'Build'

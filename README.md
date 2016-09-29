@@ -84,13 +84,17 @@ Usage: myway.pl <--username <user> --password <passwd> --host <node> ...
                                    ignore previous and target versions when
                                    applying schema files
 
-                --dry-run        - Validate but do not execute schema SQL
+                  Output control:
+
+                --warn           - Output additional warning messages only
+                --notice         - Output standard progress messages
+                --debug          - Output copious debugging statements
+
                 --silent         - Output only fatal errors
                 --quiet          - Output only essential messages
-                --notice         - Output standard progress messages
-                --warn           - Output additional warning messages
-                --debug          - Output copious debugging statements
                 --verbose        - Provide more detailed status information
+
+                --dry-run        - Validate but do not execute schema SQL
 ```
 
 For full documentation of database standards, please refer to [the tools-db wiki](../../wiki/Schema-Standards).

@@ -3,6 +3,7 @@
 # stdlib.sh should be in /usr/local/lib/stdlib.sh, which can be found as
 # follows by scripts located in /usr/local/{,s}bin/...
 declare std_LIB='stdlib.sh'
+# shellcheck disable=SC2153
 for std_LIBPATH in							\
 	"$( dirname -- "${BASH_SOURCE:-${0:-.}}" )"			\
 	'.'								\
@@ -28,7 +29,7 @@ done
 # N.B. The shellcheck 'source' option is only valid with shellcheck 0.4.0 and
 #      later...
 #
-# shellcheck disable=SC2015
+# shellcheck disable=SC1091,SC2015
 # shellcheck source=/usr/local/lib/stdlib.sh
 [[ -r "${std_LIBPATH}/${std_LIB}" ]] && source "${std_LIBPATH}/${std_LIB}" || {
 	echo >&2 "FATAL:  Unable to source ${std_LIB} functions: ${?}"
@@ -50,7 +51,7 @@ else
 fi
 
 # Override `die` to return '2' on fatal error...
-function die() {
+function die() { # {{{
 	if [[ -n "${*:-}" ]]; then
 		if [[ 'function' == "$( type -t std::colour )" ]]; then
 			std_DEBUG=1 std::log >&2 "$( std::colour 'FATAL: ' )" "${*}"
@@ -62,9 +63,9 @@ function die() {
 
 	# Unreachable
 	return 1
-}
+} # die # }}}
 
-function lock() {
+function lock() { # {{{
 	local lockfile="${1:-/var/lock/${NAME}.lock}"
 
 	mkdir -p "$( dirname "${lockfile}" )" 2>/dev/null || exit 1
@@ -78,10 +79,10 @@ function lock() {
 
 	# Unreachable
 	return 128
-} # lock
+} # lock # }}}
 
 # shellcheck disable=SC2155
-function main() {
+function main() { # {{{
 	local myway="$( std::requires --path "${SCRIPT}" )"
 
 	local truthy='^(on|y(es)?|true|1)$'
@@ -90,6 +91,7 @@ function main() {
 
 	local actualpath filename validator
 	local lockfile="/var/lock/${NAME}.lock"
+	[[ -w /var/lock ]] || lockfile="${TMPDIR:-/tmp}/${NAME}.lock"
 
 	# Sigh...
 	[[ -d '/opt/vertica/bin' ]] && export PATH="${PATH:+${PATH}:}/opt/vertica/bin"
@@ -146,7 +148,7 @@ function main() {
 				force=1
 				;;
 			-h|--help)
-				export std_USAGE='[--config <file>] [--schema <path>] [ [--databases <database>[,...]] | [--clusters <cluster>[,...]] ] [--keep-going] [--dry-run] [--force] [--no-validate] [ [--quiet] | [--silent] ] [--progress=<always|auto|never>] | [--locate <database>]'
+				export std_USAGE='[--config <file>] [--schema <path>] [ [--databases <database>[,...]] | [--clusters <cluster>[,...]] ] [--keep-going] [--dry-run] [--force] [--no-validate] [--quiet|--silent] [--progress=<always|auto|never>] [--no-wrap] | [--locate <database>]'
 				std::usage
 				;;
 			-k|--keep-going|--keepgoing)
@@ -161,6 +163,9 @@ function main() {
 				else
 					db="${1}"
 				fi
+				;;
+			-n|--nowrap|--no-wrap)
+				export STDLIB_WANT_WORDWRAP=0
 				;;
 			-p|--progress|--progress=*)
 				if grep -Fq '=' <<<"${arg}"; then
@@ -232,28 +237,8 @@ function main() {
 	if [[ ! -r "${filename}" ]]; then
 		die 'Cannot read configuration file'
 	else
-		(( silent )) || info "Using configuration file '${filename}' ..."
-	fi
-
-	if ! (( validate )); then
-		warn 'Validation disabled - applied schema may not be standards compliant'
-	else
-		# stdlib.sh prior to v2.0.0 incorrectly didn't accept
-		# multi-argument calls to std::requires
-		#
-		#if validator="$( std::requires --no-exit --path "${VALIDATOR}" )" && [[ -x "${validator:-}" ]]; then
-		if validator="$( type -pf "${VALIDATOR}" 2>/dev/null )" && [[ -x "${validator:-}" ]]; then
-			debug "Using '${validator}' to validate data"
-		else
-			if (( force || dryrun )); then
-				warn "Cannot locate script '${VALIDATOR}' to perform data validation"
-				validate=0
-				unset validator
-			else
-				error "Cannot locate script '${VALIDATOR}' to perform data validation"
-				die "Invoke with '--force' parameter to proceed without validation - aborting"
-			fi
-		fi
+		#(( quiet | silent )) || info "Using configuration file '${filename}' ..."
+		debug "Using configuration file '${filename}' ..."
 	fi
 
 	local defaults="$( std::getfilesection "${filename}" 'DEFAULT' | sed -r 's/#.*$// ; /^[^[:space:]]+\.[^[:space:]]+\s*=/s/\./_/' | grep -Ev '^\s*$' | sed -r 's/\s*=\s*/=/' )"
@@ -305,8 +290,10 @@ function main() {
 		local -i blockingpid
 		blockingpid="$( <"${lockfile}" )"
 		if (( blockingpid > 1 )); then
+			# shellcheck disable=SC2086
 			if kill -0 ${blockingpid} >/dev/null 2>&1; then
-				local processname="$( ps -e | grep "^${blockingpid}" | rev | cut -d' ' -f 1 | rev )"
+				#local processname="$( ps -e | grep "^${blockingpid}" | rev | cut -d' ' -f 1 | rev )"
+				local processname="$( pgrep -lF "${lockfile}" | cut -d' ' -f 2- )"
 				die "Lock file '${lockfile}' (belonging to process '${processname}', PID '${blockingpid}') exists - aborting"
 			else
 				warn "Lock file '${lockfile}' (belonging to obsolete PID '${blockingpid}') exists - removing stale lock"
@@ -348,6 +335,57 @@ function main() {
 	eval "${defaults}"
 	eval "${hosts}"
 
+	# We only have configuration options past this point...
+
+	# Command-line options override configuration-file settings, so we only
+	# check the value of 'options.quiet' when ${quiet} hasn't already been
+	# set to one...
+	if ! (( quiet )); then
+		if [[ -n "${options_quiet:-}" ]]; then
+			if grep -Eiq "${truthy}" <<<"${options_quiet}"; then
+				quiet=1
+			fi
+		fi
+	fi
+	if ! (( silent )); then
+		if [[ -n "${options_silent:-}" ]]; then
+			if grep -Eiq "${truthy}" <<<"${options_silent}"; then
+				silent=1
+			fi
+		fi
+	fi
+
+	# Ditto for 'preprocessor.validate' when ${validate} hasn't already
+	# been set to zero...
+	if (( validate )); then
+		if [[ -n "${preprocessor_validate:-}" ]]; then
+			if grep -Eiq "${falsy}" <<<"${preprocessor_validate}"; then
+				validate=0
+			fi
+		fi
+	fi
+
+	if ! (( validate )); then
+		warn 'Validation disabled - applied schema may not be standards compliant'
+	else
+		# stdlib.sh prior to v2.0.0 incorrectly didn't accept
+		# multi-argument calls to std::requires
+		#
+		#if validator="$( std::requires --no-exit --path "${VALIDATOR}" )" && [[ -x "${validator:-}" ]]; then
+		if validator="$( type -pf "${VALIDATOR}" 2>/dev/null )" && [[ -x "${validator:-}" ]]; then
+			debug "Using '${validator}' to validate data"
+		else
+			if (( force || dryrun )); then
+				warn "Cannot locate script '${VALIDATOR}' to perform data validation"
+				validate=0
+				unset validator
+			else
+				error "Cannot locate script '${VALIDATOR}' to perform data validation"
+				die "Invoke with '--force' parameter to proceed without validation - aborting"
+			fi
+		fi
+	fi
+
 	for db in ${databases}; do
 		# Run the block below in a sub-shell so that we don't have to
 		# manually sanitise the environment on each iteration.
@@ -355,7 +393,8 @@ function main() {
 		(
 
 		if [[ -n "${dblist:-}" ]] && ! grep -q ",${db}," <<<",${dblist},"; then
-			(( silent )) || info "Skipping deselected database '${db}' ..."
+			#(( quiet | silent )) || info "Skipping deselected database '${db}' ..."
+			debug "Skipping deselected database '${db}' ..."
 			exit 0 # continue
 		fi
 
@@ -470,9 +509,13 @@ function main() {
 		local option
 
 		if (( validate )); then
-			info "Validating database '${db}' ..."
-			#${validator} ${filename:+--config "${filename}"} -d "${db}" -s "${actualpath:-${path}/schema}" $( (( keepgoing )) && echo '-k' ) $( (( dryrun )) && echo '--dry-run' ) $( (( quiet )) && echo '--quiet' ) $( (( silent )) && echo '--silent' ) --from-applyschema || die "Validation of database '${db}' failed - aborting"
-			${validator} ${filename:+--config "${filename}"} -d "${db}" -s "${actualpath:-${path}/schema}" $( (( keepgoing )) && echo '-k' ) $( (( dryrun )) && echo '--dry-run' ) $( (( quiet )) && echo '--quiet' ) $( (( silent )) && echo '--silent' ) --from-applyschema || error "Validation of database '${db}' failed - in the future, will abort"
+			(( quiet | silent )) || info "Validating database '${db}' ..."
+			#if ! ${validator} ${filename:+--config "${filename}"} -d "${db}" -s "${actualpath:-${path}/schema}" $( (( keepgoing )) && echo '-k' ) $( (( dryrun )) && echo '--dry-run' ) $( (( quiet )) && echo '--quiet' ) $( (( silent )) && echo '--silent' ) --from-applyschema; then
+			# shellcheck disable=SC2046
+			if ! ${validator} ${filename:+--config "${filename}"} -d "${db}" -s "${actualpath:-${path}/schema}" $( (( keepgoing )) && echo '-k' ) $( (( dryrun )) && echo '--dry-run' ) $( (( quiet )) && echo '--quiet' ) $( (( silent )) && echo '--silent' ) --from-applyschema; then
+				#die "Validation of database '${db}' failed - aborting"
+				(( silent )) || error "Validation of database '${db}' failed - in the future, will abort"
+			fi
 		fi
 
 		if [[ -n "${dsn:-}" ]]; then
@@ -508,7 +551,7 @@ function main() {
 
 		[[ -n "${environment:-}" ]] && params+=( -e "${environment}" )
 
-		for option in force verbose warn debug quiet silent; do
+		for option in force warn notice debug silent quiet verbose; do
 			eval echo "\${options_${option}:-}" | grep -Eiq "${truthy}" && params+=( --${option} )
 		done
 		if [[ "${syntax:-}" != 'vertica' ]]; then
@@ -611,9 +654,11 @@ function main() {
 		fi
 
 		if [[ 'vertica' != "${syntax:-}" ]] && ! mysql -u "${dbadmin}" -p"${passwd}" -h "${host}" "${db}" <<<'QUIT' >/dev/null 2>&1; then
-			warn "Skipping further simulation for non-existent database '${db}'"
+			(( silent )) || warn "Skipping further simulation for non-existent database '${db}'"
+			rc=1
 		elif [[ 'vertica' == "${syntax:-}" ]] && type -pf vsql >/dev/null 2>&1 && ! vsql -U "${dbadmin}" -w "${passwd}" -h "${host}" -d "${db}" <<<'\q' >/dev/null 2>&1; then
-			warn "Skipping further simulation for non-existent Vertica database '${db}'"
+			(( silent )) || warn "Skipping further simulation for non-existent Vertica database '${db}'"
+			rc=1
 		else
 			# N.B. Vertica does not support Stored Procedures.
 			#
@@ -701,6 +746,7 @@ function main() {
 
 			# ... and finally, perform schema deployment.
 			#
+			# shellcheck disable=SC2154
 			(( silent )) || info "Launching '${SCRIPT}' to perform database migration for database '${db}' ${version_max:+with target version '${version_max}' }..."
 			[[ -n "${version_max:-}" ]] && params+=( --target-limit "${version_max}" )
 			extraparams=()
@@ -784,26 +830,25 @@ function main() {
 	debug 'Releasing lock ...'
 	[[ -e "${lockfile}" && "$( <"${lockfile}" )" == "${$}" ]] && rm "${lockfile}"
 
-	(( silent )) || {
-		# ${rc} should have recovered from the sub-shell, above...
-		if (( rc )) && (( dryrun )); then
-			warn "Load completed with errors, or database doesn't exist"
-		elif (( rc )); then
-			error 'Load completed with errors'
-		elif (( !( founddb ) )); then
-			error 'Specified database(s) not present in configuration file'
-			rc=1
-		else
-			info 'Load completed'
-		fi
-	}
+	# ${rc} should have recovered from the sub-shell, above...
+	if (( rc )) && (( dryrun )); then
+		(( silent )) || warn "Load completed with errors, or database doesn't exist"
+	elif (( rc )); then
+		(( silent )) || error 'Load completed with errors'
+	elif (( !( founddb ) )); then
+		(( silent )) || error 'Specified database(s) not present in configuration file'
+		rc=1
+	else
+		(( silent )) || info 'Load completed'
+	fi
 
 	return ${rc}
-} # main
+} # main # }}}
 
 export LC_ALL='C'
 set -o pipefail
 
+std::requires --no-quiet 'pgrep'
 std::requires --no-quiet 'perl'
 std::requires --no-quiet "${SCRIPT}"
 #std::requires --no-exit --no-quiet "${VALIDATOR}" # Checked above
@@ -812,4 +857,4 @@ main "${@:-}"
 
 exit ${?}
 
-# vi: set syntax=sh colorcolumn=80 foldmethod=marker:
+# vi: set filetype=sh syntax=sh commentstring=#%s foldmarker=\ {{{,\ }}} foldmethod=marker colorcolumn=80 nowrap:

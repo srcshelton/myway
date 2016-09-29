@@ -3,6 +3,7 @@
 # stdlib.sh should be in /usr/local/lib/stdlib.sh, which can be found as
 # follows by scripts located in /usr/local/{,s}bin/...
 declare std_LIB="stdlib.sh"
+# shellcheck disable=SC2153
 for std_LIBPATH in							\
 	"$( dirname -- "${BASH_SOURCE:-${0:-.}}" )"			\
 	"."								\
@@ -30,9 +31,10 @@ export STDLIB_WANT_API=2
 # N.B. The shellcheck 'source' option is only valid with shellcheck 0.4.0 and
 #      later...
 #
-# shellcheck disable=SC2015
+# shellcheck disable=SC1091,SC2015
 # shellcheck source=/usr/local/lib/stdlib.sh
 [[ -r "${std_LIBPATH}/${std_LIB}" ]] && source "${std_LIBPATH}/${std_LIB}" || {
+	# shellcheck disable=SC2154
 	echo >&2 "FATAL:  Unable to source ${std_LIB} functions: ${?}${std_ERRNO:+ (ERRNO ${std_ERRNO})}"
 	exit 1
 }
@@ -41,15 +43,15 @@ std_DEBUG="${DEBUG:-0}"
 std_TRACE="${TRACE:-0}"
 
 # Override `die` to return '2' on fatal error...
-function die() {
+function die() { # {{{
 	[[ -n "${*:-}" ]] && std_DEBUG=1 std::log >&2 "FATAL: " "${*}"
 	std::cleanup 2
 
 	# Unreachable
 	return 1
-}
+} # die # }}}
 
-function lock() {
+function lock() { # {{{
 	local lockfile="${1:-/var/lock/${NAME}.lock}"
 
 	mkdir -p "$( dirname "${lockfile}" )" 2>/dev/null || exit 1
@@ -63,9 +65,9 @@ function lock() {
 
 	# Unreachable
 	return 128
-} # lock
+} # lock # }}}
 
-function validate() {
+function validate() { # {{{
 	local type max name="" file=""
 	local version="" migrationversion=""
 	local newversion="" newmigrationversion="" metadescription=""
@@ -73,7 +75,7 @@ function validate() {
 	local schema="" environmentdirective="" defaulttype="ddl"
 	local -l desc=""
 	local -i std_PARSEARGS_parsed=0 rc=0 warnings=0 notices=0 styles=0
-	local -a files=() versionsegments=()
+	local -a files=() versionsegment=()
 	local -A seen=()
 	
 	eval std::inherit -- versions descriptions metadescriptions foundinit
@@ -133,12 +135,12 @@ function validate() {
 		done
 
 		if (( warnings )); then
-			warn "Completed checking file '${name}': ${warnings} Fatal Errors or Warnings, ${notices} Notices, ${styles} Comments"
+			(( silent )) || warn "Completed checking file '${name}': ${warnings} Fatal Errors or Warnings, ${notices} Notices, ${styles} Comments"
 			rc=1
 		elif (( notices )); then
-			note "Completed checking file '${name}': ${warnings} Fatal Errors or Warnings, ${notices} Notices, ${styles} Comments"
+			(( silent )) || note "Completed checking file '${name}': ${warnings} Fatal Errors or Warnings, ${notices} Notices, ${styles} Comments"
 		else
-			debug "Completed checking file '${name}': ${warnings} Fatal Errors or Warnings, ${notices} Notices, ${styles} Comments"
+			(( silent )) || debug "Completed checking file '${name}': ${warnings} Fatal Errors or Warnings, ${notices} Notices, ${styles} Comments"
 		fi
 
 		warnings=0 notices=0 styles=0
@@ -171,7 +173,8 @@ function validate() {
 					error "File '${name}' MUST contain a '__' character sequence to separate version and description components"
 					(( warnings++ ))
 				else
-					case $(( $( grep '__' <<<"${name}" | wc -l ) )) in
+					# shellcheck disable=SC2126
+					case $(( $( grep -o '__' <<<"${name}" | wc -l ) )) in
 						0)
 							# Dealt with above...
 							:
@@ -238,15 +241,15 @@ function validate() {
 						(( styles++ ))
 					fi
 				fi
-				if ! grep -Pq '^0*\d+(\.0*\d+)?(\.0*\d+)?(\.0*\d+)?$' <<<"${version}"; then
-					if grep -Pq '^0*\d+(\.0*\d+)?(\.0*\d+)?(\.0*\d+)?' <<<"${version}"; then
+				if ! grep -Pq '^0*\d+(\.0*\d+)?(\.0*\d+)?(\.0*\d+)?$' <<<"${version:-}"; then
+					if grep -Pq '^0*\d+(\.0*\d+)?(\.0*\d+)?(\.0*\d+)?' <<<"${version:-}"; then
 						error "Filename '${name}' does not include a recognised version number - too many sets of digits?"
-						version="$( grep -oP '^0*\d+(\.0*\d+)?(\.0*\d+)?(\.0*\d+)?' <<<"${version}" )"
+						version="$( grep -oP '^0*\d+(\.0*\d+)?(\.0*\d+)?(\.0*\d+)?' <<<"${version:-}" )"
 					else
 						error "Filename '${name}' does not include a recognised version number"
 					fi
 					(( warnings++ ))
-				else # if grep -Pq '^0*\d+(\.0*\d+)?(\.0*\d+)?(\.0*\d+)?$' <<<"${version}"; then
+				else # if grep -Pq '^0*\d+(\.0*\d+)?(\.0*\d+)?(\.0*\d+)?$' <<<"${version:-}"; then
 
 					if grep -Pq '^\d+\.\d+\.\d+\.\d+$' <<<"${version}"; then
 						versionsegment[ 3 ]="$( cut -d'.' -f 4 <<<"${version}" | sed 's/^0\+//' )"
@@ -268,7 +271,7 @@ function validate() {
 							note "Zero-versioned schema are valid only as baseline/initialiser schema, read '${version}'"
 						fi
 					else
-						info "$( sed 's/, $//' <<<"File '${name}' version '${version}' indicates ${versionsegment[ 0 ]:+Release '${versionsegment[ 0 ]}', }${versionsegment[ 1 ]:+Change '${versionsegment[ 1 ]}', }${versionsegment[ 2 ]:+Step '${versionsegment[ 2 ]}', }${versionsegment[ 3 ]:+Hotfix '${versionsegment[ 3 ]}', }" )"
+						(( quiet )) || info "$( sed 's/, $//' <<<"File '${name}' version '${version}' indicates ${versionsegment[ 0 ]:+Release '${versionsegment[ 0 ]}', }${versionsegment[ 1 ]:+Change '${versionsegment[ 1 ]}', }${versionsegment[ 2 ]:+Step '${versionsegment[ 2 ]}', }${versionsegment[ 3 ]:+Hotfix '${versionsegment[ 3 ]}', }" )"
 						if (( ${versionsegment[ 3 ]:-0} )); then
 							warn "This schema file is hot-fix '${versionsegment[ 3 ]}' to version '${versionsegment[ 0 ]:-0}.${versionsegment[ 1 ]:-0}.${versionsegment[ 2 ]:-0}', and will be applied in-sequence even if more highly versioned schema have already applied, unless already present"
 						fi
@@ -311,19 +314,31 @@ function validate() {
 							fi
 						fi
 						unset digit
-					fi
-				fi
-			fi
+					fi # grep -Eq '^0|\.0' <<<"${version}"
+
+					if [[ -n "${max:-}" && "${max}" != "${version}" ]]; then
+						local vsort='sort -Vr'
+						if (( novsort )); then
+							vsort="sort -gr"
+						fi
+
+						if [[ "${version}" == "$( echo -e "${version}\n${max}" | $vsort | head -n 1 )" ]]; then
+							error "Schema file version '${version}' is higher than the configured maximum version to apply, '${max}'"
+							(( warnings++ ))
+						fi
+					fi # [[ -n "${max:-}" ]]
+				fi # grep -Pq '^0*\d+(\.0*\d+)?(\.0*\d+)?(\.0*\d+)?$' <<<"${version}"
+			fi # ! [[ "${type}" == "metadata" ]]
 
 			debug "Examining '${file}' for metadata ..."
 			local line="" fragment="" directive="" value=""
 			local -l frag=""
 
-#echo >&2 "file is '${file}'"
-#echo >&2 "foundinit is '${foundinit}'"
-#echo >&2 "versions contains '${!versions[@]}'"
-#echo >&2 "descriptions contains '${!descriptions[@]}'"
-#echo >&2 "metadescriptions contains '${!metadescriptions[@]}'"
+			#echo >&2 "file is '${file}'"
+			#echo >&2 "foundinit is '${foundinit}'"
+			#echo >&2 "versions contains '${!versions[@]}'"
+			#echo >&2 "descriptions contains '${!descriptions[@]}'"
+			#echo >&2 "metadescriptions contains '${!metadescriptions[@]}'"
 
 			while read -r line; do
 				if ! grep -q '[a-zA-Z]' <<<"${line}"; then
@@ -352,7 +367,8 @@ function validate() {
 								seen[${frag%:}]=1
 							fi
 
-							local -l metadesc="$( sed 's/[^A-Za-z]/_/g ; s/_\+/_/g' <<<"${value:-}" )"
+							local -l metadesc
+							metadesc="$( sed 's/[^A-Za-z]/_/g ; s/_\+/_/g' <<<"${value:-}" )"
 							# ${desc} may be shorter or longer, dependent on wrapping...
 							if ! [[ "${type}" == 'metadata' ]]; then
 								if ! [[ "${desc}" =~ ${metadesc%_} ]]; then
@@ -394,6 +410,7 @@ function validate() {
 									;;
 								"vertica")
 									engine="vertica"
+									# shellcheck disable=SC2126
 									if (( $( sed 's/"[^"]*"//' "${file}" | sed "s/'[^']*'//" | grep -o '`' | wc -l ) )); then
 										warn "Vertica schema '${name}' appears to contain MySQL-style quoting"
 										(( warnings++ ))
@@ -461,7 +478,7 @@ function validate() {
 									debug "Metadata from file '${name}' specifies valid 'Previous Version: ${pver}'"
 								else
 									error "Metadata from file '${name}' specifies 'Previous Version: ${value}' for which no schema-file is present"
-									debug "Recorded versions are: '${!versions[@]}'"
+									debug "Recorded versions are: '${!versions[*]}'"
 									(( warnings++ ))
 								fi
 								unset found pver
@@ -492,7 +509,7 @@ function validate() {
 							if [[ -n "${value:-}" ]]; then
 								debug "Recording 'Target Version: ${value}'"
 								versions[${value}]=1
-								debug "Recorded versions are now: '${!versions[@]}'"
+								debug "Recorded versions are now: '${!versions[*]}'"
 							else
 								error "Metadata from file '${name}' has empty 'Target Version' directive"
 								(( warnings++ ))
@@ -571,7 +588,7 @@ function validate() {
 					fi
 				else
 					info "File '${name}' is only valid in environment '${environmentdirective}'"
-					warn "There should be corresponding environment-locked schema files present in order to provide a comprehensive collection whereby every possible environment has a schema file present which applies to it"
+					warn "There should be corresponding environment-locked schema files present in order to provide a comprehensive set whereby every possible environment has a schema file present which applies to it"
 					local suggestion=""
 					if [[ -n "${newversion:-}" ]]; then
 
@@ -628,36 +645,36 @@ function validate() {
 
 			case "${filetype:-${defaulttype:-}}" in
 				'dml')
-					if sed -r 's|/\*.*\*/|| ; s/--.*// ; s/#.*$// ; s/(CREATE|DROP)\s+TEMPORARY\s+TABLE//' "${file}" | grep -Eiq '\s+(CREATE|ALTER|DROP)\s+'; then # DDL
+					if sed -r 's|/\*.*\*/|| ; s/--.*$// ; s/#.*$// ; s/(CREATE|DROP)\s+TEMPORARY\s+TABLE//' "${file}" | grep -Eiq '\s+(CREATE|ALTER|DROP)\s+'; then # DDL
 						warn "Detected DDL in DML-only file '${name}':"
 						warn "$( ${cgrep} -Ei '\s+(CREATE|ALTER|DROP)\s+' "${file}" | grep -Ev "(CREATE|DROP)\s+TEMPORARY\s+TABLE)" )"
 						(( warnings++ ))
 					fi
-					if sed 's|/\*.*\*/|| ; s/--.*// ; s/#.*$//' "${file}" | grep -Eiq '\s+(GRANT|REVOKE)\s+'; then # DCL
+					if sed 's|/\*.*\*/|| ; s/--.*$// ; s/#.*$//' "${file}" | grep -Eiq '\s+(GRANT|REVOKE)\s+'; then # DCL
 						warn "Detected DCL in DML-only file '${name}':"
 						warn "$( ${cgrep} -Ei '\s+(GRANT|REVOKE)\s+' "${file}" )"
 						(( warnings++ ))
 					fi
 					;;
 				'ddl')
-					if sed 's|/\*.*\*/|| ; s/--.*// ; s/#.*$//' "${file}" | grep -Eiq '\s+(UPDATE\s+.*SET\s+|INSERT|DELETE\s+FROM)\s+'; then # DML
+					if sed -r 's|/\*.*\*/|| ; s/--.*$// ; s/#.*$// ; s/before\s+insert\s+on//i' "${file}" | grep -Eiq '\s+(UPDATE\s+.*SET\s+|INSERT|DELETE\s+FROM)\s+'; then # DML
 						warn "Detected DML in DDL-only file '${name}':"
 						warn "$( ${cgrep} -Ei '\s+(UPDATE\s+.*SET|INSERT|DELETE\s+FROM)\s+' "${file}" )"
 						(( warnings++ ))
 					fi
-					if sed 's|/\*.*\*/|| ; s/--.*// ; s/#.*$//' "${file}" | grep -Eiq '\s+(GRANT|REVOKE)\s+'; then # DCL
+					if sed 's|/\*.*\*/|| ; s/--.*$// ; s/#.*$//' "${file}" | grep -Eiq '\s+(GRANT|REVOKE)\s+'; then # DCL
 						warn "Detected DCL in DDL-only file '${name}':"
 						warn "$( ${cgrep} -Ei '\s+(GRANT|REVOKE)\s+' "${file}" )"
 						(( warnings++ ))
 					fi
 					;;
 				'dcl')
-					if sed 's|/\*.*\*/|| ; s/--.*// ; s/#.*$//' "${file}" | grep -Eiq '\s+(UPDATE\s+.*SET\s+|INSERT|DELETE\s+FROM)\s+'; then # DML
+					if sed -r 's|/\*.*\*/|| ; s/--.*$// ; s/#.*$// ; s/before\s+insert\s+on//i' "${file}" | grep -Eiq '\s+(UPDATE\s+.*SET\s+|INSERT|DELETE\s+FROM)\s+'; then # DML
 						warn "Detected DML in DCL-only file '${name}':"
 						warn "$( ${cgrep} -Ei '\s+(UPDATE\s+.*SET|INSERT|DELETE\s+FROM)\s+' "${file}" )"
 						(( warnings++ ))
 					fi
-					if sed -r 's|/\*.*\*/|| ; s/--.*// ; s/#.*$// ; s/(CREATE|DROP)\s+TEMPORARY\s+TABLE//' "${file}" | grep -Eiq '\s+(CREATE|ALTER|DROP)\s+'; then # DDL
+					if sed -r 's|/\*.*\*/|| ; s/--.*$// ; s/#.*$// ; s/(CREATE|DROP)\s+TEMPORARY\s+TABLE//' "${file}" | grep -Eiq '\s+(CREATE|ALTER|DROP)\s+'; then # DDL
 						warn "Detected DDL in DCL-only file '${name}':"
 						warn "$( ${cgrep} -Ei '\s+(CREATE|ALTER|DROP)\s+' "${file}" | grep -Ev "(CREATE|DROP)\s+TEMPORARY\s+TABLE)" )"
 						(( warnings++ ))
@@ -678,12 +695,12 @@ function validate() {
 			unset cgrep
 
 			if (( warnings )); then
-				warn "Completed checking schema file '${name}': ${warnings} Fatal Errors or Warnings, ${notices} Notices, ${styles} Comments"
+				(( silent )) | warn "Completed checking schema file '${name}': ${warnings} Fatal Errors or Warnings, ${notices} Notices, ${styles} Comments"
 				rc=1
 			elif (( notices )); then
-				note "Completed checking schema file '${name}': ${warnings} Fatal Errors or Warnings, ${notices} Notices, ${styles} Comments"
+				(( silent )) | note "Completed checking schema file '${name}': ${warnings} Fatal Errors or Warnings, ${notices} Notices, ${styles} Comments"
 			else
-				info "Completed checking schema file '${name}': ${warnings} Fatal Errors or Warnings, ${notices} Notices, ${styles} Comments"
+				(( silent )) | info "Completed checking schema file '${name}': ${warnings} Fatal Errors or Warnings, ${notices} Notices, ${styles} Comments"
 			fi
 
 			warnings=0 notices=0 styles=0
@@ -694,15 +711,16 @@ function validate() {
 	(( rc )) && error "Warnings or Fatal Errors found - Validation failed"
 
 	return ${rc:-1}
-} # validate
+} # validate # }}}
 
 # shellcheck disable=SC2155
-function main() {
+function main() { # {{{
 	local truthy="^(on|y(es)?|true|1)$"
 	local falsy="^(off|n(o)?|false|0)$"
 
 	local actualpath filename
 	local lockfile="/var/lock/${NAME}.lock"
+	[[ -w /var/lock ]] || lockfile="${TMPDIR:-/tmp}/${NAME}.lock"
 
 	local -i child=0
 	local -i warnings=0 notices=0 styles=0
@@ -724,7 +742,7 @@ function main() {
 	fi
 
 	local arg schema db dblist clist
-	local -i dryrun=0 quiet=0 silent=0 keepgoing=0
+	local -i dryrun=0 quiet=0 silent=0
 
 	while [[ -n "${1:-}" ]]; do
 		arg="${1}"
@@ -750,11 +768,8 @@ function main() {
 				fi
 				;;
 			-h|--help)
-				export std_USAGE="[--config <file>] [--schema <path>] [ [--databases <database>[,...]] | [--clusters <cluster>[,...]] ] [--keep-going] [--dry-run] [--silent] | [--locate <database>]"
+				export std_USAGE="[--config <file>] [--schema <path>] [ [--databases <database>[,...]] | [--clusters <cluster>[,...]] ] [--dry-run] [--quiet|--silent] [--no-wrap] | [--locate <database>]"
 				std::usage
-				;;
-			-k|--keep-going|--keepgoing)
-				keepgoing=1
 				;;
 			-l|--locate|--whereis|--server|--host)
 				shift
@@ -765,6 +780,9 @@ function main() {
 				else
 					db="${1}"
 				fi
+				;;
+			-n|--nowrap|--no-wrap)
+				export STDLIB_WANT_WORDWRAP=0
 				;;
 			-q|--quiet)
 				quiet=1
@@ -819,7 +837,7 @@ function main() {
 	if [[ ! -r "${filename}" ]]; then
 		die "Cannot read configuration file: please use --config to specify location"
 	else
-		(( silent )) || info "Using configuration file '${filename}' ..."
+		debug "Using configuration file '${filename}' ..."
 	fi
 
 	local defaults="$( std::getfilesection "${filename}" "DEFAULT" | sed -r 's/#.*$// ; /^[^[:space:]]+\.[^[:space:]]+\s*=/s/\./_/' | grep -Ev '^\s*$' | sed -r 's/\s*=\s*/=/' )"
@@ -836,6 +854,8 @@ function main() {
 	# (... but does, surprisingly, apparently support '-P')
 	local mgrep='grep -m 1'
 	${mgrep} 'x' <<<'x' >/dev/null 2>&1 || mgrep='grep'
+	# shellcheck disable=SC2126
+	(( 2 == $( grep -o 'x' <<<'xx' | wc -l ) )) || die "grep does not support '-o' option"
 
 	if [[ -n "${db:-}" ]]; then
 		local name="$( ${mgrep} -o "^${db}$" <<<"${databases}" )"
@@ -871,9 +891,11 @@ function main() {
 		local -i blockingpid
 		blockingpid="$( <"${lockfile}" )"
 		if (( blockingpid > 1 )); then
+			# shellcheck disable=SC2086
 			if kill -0 ${blockingpid} >/dev/null 2>&1; then
-				local processname="$( ps -e | grep "^${blockingpid}" | rev | cut -d' ' -f 1 | rev )"
-				die "Lock file '${lockfile}' (belonging to process '${processname}', PID '${blockingpid}') exists - aborting"
+				#local processname="$( ps -e | grep "^${blockingpid}" | rev | cut -d' ' -f 1 | rev )"
+				local processname="$( pgrep -lF "${lockfile}" | cut -d' ' -f 2- )"
+				die "Lock file '${lockfile}' (belonging to process '${processname:-}', PID '${blockingpid}') exists - aborting"
 			else
 				warn "Lock file '${lockfile}' (belonging to obsolete PID '${blockingpid}') exists - removing stale lock"
 				rm -f "${lockfile}" || die "Lock file removal failed: ${?}"
@@ -926,8 +948,9 @@ function main() {
 
 		if [[ -n "${dblist:-}" ]] && ! grep -q ",${db}," <<<",${dblist},"; then
 			if ! (( child )); then
-				(( silent )) || echo
-				(( silent )) || info "Skipping deselected database '${db}' ..."
+				#(( quiet | silent )) || { echo ; info "Skipping deselected database '${db}' ..." ; }
+				(( std_DEBUG )) && echo
+				debug "Skipping deselected database '${db}' ..."
 			fi
 			exit 0 # continue
 		fi
@@ -940,21 +963,20 @@ function main() {
 
 		if [[ -n "${clist:-}" ]] && ! grep -q ",${cluster:-.*}," <<<",${clist},"; then
 			if ! (( child )); then
-				(( silent )) || echo
-				(( silent )) || info "Skipping database '${db}' from deselected cluster '${cluster:-all}' ..."
+				(( quiet | silent )) || { echo ; info "Skipping database '${db}' from deselected cluster '${cluster:-all}' ..." ; }
 			fi
 			exit 0 # continue
 		fi
 
 		if grep -Eiq "${falsy}" <<<"${managed:-}"; then
 			if ! (( child )); then
-				(( silent )) || echo
-				(( silent )) || info "Skipping unmanaged database '${db}' ..."
+				(( quiet | silent )) || { echo ; info "Skipping unmanaged database '${db}' ..." ; }
 			fi
 			founddb=1
 			exit 3 # See below...
 		else
-			(( silent )) || { echo ; info "Processing configuration for database '${db}' ..." ; }
+			(( quiet | silent )) || echo
+			(( silent )) || info "Processing configuration to validate database '${db}' ..."
 		fi
 
 		local -a messages=()
@@ -1051,7 +1073,13 @@ function main() {
 							warn "Invalid mix of files and directories at same level"
 							(( warnings++ ))
 						fi
-						validate -type 'procedure' -files "${filename}"
+						if (( silent )); then
+							validate -type 'procedure' -files "${filename}" >/dev/null 2>&1
+						elif (( quiet )); then
+							validate -type 'procedure' -files "${filename}" >/dev/null
+						else
+							validate -type 'procedure' -files "${filename}"
+						fi
 						(( rc += ${?} ))
 						founddb=1
 					elif [[ -d "${filename}" ]]; then
@@ -1066,7 +1094,13 @@ function main() {
 						fi
 						if [[ "$( basename "${filename}" )" =~ \.metadata$ ]]; then
 							debug "File '$( basename "${filename}" )' is Stored Procedure metadata"
-							validate -type 'metadata' -files "${filename}"
+							if (( silent )); then
+								validate -type 'metadata' -files "${filename}" >/dev/null 2>&1
+							elif (( quiet )); then
+								validate -type 'metadata' -files "${filename}" >/dev/null
+							else
+								validate -type 'metadata' -files "${filename}"
+							fi
 						else
 							warn "File '$( basename "${filename}" )' does not end in '.sql' and so should not be present in directory '${ppath}'"
 							(( warnings++ ))
@@ -1117,9 +1151,27 @@ function main() {
 
 			if [[ -f "${ppath}/${filename}" && "${filename}" =~ \.sql$ ]]; then
 				if [[ -n "${syntax:-}" && "${syntax}" == "vertica" ]]; then
-					validate -type 'vertica-schema' ${version_max:+-max "${version_max}" }-files "${ppath}/${filename}"
+					if (( silent )); then
+						# shellcheck disable=SC2154
+						validate -type 'vertica-schema' ${version_max:+-max "${version_max}" }-files "${ppath}/${filename}" >/dev/null 2>&1
+					elif (( quiet )); then
+						# shellcheck disable=SC2154
+						validate -type 'vertica-schema' ${version_max:+-max "${version_max}" }-files "${ppath}/${filename}" >/dev/null
+					else
+						# shellcheck disable=SC2154
+						validate -type 'vertica-schema' ${version_max:+-max "${version_max}" }-files "${ppath}/${filename}"
+					fi
 				else
-					validate -type 'schema' ${version_max:+-max "${version_max}" }-files "${ppath}/${filename}"
+					if (( silent )); then
+						# shellcheck disable=SC2154
+						validate -type 'schema' ${version_max:+-max "${version_max}" }-files "${ppath}/${filename}" >/dev/null 2>&1
+					elif (( quiet )); then
+						# shellcheck disable=SC2154
+						validate -type 'schema' ${version_max:+-max "${version_max}" }-files "${ppath}/${filename}" >/dev/null
+					else
+						# shellcheck disable=SC2154
+						validate -type 'schema' ${version_max:+-max "${version_max}" }-files "${ppath}/${filename}"
+					fi
 				fi
 				(( rc += ${?} ))
 				founddb=1
@@ -1203,28 +1255,28 @@ function main() {
 	debug "Releasing lock ..."
 	[[ -e "${lockfile}" && "$( <"${lockfile}" )" == "${$}" ]] && rm "${lockfile}"
 
-	(( silent )) || {
-		# ${rc} should have recovered from the sub-shell, above...
-		if (( rc )) && (( dryrun )); then
-			warn "Validation completed with errors, or database doesn't exist"
-		elif (( rc )); then
-			warn "Validation completed with errors"
-		elif (( !( founddb ) )); then
-			error "Specified database(s) not present in configuration file"
-			rc=1
-		else
-			info "Validation completed"
-		fi
-	}
+	# ${rc} should have recovered from the sub-shell, above...
+	if (( rc )) && (( dryrun )); then
+		(( silent )) || warn "Validation completed with errors, or database doesn't exist"
+	elif (( rc )); then
+		(( silent )) || warn "Validation completed with errors"
+	elif (( !( founddb ) )); then
+		(( silent )) || error "Specified database(s) not present in configuration file"
+		rc=1
+	else
+		(( silent )) || info "Validation completed"
+	fi
 
 	return ${rc}
-} # main
+} # main # }}}
 
 export LC_ALL="C"
 set -o pipefail
+
+std::requires --no-quiet 'pgrep'
 
 main "${@:-}"
 
 exit ${?}
 
-# vi: set syntax=sh colorcolumn=80 foldmethod=marker:
+# vi: set filetype=sh syntax=sh commentstring=#%s foldmarker=\ {{{,\ }}} foldmethod=marker colorcolumn=80 nowrap:
