@@ -3,7 +3,9 @@
 # stdlib.sh should be in /usr/local/lib/stdlib.sh, which can be found as
 # follows by scripts located in /usr/local/{,s}bin/...
 declare std_LIB='stdlib.sh'
+type -pf 'dirname' >/dev/null 2>&1 || function dirname() { : ; }
 # shellcheck disable=SC2153
+type -pf 'dirname' >/dev/null 2>&1 || function dirname() { : ; }
 for std_LIBPATH in							\
 	"$( dirname -- "${BASH_SOURCE:-${0:-.}}" )"			\
 	'.'								\
@@ -17,6 +19,7 @@ do
 		break
 	fi
 done
+unset -f dirname
 
 # Attempt to use colourised output if the environment indicates that this is
 # an appropriate choice...
@@ -40,7 +43,7 @@ std_DEBUG="${DEBUG:-0}"
 std_TRACE="${TRACE:-0}"
 
 SCRIPT='myway.pl'
-COMPATIBLE='1.2.1'
+COMPATIBLE='1.3.0'
 VALIDATOR='validateschema.sh'
 
 # We want to be able to debug applyschema.sh without debugging myway.pl...
@@ -551,7 +554,7 @@ function main() { # {{{
 
 		[[ -n "${environment:-}" ]] && params+=( -e "${environment}" )
 
-		for option in force warn notice debug silent quiet verbose; do
+		for option in force warn notice debug silent quiet; do
 			eval echo "\${options_${option}:-}" | grep -Eiq "${truthy}" && params+=( --${option} )
 		done
 		if [[ "${syntax:-}" != 'vertica' ]]; then
@@ -572,7 +575,6 @@ function main() { # {{{
 				grep -Eiq "${truthy}" <<<"${backups_keep:-}" && params+=( --keep-backup )
 			fi
 		fi
-		grep -Eiq "${truthy}" <<<"${parser_trustname:-}" && params+=( --trust-filename )
 		grep -Eiq "${truthy}" <<<"${parser_allowdrop:-}" && params+=( --allow-unsafe )
 
 		[[ -n "${progress:-}" ]] && params+=( --progress=${progress} )
@@ -746,7 +748,7 @@ function main() { # {{{
 
 			# ... and finally, perform schema deployment.
 			#
-			# shellcheck disable=SC2154
+			# shellcheck disable=SC2016,SC2154
 			(( silent )) || info "Launching '${SCRIPT}' to perform database migration for database '${db}' ${version_max:+with target version '${version_max}' }..."
 			[[ -n "${version_max:-}" ]] && params+=( --target-limit "${version_max}" )
 			extraparams=()

@@ -21,9 +21,6 @@ if 0;
 # * flyway-compliant --check and --migrate currently do nothing: --migrate can
 #   be assumed to be default, but --check should be treated as --dry-run?
 #
-# * Need to pre-filter restoration data, to fix the MySQL bug if logging is
-#   enabled - see bugs.mysql.com/69970
-#
 # }}}
 
 # TODO: # {{{
@@ -35,22 +32,25 @@ if 0;
 # * fork()/exec() pv when performing restorations, and check for failure.  If
 #   so, show the last error from 'SHOW ENGINE INNODB STATUS';
 #
-# * Allow 'parse' dbdump option to tokenise backup?
-#
-# * Incorporate Cloud modules to allow backup directly to platform object store
-#   this may require splitting data into small (10MB) chunks and passing an
-#   overall manifest on completion, depending on platform;
-#
 # * When tokenising, check entry -> tokens -> tables -> db, and confirm it
 #   exists (caching already seen databases);
 #
-# * Enhance Percona SQLParser code to handle more statement types;
+# ? Incorporate Cloud modules to allow backup directly to platform object store
+#   this may require splitting data into small (10MB) chunks and passing an
+#   overall manifest on completion, depending on platform;
 #
-# * Add parser for GRANT, etc.;
+# Likely deprecated:
+#
+# - Enhance Percona SQLParser code to handle more statement types;
+#
+# - Add parser for GRANT, etc.;
+#
+# - Allow 'parse' dbdump option to tokenise backup?
 #
 # }}}
 
-# Copyright 2014-2016 Stuart Shelton, Autonomy Systems Ltd.
+# Copyright 2014-2016 Stuart Shelton, Autonomy Systems Ltd. & Hewlett Packard
+# Enterprise Company.
 # Portions of this program are copyright 2010-2012 Percona Inc.
 #
 # Feedback and improvements are welcome.
@@ -90,7 +90,7 @@ no if ( $] >= 5.02 ), warnings => 'experimental::autoderef';
 # ... in actual fact, diagnostics causes more problems than it solves.  It does
 # appear to be, in reality, quite silly.
 
-use constant VERSION     =>  "1.2.1.3";
+use constant VERSION     =>  "1.3.0.0";
 
 use constant TRUE        =>  1;
 use constant FALSE       =>  0;
@@ -146,7 +146,7 @@ if( eval "require( DBD::ODBC );" ) {
 
 use Data::Dumper;
 #use Devel::StackTrace; # Core with Perl 5.20, apparently not present on Ubuntu
-       	                # 14.04 LTS release.
+			# 14.04 LTS release.
 #use if ( DEBUG ), 'Devel::Trace';
 
 
@@ -155,6 +155,7 @@ sub pcomment( $;$$ );
 sub psql( $;$$ );
 sub pnote( $;$$ );
 sub pwarn( $;$$ );
+sub pfail( $;$$ );
 sub pfatal( $;$$ );
 
 sub initstate();
@@ -211,7 +212,7 @@ our $quietorsilent = FALSE;
 # Currently, this determines whether we'll execute DROP statements - ideally,
 # we'd allow this in developer environments but not in production... however,
 # environment names are merely labels, and hold no additional meaning.
-our $allowunsafeoperations = FALSE;
+our $allowunsafe = FALSE;
 
 # XXX: It would be nice if this wasn't a global, but the degree of separation
 #      between where we could plausibly set this and where we use it are too
@@ -220,6 +221,7 @@ our $tokenise = FALSE;
 
 # XXX: We're seeing random disconnects after successful commands with Vertica
 #      so this provides a temporary way to alert and attempt to reconnect...
+#
 # The logic here is that if retries is defined, which is usually the case, then
 # standard error-checking is performed.  If retries is undefined then we return
 # without further error-checking on the assumption that we've been called from
@@ -535,44 +537,57 @@ sub pdebug( $;$$ ) { # {{{
 	my( $text, $verbose, $short ) = @_;
 	$verbose = $verbosity unless( defined( $verbose ) );
 
+	# Output $text at levels: debug(3)
+	#
+	return( undef ) unless ( $short or DEBUG or ( $verbose > 2 ) );
+
 	$text = '' unless( defined( $text ) and length( $text ) );
+	chomp $text;
 
 	our $debug = "DEBUG: ";
-	if( defined( $short ) ) {
-		$debug = '=>';
-	} else {
-		my $firstword = ( split( /\s/, $text ) )[ 0 ];
-		if( $firstword =~ m/^[A-Z]+:/ ) {
-			$text =~ s/^$firstword //;
-			$debug = ' ' x ( length( $debug ) - length ( $firstword ) - 1 ) . $firstword . ' ';
+	$debug = '=>' if( defined( $short ) );
+
+	foreach my $line ( split /\n/, $text ) {
+		chomp $line;
+
+		if( not( length( $line ) ) ) {
+			print( "\n" );
+		} else {
+			if( defined( $short ) ) {
+				# Short debug output is used more for continuous progress
+				# reporting than actual debug data...
+				print( "$debug $line\n" );
+			} else {
+				my $firstword = ( split( /\s/, $line ) )[ 0 ];
+				if( $firstword =~ m/^[A-Z]+:/ ) {
+					$line =~ s/^$firstword //;
+					$debug = ' ' x ( length( $debug ) - length ( $firstword ) - 1 ) . $firstword . ' ';
+				}
+				warn( "$debug $line\n" );
+			}
 		}
 	}
 
-	chomp $text;
-
-	if( $short ) {
-		# Short debug output is more continuous progress reporting than
-		# actually debug data...
-		print( "$debug $text\n" );
-	} else {
-		# Output $text at levels: debug(3)
-		#
-		warn( "$debug $text\n" ) if( DEBUG or ( $verbose > 2 ) );
-	}
-
-	return( $short or DEBUG or ( $verbose > 2 ) );
+	return( TRUE );
 } # pdebug # }}}
 
 sub pcomment( $;$$ ) { # {{{
 	my( $text, $ignored, $_ignored ) = @_;
 
 	$text = '' unless( defined( $text ) and length( $text ) );
+	chomp $text;
 
 	our $comment = ' >';
 
-	chomp $text;
+	foreach my $line ( split /\n/, $text ) {
+		chomp $line;
 
-	print( "$comment $text\n" );
+		if( length( $line ) ) {
+			print( "$comment $line\n" );
+		} else {
+			print( "\n" );
+		}
+	}
 
 	return( TRUE );
 } # pcomment # }}}
@@ -581,12 +596,19 @@ sub psql( $;$$ ) { # {{{
 	my( $text, $ignored, $_ignored ) = @_;
 
 	$text = '' unless( defined( $text ) and length( $text ) );
+	chomp $text;
 
 	our $sql = '->';
 
-	chomp $text;
+	foreach my $line ( split /\n/, $text ) {
+		chomp $line;
 
-	print( "$sql $text\n" );
+		if( length( $line ) ) {
+			print( "$sql $line\n" );
+		} else {
+			print( "\n" );
+		}
+	}
 
 	return( TRUE );
 } # psql # }}}
@@ -594,16 +616,23 @@ sub psql( $;$$ ) { # {{{
 sub psim( $;$$ ) { # {{{
 	my( $text, $ignored, $_ignored ) = @_;
 
-	# $pretend (and $safetyoff) are not in scope here...
+	# $pretend is not in scope here...
 	#pdebug( "psim() called with \$pretend unset\n" ) unless( $pretend );
 
 	$text = '' unless( defined( $text ) and length( $text ) );
+	chomp $text;
 
 	our $sim = 'S>';
 
-	chomp $text;
+	foreach my $line ( split /\n/, $text ) {
+		chomp $line;
 
-	print( "$sim $text\n" );
+		if( length( $line ) ) {
+			print( "$sim $line\n" );
+		} else {
+			print( "\n" );
+		}
+	}
 
 	return( TRUE );
 } # psql # }}}
@@ -612,56 +641,96 @@ sub pnote( $;$$ ) { # {{{
 	my( $text, $verbose, $short ) = @_;
 	$verbose = $verbosity unless( defined( $verbose ) );
 
+	# Output $text at levels: debug(3), notice(2)
+	#
+	return( undef ) unless( $short or ( $verbose > 1 ) );
+
 	$text = '' unless( defined( $text ) and length( $text ) );
+	chomp $text;
 
 	our $note = "NOTICE:";
 	$note = '*>' if( defined( $short ) );
 
-	chomp $text;
+	foreach my $line ( split /\n/, $text ) {
+		chomp $line;
 
-	if( $short ) {
-		print( "$note $text\n" );
-	} else {
-		# Output $text at levels: debug(3), notice(2)
-		#
-		warn( "$note $text\n" ) if( $verbose > 1 );
+		if( length( $line ) ) {
+			warn( "$note $line\n" );
+		} else {
+			print( "\n" );
+		}
 	}
 
-	return( $short or ( $verbose > 1 ) );
+	return( TRUE );
 } # pnote # }}}
 
 sub pwarn( $;$$ ) { # {{{
 	my( $text, $verbose, $short ) = @_;
 	$verbose = $verbosity unless( defined( $verbose ) );
 
+	# Output $text at levels: debug(3), notice(2), warn(1)
+	#
+	return( undef ) unless( $short or ( $verbose > 0 ) );
+
 	$text = '' unless( defined( $text ) and length( $text ) );
+	chomp $text;
 
 	our $warn = $warning;
 	$warn = '!>' if( defined( $short ) );
 
-	chomp $text;
+	foreach my $line ( split /\n/, $text ) {
+		chomp $line;
 
-	if( $short ) {
-		warn( "$warn $text\n" );
-	} else {
-		# Output $text at levels: debug(3), notice(2), warn(1)
-		#
-		warn( "$warn $text\n" ) if( $verbose > 0 );
+		if( length( $line ) ) {
+			warn( "$warn $text\n" );
+		} else {
+			print( "\n" );
+		}
 	}
 
-	return( $short or ( $verbose > 0 ) );
+	return( TRUE );
 } # pwarn # }}}
+
+sub pfail( $;$$ ) { # {{{
+	my( $text, $ignored, $_ignored ) = @_;
+
+	# Output $text regardless
+	#
+
+	$text = '' unless( defined( $text ) and length( $text ) );
+	chomp $text;
+
+	foreach my $line ( split /\n/, $text ) {
+		chomp $line;
+
+		if( length( $line ) ) {
+			warn( "$failed $line\n" );
+		} else {
+			print( "\n" );
+		}
+	}
+
+	return( TRUE );
+} # pfail # }}}
 
 sub pfatal( $;$$ ) { # {{{
 	my( $text, $ignored, $_ignored ) = @_;
 
-	$text = '' unless( defined( $text ) and length( $text ) );
-
-	chomp $text;
-
 	# Output $text regardless
 	#
-	warn( "$fatal $text\n" );
+
+	$text = '' unless( defined( $text ) and length( $text ) );
+	chomp $text;
+
+	foreach my $line ( split /\n/, $text ) {
+		chomp $line;
+
+		if( length( $line ) ) {
+			warn( "$fatal $line\n" );
+		} else {
+			print( "\n" );
+		}
+	}
 
 	return( TRUE );
 } # pfatal # }}}
@@ -849,7 +918,8 @@ sub pushentry( $$$$$;$ ) { # {{{
 	my( $data, $state, $type, $entry, $description, $line ) = @_;
 
 	if( $entry =~ m/__MW_(STR|L?TOK|LITERAL_QUOTE_)_/ ) {
-		warn( "\nUnexpended token detected in `$entry`\n" );
+		pwarn( "\n" );
+		pwarn( "Unexpended token detected in `$entry`\n" );
 		#my $trace = Devel::StackTrace -> new;
 		#print( $trace -> as_string );
 		die( "$fatal Tokenisation failed [" . ( caller( 0 ) )[ 3 ] . ':' . __LINE__ . "]\n" );
@@ -913,7 +983,8 @@ sub pushfragment( $$$;$$ ) { # {{{
 	my( $state, $type, $entry, $description, $line ) = @_;
 
 	if( $entry =~ m/__MW_(STR|L?TOK|LITERAL_QUOTE_)_/ ) {
-		warn( "\nUnexpended token detected in `$entry`\n" );
+		pwarn( "\n" );
+		pwarn( "Unexpended token detected in `$entry`\n" );
 		#my $trace = Devel::StackTrace -> new;
 		#print( $trace -> as_string );
 		die( "$fatal Tokenisation failed [" . ( caller( 0 ) )[ 3 ] . ':' . __LINE__ . "]\n" );
@@ -1275,7 +1346,7 @@ sub processline( $$;$$ ) { # {{{
 				$tokens = $sqlparser -> parse( "DELIMITER $delim" );
 			};
 			if( $@ ) {
-				warn( $failed . $@ . "\n" ) if( length( $@ ) );
+				pfail( '' . $@ . "\n" ) if( length( $@ ) );
 				$state -> { 'statements' } -> { 'tokens' } = undef;
 			} else {
 				$state -> { 'statements' } -> { 'tokens' } = $tokens;
@@ -1403,7 +1474,7 @@ sub processline( $$;$$ ) { # {{{
 					my $match = $str[ $index ];
 					$match =~ s/__MW_LITERAL_QUOTE__/''/g;
 					#warn "WWW: walk read original string '$match'";
-					#warn( "Checking `$match`($index) against `${ $strref }` ...\n" );
+					#pdebug( "Checking `$match`($index) against `${ $strref }` ...\n", undef, TRUE );
 
 					# FIXME: It may be possible that a token might expand to a string containing another token, in which case we intentionally break...
 
@@ -1434,7 +1505,7 @@ sub processline( $$;$$ ) { # {{{
 					my $match = $str[ $index ];
 					$match =~ s/__MW_LITERAL_QUOTE__/''/g;
 					#warn "WWW: walk read original string '$match'";
-					#warn( "Checking `$match`($index) against `${ $strref }` ...\n" );
+					#pdebug( "Checking `$match`($index) against `${ $strref }` ...\n", undef, TRUE );
 
 					# FIXME: It may be possible that a token might expand to a string containing another token, in which case we intentionally break...
 
@@ -1712,7 +1783,7 @@ sub processfile( $$;$$$$ ) { # {{{
 					pdebug( "Metadata read - skipping remainder of file" );
 					last LINE;
 				} else {
-					warn( "First block read from '$file' does not appear to be a metadata comment - parsing entire file\n" );
+					pwarn( "First block read from '$file' does not appear to be a metadata comment - parsing entire file\n" );
 					$stopaftermetadata = undef;
 				}
 			}
@@ -1754,7 +1825,10 @@ sub dbopen( $$$$;$$ ) { # {{{
 
 	# A freshly defined, typeless $dbh may be passed on first use...
 	die( "LOGIC: " . ( caller( 1 ) )[3] . "(" . ( caller( 0 ) )[2] . ") -> " . ( caller( 0 ) )[ 3 ] . ": arg1 must be passed by reference (" . ref( $dbh ) . ")\n" ) unless( ref( $dbh ) =~ m/^(SCALAR|REF)$/ );
+	# In actual fact, do we ever want to allow dbopen() to be called on a defined
+	# database handle?
 	die( "LOGIC: " . ( caller( 1 ) )[3] . "(" . ( caller( 0 ) )[2] . ") -> " . ( caller( 0 ) )[ 3 ] . ": \${ arg1 } must be of type DBI::db (" . ref( ${ $dbh } ) . ")\n" ) unless( ref( ${ $dbh } ) =~ m/^(|DBI::db)$/ );
+	pdebug( "LOGIC: " . ( caller( 1 ) )[3] . "(" . ( caller( 0 ) )[2] . ") -> " . ( caller( 0 ) )[ 3 ] . ": \${ arg1 } should be uninitialised (" . ref( ${ $dbh } ) . ")\n" ) unless( ref( ${ $dbh } ) eq '' );
 
 	my $error = undef;
 	$options = { RaiseError => 1, PrintError => 0 } unless( $options );
@@ -1863,8 +1937,10 @@ sub dbclose( ;$$$$ ) { # {{{
 
 			${ $dbh } -> disconnect or die( "$fatal: DBI 'disconnect' failed: $!\n$@\n" );
 		}
-		print( "\n" ) unless( $quietorsilent );
-		pdebug( "$message - disconnected from " . ( defined( $name ) and length( $name ) ? $name . ' ' : '' ) . "database ...\n", undef, TRUE ) unless( $quietorsilent );
+		if( not( $quietorsilent ) ) {
+			pdebug( "\n" );
+			pdebug( "$message - disconnected from " . ( defined( $name ) and length( $name ) ? $name . ' ' : '' ) . "database ...\n", undef, TRUE );
+		}
 	}
 
 	# Clear global connection-tracking hash...
@@ -1935,9 +2011,9 @@ sub dbdump( $;$$$$ ) { # {{{
 					foreach my $entry ( @{ $errors } ) {
 						my( $dir, $message ) = %{ $entry };
 						if( length( $message ) ) {
-							warn( "$failed Error creating directory '$dir': $message\n" );
+							pfail( "Error creating directory '$dir': $message\n" );
 						} else {
-							warn( "$failed make_path general error: $message\n" );
+							pfail( "make_path general error: $message\n" );
 						}
 					}
 					return( undef );
@@ -1961,9 +2037,9 @@ sub dbdump( $;$$$$ ) { # {{{
 				foreach my $entry ( @{ $errors } ) {
 					my( $dir, $message ) = %{ $entry };
 					if( length( $message ) ) {
-						warn( "$failed Error creating directory '$dir': $message\n" );
+						pfail( "Error creating directory '$dir': $message\n" );
 					} else {
-						warn( "$failed make_path general error: $message\n" );
+						pfail( "make_path general error: $message\n" );
 					}
 				}
 				return( undef );
@@ -2046,7 +2122,7 @@ sub dbdump( $;$$$$ ) { # {{{
 			$optdb = "--all-databases";
 
 			if( $skipmeta ) {
-				print( "\n" );
+				pdebug( "\n" );
 				pdebug( "Checking for databases on '$host' ...\n", undef, TRUE );
 				my $dsn = "DBI:mysql:host=$host;port=$port";
 				my $dbh;
@@ -2149,7 +2225,7 @@ sub dbdump( $;$$$$ ) { # {{{
 		# allowing tracking of where the backup was taken from without
 		# mandating restoration to a slave.
 		#
-		print( "\n" );
+		pdebug( "\n" );
 		pdebug( "Checking Master status of database on '$host' ...\n", undef, TRUE );
 		my $dsn = "DBI:mysql:host=$host;port=$port";
 		my $dbh;
@@ -2161,7 +2237,7 @@ sub dbdump( $;$$$$ ) { # {{{
 		dbclose( \$dbh, undef, undef, TRUE );
 
 		if( 1 == $master ) {
-			print( "\n" );
+			pnote( "\n" );
 			pnote( "Database has bin-logging enabled - adding '--master-data' option\n", undef, TRUE );
 
 			$optdump .= ' --master-data=2';
@@ -2173,13 +2249,13 @@ sub dbdump( $;$$$$ ) { # {{{
 			if( qx( mysqldump --version ) =~ m/ Distrib ([^-,]+)[-,]/ ) {
 				my $match = $1;
 				if( not( defined( $match ) and length( $match ) ) ) {
-					print( "\n" );
+					pnote( "\n" );
 					pnote( "Unable to determine mysqldump version, not enabling GTID support\n", undef, TRUE );
 				} else {
 					my @sortedversions = sort { versioncmp( $a, $b ) } ( $match, '10.0.12' );
 					my $latest = pop( @sortedversions );
 					if( not( $latest eq '10.0.12' ) ) {
-						print( "\n" );
+						pnote( "\n" );
 						pnote( "mysqldump supports Global Transaction IDs - adding '--gtid' option\n", undef, TRUE );
 						$optdump .= ' --gtid';
 					}
@@ -2198,9 +2274,9 @@ sub dbdump( $;$$$$ ) { # {{{
 
 	my $msg = 'Commencing database backup';
 	$msg .= ' - there may be a delay while a GLOBAL READ LOCK is obtained' if( not( $transactional ) );
-	print( "\n" );
+	pdebug( "\n" );
 	pdebug( "$msg ...\n", undef, TRUE );
-	print( "\n" );
+	pwarn( "\n" );
 	pwarn( "Passing control to 'mysqldump' from this point onwards.\n\n", undef, TRUE );
 
 	# N.B.: We're not capturing STDERR in either instance...
@@ -2242,17 +2318,17 @@ sub dbdump( $;$$$$ ) { # {{{
 		pdebug( "Output:\n$result" );
 
 		if( not( defined( $result ) ) ) {
-			warn( "$failed Unable to launch external process: $!\n" );
+			pfail( "Unable to launch external process: $!\n" );
 			return( undef );
 		}
 		if( $rc ) {
-			warn( "$failed Database dump failed: $rc\n" ) ;
+			pfail( "Database dump failed: $rc\n" ) ;
 			return( undef );
 		}
 		# Unfortunately, mysqldump appears to also throw errors but
 		# then exit successfully :(
 		if( ( $result =~ m/mysqldump:\s+Couldn.t execute'/ ) or ( $result =~ m/\s+\(\d{4}\)$/ ) ) {
-			warn( "$failed Database dump failed: $rc\n$result\n" ) ;
+			pfail( "Database dump failed: $rc\n$result\n" ) ;
 			return( undef );
 		}
 
@@ -2336,11 +2412,13 @@ sed -u '/^\/\*\!40000 DROP DATABASE IF EXISTS `mysql`\*\/;\?$/s|^.*$|/*!50106 SE
 EOF
 	chomp( $fixdrop );
 	my $verbose = '';
-	if( $verbosity > 0 ) { # debug(3), notice(2), warn(1)
-		$verbose = '-v';
-	}
-	if( DEBUG or ( $verbosity > 2 ) ) { # debug(3)
-		$verbose = '-v -v -v';
+	if( not( $quietorsilent ) ) {
+		if( $verbosity > 1 ) { # debug(3), notice(2)
+			$verbose = '-v';
+		}
+		if( DEBUG or ( $verbosity > 2 ) ) { # debug(3)
+			$verbose = '-v -v -v';
+		}
 	}
 	my $command = '"' . $file . ( defined( $decompress ) ? '" | ' . $decompress : '"' );
 	$command .= ' | ' . $fixdrop;
@@ -2366,7 +2444,7 @@ EOF
 
 		$command = $pv . ' -e -p -t -r -a -b -c ' . $columns . $rows . ' -N "' . basename( $file ) . '" ' . $command;
 	} else {
-		warn( "$warning Cannot locate 'pv' executable: only errors will be reported\n\n" ) unless( defined( $progress ) and ( $progress eq 'never' ) );
+		pwarn( "Cannot locate 'pv' executable: only errors will be reported\n\n" ) unless( defined( $progress ) and ( $progress eq 'never' ) );
 
 		$command = 'cat ' . $command;
 	}
@@ -2378,7 +2456,7 @@ EOF
 		# is the system database... ?
 		my $systemdb = 'mysql';
 
-		print( "\n" );
+		pdebug( "\n" );
 		pdebug( "Connecting to system database `$systemdb` ...\n", undef, TRUE );
 		my $systemdsn = "DBI:mysql:database=$systemdb;host=$host;port=$port";
 		my $systemdbh;
@@ -2422,8 +2500,10 @@ sub setverticasearchpath( $$;$ ) { # {{{
 	if( defined( $user ) and not( qr/^$user$/ |M| \@{ $availableschema } ) ) {
 		$user = undef;
 	}
-	print( "\n" ) unless( $quietorsilent );
-	pdebug( "Setting Vertica SEARCH_PATH to include `$path` ...\n", undef, TRUE ) unless( $quietorsilent );
+	if( not( $quietorsilent ) ) {
+		pdebug( "\n" );
+		pdebug( "Setting Vertica SEARCH_PATH to include `$path` ...\n", undef, TRUE );
+	}
 	my $setsearchpath = "SET SEARCH_PATH TO \"$path\", " . ( ( defined( $user ) and length( $user ) ) ? "\"$user\", " : '' ) . "PUBLIC, v_catalog, v_monitor, v_internal";
 
 	if( dosql( $dbh, $setsearchpath ) ) {
@@ -2464,16 +2544,18 @@ sub checkdbconnection( $;$ ) { # {{{
 	${ $sth } -> finish() if( defined( $sth ) );
 	${ $dbh } -> disconnect();
 
-	warn( "$warning Database unexpectedly dropped connection!\n" );
+	pdebug( "Database unexpectedly dropped connection (from " . ( caller( 1 ) )[ 3 ] . "(" . ( caller( 0 ) )[ 2 ] . "))!\n", undef, TRUE );
 
 	if( not( defined( $connection ) and ( $connection -> { 'dsn' } ) ) ) {
 		die( "$fatal No prior connection string saved - attempting to re-use closed connection?\n" );
 	}
 
-	pwarn( "Attempting to reconnect using last connection string:\n", undef, TRUE );
-	$Data::Dumper::Pad = '    ';
-	$Data::Dumper::Varname = "connection";
-	print Dumper $connection;
+	pdebug( "Attempting to reconnect using last connection string:\n", undef, TRUE );
+	if( $verbosity > 2 ) {
+		$Data::Dumper::Pad = '    ';
+		$Data::Dumper::Varname = "connection";
+		print Dumper $connection;
+	}
 	my $error = dbopen( $dbh, $connection -> { 'dsn' } , $connection -> { 'user' }, $connection -> { 'password' }, $connection -> { 'strict' }, $connection -> { 'options' } );
 	pwarn( "BUG: Reconnection returned '$error'\n", undef, TRUE ) if $error;
 
@@ -2509,28 +2591,31 @@ sub dosql( $$;$ ) { # {{{
 
 	if( not( defined( $retries ) and ( $retries eq '0' ) ) ) {
 		if( $retries ) {
-			warn( "\n$warning Database connection failed $retries time(s) when directly executing statement \"$st\"\n" );
+			pwarn( "\n" );
+			pwarn( "Database connection failed $retries time(s) whilst trying to directly execute statement \"$st\"\n" );
 		} else {
-			warn( "\n$warning Database connection failed whilst attempting to recover from previous failure\n" );
+			pdebug( "\n" );
+			pdebug( "Database connection failed whilst attempting to recover from previous failure\n" );
 		}
 	}
 
 	if( $st =~ m/__MW_(STR|L?TOK|LITERAL_QUOTE_)_/ ) {
-		warn( "\n$warning Unexpended token detected in `$st`\n" );
+		pwarn( "\n" );
+		pwarn( "Unexpended token detected in `$st`\n" );
+
 		#my $trace = Devel::StackTrace -> new;
 		#print( $trace -> as_string );
+
 		return( FALSE );
 	}
 
 	if( $st =~ m/^\s*DROP\s+(?:TABLE|DATABASE)\s/i ) {
-		if( $allowunsafeoperations ) {
-			#warn( "\n$warning Executing destructive SQL statement:\n" );
-			warn( "\n" );
+		if( $allowunsafe ) {
+			pwarn( "\n" );
 			pwarn( "Executing destructive SQL statement:\n", undef, TRUE );
 			pwarn( "$st\n", undef, TRUE );
 		} else {
-			#warn( "\n$warning Refusing to execute prohibited SQL statement:\n" );
-			warn( "\n" );
+			pwarn( "\n" );
 			pwarn( "Refusing to execute prohibited SQL statement:\n", undef, TRUE );
 			pwarn( "$st\n", undef, TRUE );
 			if( $force ) {
@@ -2572,7 +2657,8 @@ sub dosql( $$;$ ) { # {{{
 	if( $@ ) {
 		my $error = join( ' ', split( /\s*\n+\s*/, ${ $dbh } -> errstr() ) );
 		( my $errorstr = $@ ) =~ s/ at .+ line \d+\.$//;
-		warn( "\n$warning Error in 'dosql' while processing SQL statement (" . ${ $dbh } -> err() . ": '$error'):\n$st\n\n$errorstr\n" );
+		pwarn( "\n" );
+		pwarn( "Error in 'dosql' while processing SQL statement (" . ${ $dbh } -> err() . ": '$error'):\n$st\n\n$errorstr\n" );
 		if( not( ${ $dbh } -> state() ) or ( ${ $dbh } -> state() eq 'S1000' ) or ( ${ $dbh } -> state() eq '00000' ) ) {
 			if( ${ $dbh } -> errstr() =~ m/ \(SQL-\d{5}\)$/ ) {
 				pdebug( "Manually updating State from '" . ${ $dbh } -> state() . "' to '$1'\n" );
@@ -2674,20 +2760,20 @@ sub preparesql( $$ ) { # {{{
 	return( undef ) unless( defined( $st ) and length( $st ) );
 
 	if( $retries ) {
-		warn( "\n$warning Database connection failed $retries time(s) when preparing statement \"$st\"\n" );
+		pwarn( "\n" );
+		pwarn( "Database connection failed $retries time(s) when preparing statement \"$st\"\n" );
 	}
 
 	if( $st =~ m/^\s*DROP\s+(?:TABLE|DATABASE)\s/i ) {
-		if( $allowunsafeoperations ) {
-			#warn( "\n$warning Executing destructive SQL statement:\n" );
-			warn( "\n" );
+		if( $allowunsafe ) {
+			pwarn( "\n" );
 			pwarn( "Executing destructive SQL statement:\n", undef, TRUE );
 			pwarn( "$st\n", undef, TRUE );
 		} else {
-			#warn( "\n$warning Refusing to execute prohibited SQL statement:\n" );
-			warn( "\n" );
+			pwarn( "\n" );
 			pwarn( "Refusing to execute prohibited SQL statement:\n", undef, TRUE );
 			pwarn( "$st\n", undef, TRUE );
+
 			# We'll likely abort if we hit this, but that's better than
 			# dropping a production database object...
 			return( undef );
@@ -2711,7 +2797,8 @@ sub preparesql( $$ ) { # {{{
 		my $error;
 		$error = join( ' ', split( /\s*\n+\s*/, ${ $dbh } -> errstr() ) ) if( defined( ${ $dbh } -> errstr() ) and length( ${ $dbh } -> errstr() ) );
 		( my $errorstr = $@ ) =~ s/ at .+ line \d+\.$//;
-		warn( "\n$failed Error when processing SQL statement:\n$st\n\n$errorstr\n" . ( defined( $error ) and length( $error ) ? $error . "\n" : '' ) );
+		pfail( "\n" );
+		pfail( "Error when processing SQL statement:\n$st\n\n$errorstr\n" . ( defined( $error ) and length( $error ) ? $error . "\n" : '' ) );
 		if( not( ${ $dbh } -> state() ) or ( ${ $dbh } -> state() eq 'S1000' ) or ( ${ $dbh } -> state() eq '00000' ) ) {
 			if( defined( ${ $dbh } -> errstr() ) and length( ${ $dbh } -> errstr() ) and ( ${ $dbh } -> errstr() =~ m/ \(SQL-\d{5}\)$/ ) ) {
 				pdebug( "Manually updating State from '" . ${ $dbh } -> state() . "' to '$1'\n" );
@@ -2749,9 +2836,21 @@ sub preparesql( $$ ) { # {{{
 			return( $sth );
 		} else {
 			$retries ++;
+
+			# FIXME: There's something odd going on here... within
+			#        the last two commits, we've gone from never
+			#        hitting this situation to always seeming to
+			#        hit it when preparing the statement to update
+			#        `myway_stored_procedures`, to always hitting
+			#        it when preparing "SELECT @@SESSION.sql_mode",
+			#        even though every execute statement first
+			#        prepares the statement to run, and this code-
+			#        path is unaltered.  The error-checking herein
+			#        appears to prevent this from being more than
+			#        a cosmetic issue, however...
 			if( not( checkdbconnection( $dbh, ( defined( $sth ) ? \$sth : undef ) ) ) ) {
 				return( undef ) unless( $retries < 4 );
-				pwarn( "Retrying SQL statement \"$st\" after $retries failures ...\n", undef, TRUE );
+				pdebug( "Retrying SQL statement \"$st\" after $retries failures ...\n", undef, TRUE );
 				return( preparesql( $dbh, $st ) );
 			}
 		}
@@ -2782,12 +2881,15 @@ sub executesql( $$;$@ ) { # {{{
 
 	if( $retries ) {
 		if( defined( $sth -> { 'Statement' } ) and length( $sth -> { 'Statement' } ) ) {
-			warn( "\n$warning Database connection failed $retries time(s) whilst executing prepared statement \"" . $sth -> { 'Statement' } . "\"\n" );
+			pwarn( "\n" );
+			pwarn( "Database connection failed $retries time(s) whilst executing prepared statement \"" . $sth -> { 'Statement' } . "\"\n" );
 		} elsif( defined( $st ) and length( $st ) ) {
-			warn( "\n$warning Database connection failed $retries time(s) whilst executing statement \"$st\"\n" );
+			pwarn( "\n" );
+			pwarn( "Database connection failed $retries time(s) whilst executing statement \"$st\"\n" );
 		} else {
 			# Unreachable?
-			warn( "\n$warning Database connection failed $retries time(s) whilst executing unknown statement\n" );
+			pwarn( "\n" );
+			pwarn( "Database connection failed $retries time(s) whilst executing unknown statement\n" );
 		}
 	}
 
@@ -2796,8 +2898,8 @@ sub executesql( $$;$@ ) { # {{{
 	eval {
 		my $result = $sth -> execute( @values );
 		if( not( defined( $result ) ) ) {
-			warn( "$fatal" . ' SQL executed: "' . join( ' ', split( /\s*\n+\s*/, $sth -> { 'Statement' } ) ) . '"' ) if( defined( $sth -> { 'Statement' } ) );
-			warn( "$fatal" . ' SQL parameters: "' . join( '", "', grep defined, @values ) . '"' ) if( @values and scalar( @values ) );
+			pfatal( 'SQL executed: "' . join( ' ', split( /\s*\n+\s*/, $sth -> { 'Statement' } ) ) . '"' ) if( defined( $sth -> { 'Statement' } ) );
+			pfatal( 'SQL parameters: "' . join( '", "', grep defined, @values ) . '"' ) if( @values and scalar( @values ) );
 			die( "$fatal SQL executon error: " . join( ' ', split( /\s*\n+\s*/, ${ $dbh } -> errstr() ) ) . "\n" );
 		}
 	};
@@ -2817,13 +2919,16 @@ sub executesql( $$;$@ ) { # {{{
 		@values = map { defined( $_ ) ? $_ : '' } @values;
 
 		if( defined( $st ) ) {
-			warn( "\n$failed Error when processing SQL statement:\n$st\n" );
+			warn( "\n" );
+			warn( "$failed Error when processing SQL statement:\n$st\n" );
 			warn( '       ... with parameters "' . join( '", "', @values ) . "\"\n" ) if( scalar( @values ) );
 		} elsif( defined( $sthst ) ) {
-			warn( "\n$failed Error when processing statement from handle:\n$sthst\n" );
+			warn( "\n" );
+			warn( "$failed Error when processing statement from handle:\n$sthst\n" );
 			warn( '       ... with parameters "' . join( '", "', @values ) . "\"\n" ) if( scalar( @values ) );
-		} else {
-			warn( "\n$failed Error applying parameters \"" . join( '", "', @values ) . "\"\n" ) if( @values and scalar( @values ) );
+		} elsif( @values and scalar( @values ) ) {
+			warn( "\n" );
+			warn( "$failed Error applying parameters \"" . join( '", "', @values ) . "\"\n" );
 		}
 		warn( "Error details:\n" );
 		warn( "Statement:    '" . $sthst . "'\n" ) if( defined( $sthst ) );
@@ -2910,12 +3015,14 @@ sub getsqlvalue( $$;$ ) { # {{{
 	my $sth = executesql( $dbh, undef, $st );
 	if( not( defined( $sth ) and $sth ) ) {
 		my $errstr = ${ $dbh } -> errstr();
-		warn( "\n$failed Unable to create statement handle to execute '$st'" . ( defined( $errstr ) and length( $errstr ) ? ": " . $errstr : '' ) . "\n" );
+		pfail( "\n" );
+		pfail( "Unable to create statement handle to execute '$st'" . ( defined( $errstr ) and length( $errstr ) ? ": " . $errstr : '' ) . "\n" );
 	} else {
 		while( my $ref = $sth -> fetchrow_arrayref() ) {
 			$response = @{ $ref }[ $column ];
 		}
 		$sth -> finish();
+		pdebug( "SQL: Result:    \"$response\"" ) if( defined( $response ) );
 	}
 
 	return( $response );
@@ -2937,10 +3044,12 @@ sub getsqlvalues( $$;$ ) { # {{{
 	my $sth = executesql( $dbh, undef, $st );
 	if( not( defined( $sth ) and $sth ) ) {
 		my $errstr = ${ $dbh } -> errstr();
-		warn( "\n$failed Unable to create statement handle to execute '$st'" . ( defined( $errstr ) and length( $errstr ) ? ": " . $errstr : '' ) . "\n" );
+		pfail( "\n" );
+		pfail( "Unable to create statement handle to execute '$st'" . ( defined( $errstr ) and length( $errstr ) ? ": " . $errstr : '' ) . "\n" );
 	} else {
 		while( my $ref = $sth -> fetchrow_arrayref() ) {
 			push( @response, @{ $ref }[ $column ] );
+			pdebug( 'SQL: Result:    "' . @{ $ref }[ $column ] . '"' ) if( defined( @{ $ref }[ $column ] ) );
 		}
 		$sth -> finish();
 	}
@@ -2959,7 +3068,8 @@ sub outputtable( $$;$ ) { # {{{
 	my $sth = executesql( $dbh, undef, $st );
 	if( not( defined( $sth ) and $sth ) ) {
 		my $errstr = ${ $dbh } -> errstr();
-		warn( "\n$failed Unable to create statement handle to render table" . ( defined( $errstr ) and length( $errstr ) ? ": " . $errstr : '' ) . "\n" );
+		pfail( "\n" );
+		pfail( "Unable to create statement handle to render table" . ( defined( $errstr ) and length( $errstr ) ? ": " . $errstr : '' ) . "\n" );
 	} else {
 		my $table = DBI::Format::PartBox -> new();
 		if( defined( $fh ) ) {
@@ -3030,9 +3140,10 @@ sub formatastable( $$$ ) { # {{{
 			my( $rc, $sig, $core ) = ( $? >> 8, $? & 127, $? & 128 );
 
 			if( $core ) {
-				warn( "\n$failed rendering process $firstchildpidorzero core-dumped\n" );
+				pfail( "\n" );
+				pfail( "rendering process $firstchildpidorzero core-dumped\n" );
 			} elsif( 9 == $sig ) {
-				warn( "\n$warning rendering process $firstchildpidorzero was KILLed\n" );
+				pwarn( "rendering process $firstchildpidorzero was KILLed\n" );
 			} else {
 				pwarn( "rendering process $firstchildpidorzero returned $rc" . ( $sig ? " after signal $sig" : '' ) ) unless( 0 == $rc );
 			}
@@ -3064,8 +3175,6 @@ sub migratemetadataschema( $;$$$ ) { # {{{
 	$quiet     = $variables -> { 'quiet' }      if( exists( $variables -> { 'quiet' } ) );
 	$silent    = $variables -> { 'silent' }     if( exists( $variables -> { 'silent' } ) );
 
-	my $safetyoff = not( $pretend );
-
 	# }}}
 
 	if( not( defined( $db ) and length( $db ) ) ) {
@@ -3079,7 +3188,9 @@ sub migratemetadataschema( $;$$$ ) { # {{{
 		if( defined( $engine ) and length( $engine ) and ( 'vertica database' eq $engine ) ) {
 			$engine = 'vertica';
 		} elsif( not( defined( $engine ) and length( $engine ) and ( 'mysql' eq $engine ) ) ) {
-			warn( "\n$failed Database engine is neither Vertica nor MySQL - not migrating metadata\n" );
+			pfail( "\n" );
+			pfail( "Database engine is neither Vertica nor MySQL - not migrating metadata\n" );
+
 			return( FALSE );
 		}
 	}
@@ -3092,8 +3203,10 @@ sub migratemetadataschema( $;$$$ ) { # {{{
 		}
 	}
 
-	print( "\n" ) unless( $quiet or $silent );
-	pdebug( "Validating metadata schema for database engine '$engine' ...\n", undef, TRUE ) unless( $quiet or $silent );
+	if( not( $quiet or $silent ) ) {
+		pdebug( "\n" );
+		pdebug( "Validating metadata schema for database engine '$engine' ...\n", undef, TRUE );
+	}
 
 	if( OLDSCHEMA ) {
 		my $success = FALSE;
@@ -3103,7 +3216,8 @@ sub migratemetadataschema( $;$$$ ) { # {{{
 			my $sth = executesql( $dbh, undef, $st );
 			if( not( defined( $sth ) and $sth ) ) {
 				my $errstr = $dbh -> errstr();
-				warn( "\n$failed Unable to create statement handle to execute '$st'" . ( defined( $errstr ) and length( $errstr ) ? ": " . $errstr : '' ) . "\n" );
+				pfail( "\n" );
+				pfail( "Unable to create statement handle to execute '$st'" . ( defined( $errstr ) and length( $errstr ) ? ": " . $errstr : '' ) . "\n" );
 
 				return( FALSE );
 			} else {
@@ -3122,7 +3236,8 @@ sub migratemetadataschema( $;$$$ ) { # {{{
 				$sth -> finish();
 
 				if( not( $foundoldschema ) ) {
-					warn( "\n$warning 'OLDSCHEMA' is a debug option, and should not be used on any database with new metadata\n" );
+					pwarn( "\n" );
+					pwarn( "'OLDSCHEMA' is a debug option, and should not be used on any database with new metadata\n" );
 				}
 			}
 		} elsif ( 'vertica' eq $engine ) {
@@ -3174,7 +3289,8 @@ sub migratemetadataschema( $;$$$ ) { # {{{
 			my $sth = executesql( $dbh, undef, $st );
 			if( not( defined( $sth ) and $sth ) ) {
 				my $errstr = $dbh -> errstr();
-				warn( "\n$failed Unable to create statement handle to execute '$st'" . ( defined( $errstr ) and length( $errstr ) ? ": " . $errstr : '' ) . "\n" );
+				pfail( "\n" );
+				pfail( "Unable to create statement handle to execute '$st'" . ( defined( $errstr ) and length( $errstr ) ? ": " . $errstr : '' ) . "\n" );
 
 				return( FALSE );
 			} else {
@@ -3205,14 +3321,14 @@ sub migratemetadataschema( $;$$$ ) { # {{{
 					}
 
 					if( $pretend ) {
-						pdebug( "Would drop history metadata table '$mywayhistoryname' ..." );
+						psim( "Would drop history metadata table '$mywayhistoryname' ..." );
 					} else {
 						pdebug( "Dropping history metadata table '$mywayhistoryname' ..." );
 
-						my $flag = $allowunsafeoperations;
-						$allowunsafeoperations = TRUE;
+						my $flag = $allowunsafe;
+						$allowunsafe = TRUE;
 						dosql( $dbh, "DROP TABLE `$mywayhistoryname`", TRUE );
-						$allowunsafeoperations = $flag;
+						$allowunsafe = $flag;
 					}
 
 					$tableexists = undef;
@@ -3223,11 +3339,14 @@ sub migratemetadataschema( $;$$$ ) { # {{{
 
 	if( not( defined( $tableexists ) and $tableexists ) ) { # {{{
 		if( $pretend ) {
-			print( "\n" ) unless( $quiet or $silent );
+			psim( "\n" );
 			psim( "Would ensure that history metadata table `$mywayhistoryname` table exists.\n" );
 		} else {
-			print( "\n" ) unless( $quiet or $silent );
-			pdebug( "Ensuring that history metadata table `$mywayhistoryname` exists ...\n", undef, TRUE ) unless( $quiet or $silent );
+			if( not( $quiet or $silent ) ) {
+				pdebug( "\n" );
+				pdebug( "Ensuring that history metadata table `$mywayhistoryname` exists ...\n", undef, TRUE );
+			}
+
 			my $ddl = $mywayhistoryddl;
 			if( 'vertica' eq $engine ) {
 				$ddl = $verticamywayhistoryddl;
@@ -3291,9 +3410,11 @@ sub migratemetadataschema( $;$$$ ) { # {{{
 
 		foreach my $oldversion ( @{ $oldversions } ) {
 			if( not( defined( $mywayversion ) and length( $mywayversion ) ) ) {
-				warn( "\n$failed Unable to determine current version from database - migration may fail ...\n" );
+				pfail( "\n" );
+				pfail( "Unable to determine current version from database - migration may fail ...\n" );
 				if( $oldversion eq VERSION ) {
-					warn( "\n$failed Skipping version '$oldversion' on the assumption that we can't migrate away from the current release ...\n" );
+					pfail( "\n" );
+					pfail( "Skipping version '$oldversion' on the assumption that we can't migrate away from the current release ...\n" );
 					next;
 				}
 			}
@@ -3308,8 +3429,10 @@ sub migratemetadataschema( $;$$$ ) { # {{{
 
 			if( defined( $oldversion ) and defined( $mywayversion ) and ( '1.1.2' eq $oldversion ) and ( '1.2.0' eq $mywayversion ) ) {
 				if( $pretend ) {
-					print( "\n" ) unless( $quiet or $silent );
-					pdebug( "Would upgrade metadata schema from version '$oldversion' to version '$mywayversion' (compatible with flyway version '$flywayversion') ...\n", undef, TRUE ) unless( $quiet or $silent );
+					if( not( $quiet or $silent ) ) {
+						psim( "\n" );
+						psim( "Would upgrade metadata schema from version '$oldversion' to version '$mywayversion' (compatible with flyway version '$flywayversion') ...\n", undef, TRUE );
+					}
 				} else {
 					pdebug( "Upgrading metadata schema from version '$oldversion' to version '$mywayversion' (compatible with flyway version '$flywayversion') ...\n", undef, TRUE ) unless( $quiet or $silent );
 
@@ -3347,7 +3470,8 @@ sub migratemetadataschema( $;$$$ ) { # {{{
 						my $sth = executesql( $dbh, undef, $st );
 						if( not( defined( $sth ) and $sth ) ) {
 							my $errstr = $dbh -> errstr();
-							warn( "\n$failed Unable to create statement handle to execute '$st'" . ( defined( $errstr ) and length( $errstr ) ? ": " . $errstr : '' ) . "\n" );
+							pfail( "\n" );
+							pfail( "Unable to create statement handle to execute '$st'" . ( defined( $errstr ) and length( $errstr ) ? ": " . $errstr : '' ) . "\n" );
 
 							return( FALSE );
 						} else {
@@ -3365,7 +3489,8 @@ sub migratemetadataschema( $;$$$ ) { # {{{
 							$sth -> finish();
 
 							if( $foundnewschema ) {
-								warn( "\n$warning Metadata not flagged as updated but schema alteration 'id' already applied - database may not be consistent\n" );
+								pwarn( "\n" );
+								pwarn( "Metadata not flagged as updated but schema alteration 'id' already applied - database may not be consistent\n" );
 							} else {
 								if( not( dosql( $dbh, "ALTER TABLE `$mywayactionsname` ADD COLUMN `id` INT UNSIGNED AUTO_INCREMENT NOT NULL FIRST, ADD CONSTRAINT PRIMARY KEY (`id`)" ) ) ) {
 									pwarn( "Unable to update `$mywayactionsname` table\n", undef, TRUE );
@@ -3391,7 +3516,8 @@ sub migratemetadataschema( $;$$$ ) { # {{{
 						$sth = executesql( $dbh, undef, $st );
 						if( not( defined( $sth ) and $sth ) ) {
 							my $errstr = $dbh -> errstr();
-							warn( "\n$failed Unable to create statement handle to execute '$st'" . ( defined( $errstr ) and length( $errstr ) ? ": " . $errstr : '' ) . "\n" );
+							pfail( "\n" );
+							pfail( "Unable to create statement handle to execute '$st'" . ( defined( $errstr ) and length( $errstr ) ? ": " . $errstr : '' ) . "\n" );
 
 							$continue = FALSE;
 						} else {
@@ -3419,7 +3545,8 @@ sub migratemetadataschema( $;$$$ ) { # {{{
 							my $sth = executesql( $dbh, undef, $st );
 							if( not( defined( $sth ) and $sth ) ) {
 								my $errstr = $dbh -> errstr();
-								warn( "\n$failed Unable to create statement handle to execute '$st'" . ( defined( $errstr ) and length( $errstr ) ? ": " . $errstr : '' ) . "\n" );
+								pfail( "\n" );
+								pfail( "Unable to create statement handle to execute '$st'" . ( defined( $errstr ) and length( $errstr ) ? ": " . $errstr : '' ) . "\n" );
 
 								$continue = FALSE;
 							} else {
@@ -3437,7 +3564,8 @@ sub migratemetadataschema( $;$$$ ) { # {{{
 								$sth -> finish();
 
 								if( not( $foundoldschema ) ) {
-									warn( "\n$warning Metadata not flagged as updated but schema alteration 'version_rank' already applied - database may not be consistent\n" );
+									pwarn( "\n" );
+									pwarn( "Metadata not flagged as updated but schema alteration 'version_rank' already applied - database may not be consistent\n" );
 								} else {
 									if( not( dosql( $dbh, "ALTER TABLE `$flywaytablename` DROP COLUMN `version_rank`" ) ) ) {
 										pwarn( "Unable to update `$flywaytablename` table\n", undef, TRUE );
@@ -3491,9 +3619,9 @@ sub applyschema( $$$$;$ ) { # {{{
 	$action_init    = $actions -> { 'init' }    if( exists( $actions -> { 'init' } ) );
 	$action_migrate = $actions -> { 'migrate' } if( exists( $actions -> { 'migrate' } ) );
 
-	my( $tmpdir, $mode, $marker, $first, $backupdir, $safetyoff, $strict );
-	my( $skipmeta, $extinsert, $unsafe, $desc, $pretend, $progress );
-	my( $quiet, $silent, $shortcut, $environment, $limit, $clear );
+	my( $tmpdir, $mode, $marker, $first, $backupdir, $strict );
+	my( $skipmeta, $extinsert, $nobackup, $desc, $pretend, $progress );
+	my( $quiet, $silent, $environment, $limit, $clear );
 	my( $compat, $force );
 	$backupdir   = $variables -> { 'backupdir' }   if( exists( $variables -> { 'backupdir' } ) );
 	$clear       = $variables -> { 'clear' }       if( exists( $variables -> { 'clear' } ) );
@@ -3509,13 +3637,11 @@ sub applyschema( $$$$;$ ) { # {{{
 	$pretend     = $variables -> { 'pretend' }     if( exists( $variables -> { 'pretend' } ) );
 	$progress    = $variables -> { 'progress' }    if( exists( $variables -> { 'progress' } ) );
 	$quiet       = $variables -> { 'quiet' }       if( exists( $variables -> { 'quiet' } ) );
-	$safetyoff   = $variables -> { 'safetyoff' }   if( exists( $variables -> { 'safetyoff' } ) );
-	$shortcut    = $variables -> { 'shortcut' }    if( exists( $variables -> { 'shortcut' } ) );
 	$silent      = $variables -> { 'silent' }      if( exists( $variables -> { 'silent' } ) );
 	$skipmeta    = $variables -> { 'skipmeta' }    if( exists( $variables -> { 'skipmeta' } ) );
 	$strict      = $variables -> { 'strict' }      if( exists( $variables -> { 'strict' } ) );
 	$tmpdir      = $variables -> { 'tmpdir' }      if( exists( $variables -> { 'tmpdir' } ) );
-	$unsafe      = $variables -> { 'unsafe' }      if( exists( $variables -> { 'unsafe' } ) );
+	$nobackup    = $variables -> { 'unsafe' }      if( exists( $variables -> { 'unsafe' } ) );
 
 	my( $dsn, $engine, $vschm );
 	$dsn    = $variables -> { 'dsn' }    if( exists( $variables -> { 'dsn' } ) );
@@ -3607,13 +3733,10 @@ sub applyschema( $$$$;$ ) { # {{{
 		}
 	}
 
+	my $invalid = FALSE;
 	my $metadata = {};
 	my $metafile;
 	my $procedureversion;
-	my $data = {};
-	my $invalid = FALSE;
-	my $dumpusers = FALSE;
-	my @dumptables = ();
 
 	if( 'procedure' eq $mode ) { # {{{
 		# In this case, we retrieve the previous/current-version logic
@@ -3639,7 +3762,7 @@ sub applyschema( $$$$;$ ) { # {{{
 									$procedureversion =~ s/\./_/g;
 									if( $first ) {
 										if( $pretend ) {
-											pnote( "Would adjust Stored Procedure names with version string '$procedureversion' from metadata\n", undef, TRUE );
+											psim( "Would adjust Stored Procedure names with version string '$procedureversion' from metadata\n", undef, TRUE );
 										} else {
 											pnote( "Adjusting Stored Procedure names with version string '$procedureversion' from metadata\n", undef, TRUE ) unless( $quiet or $silent );
 										}
@@ -3673,7 +3796,7 @@ sub applyschema( $$$$;$ ) { # {{{
 				if( defined( $marker ) and length( $marker ) ) {
 					$procedureversion .= '` ';
 					if( $pretend ) {
-						pnote( "Would adjust Stored Procedure names with version string '$procedureversion' from path for file '$schmfile'\n", undef, TRUE );
+						psim( "Would adjust Stored Procedure names with version string '$procedureversion' from path for file '$schmfile'\n", undef, TRUE );
 					} else {
 						pnote( "Adjusting Stored Procedure names with version string '$procedureversion' from path for file '$schmfile'\n", undef, TRUE ) unless( $quiet or $silent );
 					}
@@ -3701,377 +3824,73 @@ sub applyschema( $$$$;$ ) { # {{{
 
 	} # ( 'procedure' eq $mode ) # }}}
 
-$shortcut = FALSE;
-	my $shouldprocess = FALSE;
-	if( ( 'procedure' eq $mode ) ) {
+	my $data = {};
+
+	if( 'procedure' eq $mode ) { # {{{
 		if( defined( $marker ) and length( $marker ) ) {
+			# Process file metadata and content here, as we need to substitute $marker
+			# for $procedureversion...
 			$invalid = $invalid | not( processfile( $data, $file, $marker, $procedureversion, $strict ) );
+			die( "$fatal Stored Procedure '$file' failed validation after substitution - aborting.\n" ) if( $invalid );
 		} else {
-			$shouldprocess = TRUE;
+			$invalid = $invalid | not( processfile( $data, $file, undef, undef, $strict ) );
+			die( "$fatal Stored Procedure '$file' failed validation - aborting.\n" ) if( $invalid );
 		}
-	} elsif( not( $unsafe ) ) {
-		# We need to process the file if we're going to take backups...
-		$shouldprocess = TRUE;
-	} elsif( not( $shortcut ) ) {
-		$shouldprocess = TRUE;
-	} else { # ( $shortcut ) # {{{
-die "Shortcut disabled\n";
-#		if( defined( $action_init ) ) {
-#			pdebug( "Skipping filename version comparison when --init is specified..." );
-#		} elsif( not( $schmfile =~ m/^(?:V[[:xdigit:].]+__)?V([[:xdigit:].]+)__/ ) ) {
-#			warn( "!> Filename '$schmfile' does not appear to contain a recognisable version - switching to metadata versioning ...\n" );
-#		} else {
-#			if( defined( $limit ) ) {
-#				my $match = $1;
-#
-#				my( $fcode, $fchange, $fstep, $fhotfix, $fother ) = ( $match =~ m/^([[:xdigit:]]+)(?:\.(\d+)(?:\.(\d+)(?:\.(\d+))?)?)?(.*?)$/ );
-#				my( $lcode, $lchange, $lstep, $lhotfix, $lother ) = ( $limit =~ m/^([[:xdigit:]]+)(?:\.(\d+)(?:\.(\d+)(?:\.(\d+))?)?)?(.*?)$/ );
-#
-#				if( not( defined( $fcode ) and ( ( 0 == $fcode ) or $fcode ) ) ) {
-#					warn( "!> Could not determine major version number from filename '$schmfile' version '$match' during shortcut processing\n" );
-#					$fcode = 0;
-#				}
-#				if( defined( $fother )  and length( $fother ) ) {
-#					warn( "!> Filename '$schmfile' contains additional ignored element(s) '$fother' in version number\n" );
-#				}
-#				if( not( defined( $lcode ) and ( ( 0 == $lcode ) or $lcode ) ) ) {
-#					warn( "!> Could not determine major version number from specified limit '$limit' during shortcut processing\n" );
-#					$lcode = 0;
-#				}
-#				if( defined( $lother ) and length( $lother ) ) {
-#					warn( "!> Limit '$limit' contains additional ignored element(s) '$lother' in version number\n" );
-#				}
-#				$fchange = 0 unless( defined( $fchange ) and $fchange );
-#				$fstep = 0 unless( defined( $fstep ) and $fstep );
-#				$fhotfix = 0 unless( defined( $fhotfix ) and $fhotfix );
-#				$lchange = 0 unless( defined( $lchange ) and $lchange );
-#				$lstep = 0 unless( defined( $lstep ) and $lstep );
-#				$lhotfix = 0 unless( defined( $lhotfix ) and $lhotfix );
-#
-#				my $fv = "$fcode.$fchange.$fstep.$fhotfix";
-#				my $lv = "$lcode.$lchange.$lstep.$lhotfix";
-#
-#				if( not( $fv eq $lv ) ) {
-#					my @sortedversions = sort { versioncmp( $a, $b ) } ( $fv, $lv );
-#					my $latest = pop( @sortedversions );
-#					if( $latest eq $fv ) {
-#						if( $pretend ) {
-#							if( $force ) {
-#								warn( "!> Schema version from filename '$fv' is higher than specified target limit '$lv' for file '$schmfile' - would forcibly re-apply ...\n" );
-#							} else {
-#								warn( "!> Schema version from filename '$fv' is higher than specified target limit '$lv' for file '$schmfile' - skipping ...\n" );
-#								return( FALSE );
-#							}
-#						} else { # not( $pretend )
-#							if( $force ) {
-#								warn( "!> Schema version from filename '$fv' is higher than specified target limit '$lv' for file '$schmfile' - forcibly re-applying ...\n" );
-#							} else {
-#								warn( "!> Schema version from filename '$fv' is higher than specified target limit '$lv' for file '$schmfile' - skipping ...\n" );
-#								return( FALSE );
-#							}
-#						}
-#					}
-#				}
-#			}
-#
-#			my $availabledatabases;
-#			my $availabletables;
-#			my $verticadb = '';
-#			$verticadb = "$vschm`.`" if( 'vertica' eq $engine );
-#
-#			# XXX: Code here replicated from below - this needs to be
-#			#      cleaned-up or moved to a separate sub...
-#
-#			print( "\n=> Connecting to database `$db` to confirm existing version metadata via shortcut ...\n" ) unless( $quiet or $silent );
-#			$dsn = "DBI:mysql:database=$db;host=$host;port=$port" unless( defined( $dsn ) );
-#			my $dbh;
-#			my $error = dbopen( \$dbh, $dsn, $user, $pass, $strict );
-#			die( "$fatal $error [" . ( caller( 0 ) )[ 3 ] . ':' . __LINE__ . "]\n" ) if $error;
-#
-#			if( 'vertica' eq $engine ) {
-#				my $path;
-#				if( defined( $vschm ) and length( $vschm ) ) {
-#					$path = $vschm;
-#				} elsif( defined( $db ) and length( $db ) ) {
-#					$vschm = $db;
-#					$path = $db;
-#				}
-#				if( defined( $path ) and length( $path ) ) {
-#					setverticasearchpath( \$dbh, $path, $user, ( $quiet or $silent ) );
-#
-#				}
-#				$availabletables = getsqlvalues( \$dbh, "SELECT `table_name` FROM `tables` WHERE `table_schema` = '$vschm'" );
-#			}
-#
-#			if( 'mysql' eq $engine ) {
-#				$availabledatabases = getsqlvalues( \$dbh, "SHOW DATABASES" );
-#				die( "$fatal Unable to retrieve list of available databases" . ( defined( $dbh -> errstr() ) ? ': ' . $dbh -> errstr() : '' ) . "\n" ) unless( scalar( @{ $availabledatabases } ) );
-#				$availabletables = getsqlvalues( \$dbh, "SHOW TABLES" );
-#			}
-#
-#			if( not( scalar( @{ $availabletables } ) ) ) {
-#				warn( "\n$warning Unable to retrieve list of tables for database `$db`" . ( defined( $dbh -> errstr() ) ? ': ' . $dbh -> errstr() : '' ) . "\n" );
-#			} else {
-#				my $versions = getsqlvalues( \$dbh, "SELECT DISTINCT `version` FROM `$verticadb$flywaytablename` WHERE `success` IS TRUE AND ( `type` = '$flywayinit' OR `type` = 'INIT' )" );
-#				my @sortedversions;
-#				my $version;
-#				if( scalar( @{ $versions } ) ) {
-#					@sortedversions = sort { versioncmp( $a, $b ) } @{ $versions };
-#					$version = pop( @sortedversions );
-#				}
-#				if( defined( $version ) and length( $version ) ) {
-#					if( $schmfile =~ m/^(?:V[[:xdigit:].]+__)?V([[:xdigit:].]+)__/ ) {
-#						my $match = $1;
-#						if( not( defined( $match ) and length( $match ) ) ) {
-#							warn( "!> Could not determine version number from filename '$schmfile' during shortcut processing\n" );
-#						} else {
-#							my @sortedversions = sort { versioncmp( $a, $b ) } ( $version, $match );
-#							my $latest = pop( @sortedversions );
-#							my $previous = pop( @sortedversions );
-#							if( not( $force ) ) {
-#								if( ( $match eq $latest ) and ( $latest eq $previous ) ) {
-#									print( "=> Skipping base initialiser file '$schmfile' ...\n" ) unless( $quiet or $silent );
-#									dbclose( \$dbh );
-#									return( TRUE );
-#								} elsif( $match eq $previous ) {
-#									print( "=> Skipping pre-initialisation file '$schmfile' ...\n" ) unless( $silent );
-#									dbclose( \$dbh );
-#									return( TRUE );
-#								}
-#							}
-#						}
-#					}
-#
-#					my $metadataversions = getsqlvalues( \$dbh, "SELECT DISTINCT `version` FROM `$verticadb$flywaytablename` WHERE `success` IS TRUE" );
-#
-#					my( $scode, $schange, $sstep, $shotfix, $sother ) = ( $schmversion =~ m/^([[:xdigit:]]+)(?:\.(\d+)(?:\.(\d+)(?:\.(\d+))?)?)?(.*?)$/ );
-#					if( not( defined( $scode ) and ( ( 0 == $scode ) or $scode ) ) ) {
-#						warn( "!> Could not determine major version number from filename '$schmfile' version '$schmversion' during shortcut processing\n" );
-#						$scode = 0;
-#					}
-#					if( defined( $sother )  and length( $sother ) ) {
-#						warn( "!> File '$schmfile' schema version '$schmversion' contains additional ignored element(s) '$sother' in version number\n" );
-#					}
-#					$schange = 0 unless( defined( $schange ) and $schange );
-#					$sstep = 0 unless( defined( $sstep ) and $sstep );
-#
-#					my $sv;
-#					if( defined( $shotfix ) and $shotfix ) {
-#						$sv = "$scode.$schange.$sstep.$shotfix";
-#					} else {
-#						$sv = "$scode.$schange.$sstep";
-#					}
-#
-#					# Either we lack a hotfix version and
-#					# so the optional '.0' may apply, or we
-#					# have a hotfix version and so valid
-#					# metadata can only match without an
-#					# extension.
-#
-#					if( defined( $sv ) and ( qr/^$sv(?:\.0+)?$/ |M| $metadataversions ) ) {
-#						if( $pretend ) {
-#							if( $force ) {
-#								warn( "!> Schema version from filename '$schmversion' has already been applied to this database for file '$schmfile' - would forcibly re-apply ...\n" );
-#							} else {
-#								warn( "!> Schema version from filename '$schmversion' has already been applied to this database for file '$schmfile' - skipping ...\n" );
-#								dbclose( \$dbh );
-#								return( TRUE );
-#							}
-#						} else { # not( $pretend )
-#							if( $force ) {
-#								warn( "!> Schema version from filename '$schmversion' has already been applied to this database for file '$schmfile' - forcibly re-applying ...\n" );
-#							} else {
-#								warn( "!> Schema version from filename '$schmversion' has already been applied to this database for file '$schmfile' - skipping ...\n\n" ) unless( $quiet or $silent );
-#								dbclose( \$dbh );
-#								return( TRUE );
-#							}
-#						}
-#					}
-#				}
-#			}
-#			dbclose( \$dbh );
-#		}
-#		$shouldprocess = TRUE;
-	} # ( $shortcut ) # }}}
-	$invalid = $invalid | not( processfile( $data, $file, undef, undef, $strict ) ) if( $shouldprocess );
-	die( "$fatal Data failed validation - aborting.\n" ) if( $invalid );
+
+		my @entries;
+
+		if( $first ) {
+			# Previously, we only processed the metadata as far as
+			# reading the initial metadata.  If we're on the first
+			# iteration, we now need to process the entire file in
+			# order to discover any contents.
+			$invalid = $invalid | not( processfile( $metadata, $metafile, undef, undef, $strict ) );
+			die( "$fatal Validation of metadata file '$metafile' failed - aborting.\n" ) if( $invalid );
+		} # else {
+		#	# Each $entry[] consists of: %{ @entry (text of statement), $line, $type (comment|statement) }
+		#	my @procedurecomments = ();
+		#	foreach my $entry ( $metadata -> { 'entries' } ) {
+		#		foreach my $statement ( @{ $entry } ) {
+		#			if( not( 'statement' eq $statement -> { 'type' } ) ) {
+		#				push( @procedurecomments, $statement );
+		#			}
+		#		}
+		#
+		#	}
+		#	push( @entries, @procedurecomments );
+		#	$metadata -> { 'entries' } = \@procedurecomments;
+		#}
+
+		foreach my $entry ( $metadata -> { 'entries' } ) {
+			push( @entries, @{ $entry } );
+		}
+		foreach my $entry ( $data -> { 'entries' } ) {
+			push( @entries, @{ $entry } );
+		}
+
+		$data -> { 'entries' } = \@entries;
+
+	} else {
+		$invalid = $invalid | not( processfile( $data, $file, undef, undef, $strict, TRUE ) );
+		die( "$fatal '$file' failed validation - aborting.\n" ) if( $invalid );
+	} # }}}
 
 	pnote( "Finished pre-processing file '$file' ...\n", undef, TRUE ) unless( $quiet or $silent );
 
 	#
-	# Confirm data validity, and enumerate tables we need to backup # {{{
+	# Open target database connection # {{{
 	#
 
-	my $output;
-	if( $pretend ) {
-		$output = \&pfatal;
-	} else {
-		if( defined( $verbosity ) and $verbosity > 0 ) { # debug(3), notice(2), warn(1)
-			# Log messages as (high-priority) warnings...
-			$output = \&pwarn;
-		} else {
-			# Only log messages if DEBUG is set...
-			$output = \&pdebug;
-		}
+	if( not( $quiet or $silent ) ) {
+		pdebug( "\n" );
+		pdebug( "Connecting to database `$db` to gather state data ...\n", undef, TRUE );
 	}
-
-	my $statements = 0;
-	foreach my $entry ( @{ $data -> { 'entries' } } ) {
-		if( not( 'HASH' eq ref( $entry ) ) ) {
-			pwarn( "\$entry has unexpected type '" . ref( $entry ) . "'\n" );
-			$invalid = TRUE;
-		} else {
-			next unless( defined( $entry -> { 'type' } ) );
-			next unless( 'statement' eq lc( $entry -> { 'type' } ) );
-
-			#print Dumper $entry if( DEBUG );
-
-			if( not( defined( $entry -> { 'entry' } ) ) ) {
-				$output -> ( 'Unable to parse blank entry' );
-				$invalid = TRUE;
-				next;
-
-			} else {
-				my $text;
-				my $texttype = ' ';
-				if( 'ARRAY' eq ref( $entry -> { 'entry' } ) ) {
-					$text = join( ' ', @{ $entry -> { 'entry' } } );
-					$texttype = 'array ';
-				} else {
-					$text = $entry -> { 'entry' };
-				}
-				$text =~ s/^\s+//g; $text =~ s/\s+/ /g;
-				$text =~ s/([\$\@\%])/\\$1/g;
-				$text = qq($text);
-
-				# MySQL uses indices internally to represent constraints, and so has odd syntax for the creation
-				# of FOREIGN KEY constraints which allows the index which equates to the constraint to be specified
-				# and, although this will generally operate equivalently to naming the constraint itself, there is
-				# a semantic difference here.  At the same time, it is still valid (although unlikely to be be what
-				# was intended) to specify an index name (only) and so we can only issue a warning when this occurs.
-				if( $text =~ m/\sADD\s+(?:CONSTRAINT\s+)?FOREIGN\s+KEY\s*([^(][^()`,\s]+`?)[()`,\s]/i ) {
-					pwarn( "index_name " . ( defined( $1 ) ? $1 : '' ) . " specified in place of CONSTRAINT - this is likely a bug:\n\n$text\n", 1 );
-				}
-
-				if( ( $text =~ m/[`' (]([^`' (]+_ibfk_\d+)[) '`]/ ) and not( $text =~ m/DROP\s+FOREIGN\s+KEY\s+`[^`]+_ibfk_\d+`/i ) ) {
-					pwarn( "Auto-generated constraint name `$1` used as deterministic CONSTRAINT - this usage is deprecated:\n\n$text\n", 1 );
-				}
-
-				# Ensure that constraints are explicitly named, so that we can deterministically drop them later...
-				if( ( $text =~ m/\sFOREIGN\s+KEY[\s(]/i ) and not( ( $text =~ m/\sCONSTRAINT\s+`[^`]+`\s+FOREIGN\s+KEY[\s(]/i ) or ( $text =~ m/DROP\s+FOREIGN\s+KEY\s/i ) ) ) {
-					$output -> ( "Unwilling to create non-deterministic constraint from:\n\n$text\n" );
-					$invalid = TRUE;
-				}
-
-				if( $tokenise and not( defined( $entry -> { 'tokens' } ) ) ) {
-					# FIXME: Filter known edge-cases which the Parser fails to tokenise...
-					if( 'mysql' eq $engine ) {
-						if( not( $text =~ m/^((LOCK|UNLOCK|SET|CREATE\s+PROCEDURE|GRANT|TRUNCATE)\s+|\s*\/\*\!)/i ) ) {
-							$output -> ( 'Unable to parse ' . $texttype . 'entry "' . $text . '"' );
-							# FIXME: Don't abort simply because we hit something we can't parse...
-							#$invalid = TRUE;
-						}
-					}
-
-					# FIXME: Reinstate this once the Parser has full coverage
-					#$invalid = TRUE;
-
-					next;
-				}
-			}
-
-			if( 'mysql' eq $engine ) {
-				if( defined( $entry -> { 'tokens' } -> { 'type' } ) and defined( $entry -> { 'tokens' } -> { 'object' } ) ) {
-					my $type = $entry -> { 'tokens' } -> { 'type' };
-					my $object = $entry -> { 'tokens' } -> { 'object' };
-					if( ( defined( $type ) and ( 'create' eq lc( $type ) ) ) and ( defined( $object ) and ( 'user' eq lc( $object ) ) ) ) {
-						if( defined( $tmpdir ) and -d $tmpdir ) {
-							$dumpusers = TRUE unless( -e $tmpdir . '/' . 'mysql.users.sql' );
-						}
-					}
-				}
-			}
-
-			if( not( $unsafe ) and defined( $entry -> { 'tokens' } ) ) {
-				foreach my $key ( keys( $entry -> { 'tokens' } ) ) {
-					if( ref( $entry -> { 'tokens' } -> { $key } ) eq 'ARRAY' ) {
-						foreach my $element ( @{ $entry -> { 'tokens' } -> { $key } } ) {
-							if( ref( $element ) eq 'HASH' ) {
-								foreach my $basekey ( keys( %{ $element } ) ) {
-									# N.B.: This should never occur when ( $mode eq 'procedure' )...
-									if( $basekey eq 'tbl' ) {
-										my $table = $element -> { $basekey };
-
-										# FIXME:  For input 'INSERT INTO `table`(`column1`,`column2`) VALUES ...',
-										#         Parser output still contains the specified attributes :(
-										# Update: Actually, it's worse - the parser thinks this is a huge inner-join.
-										# Update: Now fixed, hopefully...
-										#$table =~ s/\([^\)]*\)//g;
-										$table =~ s/`//g;
-
-										if( defined( $table ) and ( not( scalar( @dumptables ) and ( qr/^$table$/ |M| \@dumptables ) ) ) ) {
-											pdebug( "Adding table `$table` to backup list ...\n", undef, TRUE );
-											push( @dumptables, $table );
-										}
-									}
-								}
-							}
-						}
-					}
-				}
-			}
-
-			$statements++;
-		}
-	}
-	if( $tokenise and ( 0 == $statements ) ) {
-		# Still issue a warning, but don't abort here - placeholder
-		# schema should be allowed to fill gaps due to reorganisation.
-		#
-		if( defined( $action_init ) or ( $schmfile =~ m/^V[[:xdigit:].]+__V[[:xdigit:].]+__/ ) ) {
-			# Don't alert - base initialisers and migration schema
-			# aren't supposed to have content...
-		} elsif( $force ) {
-			pwarn( "No valid SQL statements found in file '$schmfile', but continuing for now ...\n", undef, TRUE ) unless( $silent );
-		} else {
-			# OTOH, we do want to fail if we read a schema-file
-			# which has accidentally all been commented-out.
-			# If a version really is intended to be skipped, either
-			# a placeholder should be used, or the initial and
-			# target versions should cover the gap.
-			pwarn( "No valid SQL statements found in file '$schmfile'\n", undef, TRUE );
-			return( FALSE );
-		}
-	}
-	if( $invalid ) {
-		if( $pretend ) {
-			pwarn( "SQL parsing failed for file '$schmfile' - continuing with valid statements only ..." );
-		} else {
-			if( defined( $verbosity ) and $verbosity > 0 ) { # debug(3), notice(2), warn(1)
-				die( "$fatal SQL parsing failed for file '$schmfile'\n" );
-			} else {
-				die( "$fatal SQL parsing failed for file '$schmfile' - please re-execute with at least '--warn' level logging to display discovered issues\n" );
-			}
-		}
-	}
-
-	# }}}
-
-	my $availabledatabases;
-	my $availabletables;
-	my $uuid;
-
-	#
-	# Open target database connection
-	#
-
-	print( "\n" ) unless( $quiet or $silent );
-	pdebug( "Connecting to database `$db` to perform migration ...\n", undef, TRUE ) unless( $quiet or $silent );
 	$dsn = "DBI:mysql:database=$db;host=$host;port=$port" unless( defined( $dsn ) );
 	my $dbh;
 	my $error = dbopen( \$dbh, $dsn, $user, $pass, $strict );
 	die( "$fatal $error [" . ( caller( 0 ) )[ 3 ] . ':' . __LINE__ . "]\n" ) if $error;
 
+	my $uuid;
 	if( 'vertica' eq $engine ) {
 		my $path;
 		if( defined( $vschm ) and length( $vschm ) ) {
@@ -4098,8 +3917,10 @@ die "Shortcut disabled\n";
 		$uuid = getsqlvalue( \$dbh, "SELECT UUID()" );
 	}
 
-	# This shouldn't have changed before, but it does no harm to check...
-	#
+	my $availabledatabases;
+	my $availabletables;
+	my $safetorestore = FALSE;
+
 	if( 'mysql' eq $engine ) {
 		$availabledatabases = getsqlvalues( \$dbh, "SHOW DATABASES" );
 		die( "$fatal Unable to retrieve list of available databases" . ( defined( $dbh -> errstr() ) ? ': ' . $dbh -> errstr() : '' ) . "\n" ) unless( scalar( @{ $availabledatabases } ) );
@@ -4111,7 +3932,513 @@ die "Shortcut disabled\n";
 	} elsif( 'mysql' eq $engine ) {
 		$availabletables = getsqlvalues( \$dbh, "SHOW TABLES" );
 	}
-	warn( "\n$warning Unable to retrieve list of tables for database `$db`" . ( defined( $dbh -> errstr() ) ? ': ' . $dbh -> errstr() : '' ) . "\n" ) unless( scalar( @{ $availabletables } ) );
+	if( not( scalar( @{ $availabletables } ) ) ) {
+		pwarn( "\n" );
+		pwarn( "Unable to retrieve list of tables for database `$db`" . ( defined( $dbh -> errstr() ) ? ': ' . $dbh -> errstr() : '' ) . "\n" );
+	}
+
+	my $verticadb = '';
+	$verticadb = "$vschm`.`" if( 'vertica' eq $engine );
+	if( not( getsqlvalue( \$dbh, "SELECT COUNT(*) FROM `$verticadb$flywaytablename` WHERE `success` IS TRUE" ) ) ) {
+		$safetorestore = TRUE;
+	}
+
+	dbclose( \$dbh, undef, undef, TRUE );
+
+	# }}}
+
+	my $schmdescription = undef;
+	my $schmprevious = undef;
+	my $schmtarget = undef;
+
+	# Process the first (or first two: Stored Procedures may have the
+	# shared metadata file prefixed) comment only, to determine whether we
+	# want to apply the file in question... if so, we'll proceed to
+	# re-process the whole file.
+	#
+	my $firstcomment = TRUE;
+	my $secondcomment = undef;
+
+	foreach my $entry ( $data -> { 'entries' } ) { # {{{
+		foreach my $statement ( @{ $entry } ) {
+			if( 'comment' eq $statement -> { 'type' } ) {
+				if( 'ARRAY' eq ref( $statement -> { 'entry' } ) ) {
+					#
+					# Version-tracking data must be in an
+					# array in the first comment - we don't
+					# process data in following comments,
+					# or any non-standard format with
+					# multiple tracking items on different
+					# lines.
+					#
+					# FIXME: We'll only consider single-
+					#        line Description fields, too.
+					#
+					# N.B.   Stored Procedure metadata is
+					#        prefixed with the shared
+					#        metadata, so we need to
+					#        process the first two comments
+					#        in case both contain metadata
+					#        directives...
+					#
+					if( defined( $firstcomment ) or ( ( 'procedure' eq $mode ) and defined( $secondcomment ) ) ) {
+						my $restorefile = undef;
+
+						foreach my $line ( @{ $statement -> { 'entry' } } ) {
+							my $requiredengine;
+
+							chomp( $line );
+							if( $line =~ m/Description:\s+(.*)\s*$/i ) {
+								$schmdescription = $1;
+								pdebug( "Read metadata description '$schmdescription'" );
+							} elsif( $line =~ m/Engine:\s+([^#]+)(?:#.*)?\s*$/i ) {
+								my $requiredengine = $1;
+								pdebug( "Read metadata engine requirement '$requiredengine' (database engine is '$engine')" );
+								if( not( lc( $engine ) eq lc( $requiredengine ) ) ) {
+									pwarn( "Metadata from file '$schmfile' requires database engine '$requiredengine' but the current connection reports a '$engine' back-end\n", undef, TRUE );
+									return( FALSE );
+								}
+							} elsif( $line =~ m/Database:\s+([^\s]+)\s*/i ) {
+								pdebug( "Read required database name '$1'" );
+								if( not( lc( $db ) eq lc( $1 ) ) ) {
+									pwarn( "Metadata from file '$schmfile' only allows deployment to database '$1', but current database is '$db'\n", undef, TRUE );
+									return( FALSE );
+								}
+							} elsif( $line =~ m/Schema:\s+([^\s]+)\s*/i ) {
+								pdebug( "Read required schema name '$1'" );
+								if( not( defined( $requiredengine ) and ( 'vertica' eq lc( $requiredengine ) ) ) ) {
+									pwarn( "The 'Schema' directive from file '$schmfile' is only valid when 'Engine' is specified and declared to be \"vertica\"\n", undef, TRUE );
+									return( FALSE );
+								}
+								if( not( lc( $vschm ) eq lc( $1 ) ) ) {
+									pwarn( "Metadata from file '$schmfile' only allows deployment to schema '$1', but current schema is '$vschm'\n", undef, TRUE );
+									return( FALSE );
+								}
+							} elsif( $line =~ m/Previous\s+version:\s+([^\s]+)\s*/i ) {
+								$schmprevious = $1;
+								pdebug( "Read metadata previous version '$schmprevious'" );
+							} elsif( $line =~ m/Target\s+version:\s+([^\s]+)\s*/i ) {
+								$schmtarget = $1;
+								pdebug( "Read metadata target version '$schmtarget'" );
+							} elsif( $line =~ m/Environment:\s+(!)?\s*([^\s]+)\s*/i ) {
+								pdebug( "Read metadata environment restriction '" . ( defined( $1 ) ? $1 : '' ) . "$2'" );
+								$environment = '' unless( defined( $environment ) );
+								my $invert = $1 if( defined( $1 ) and length( $1 ) );
+								my $match = $2;
+								if(
+								  ( ( defined( $invert ) and ( $invert eq '!' ) ) and ( lc( $match ) eq lc( $environment ) ) )
+								  or
+								  ( not( defined( $invert ) and ( $invert eq '!' ) ) and not( lc( $match ) eq lc( $environment ) ) )
+								) {
+									if( '' eq $environment ) {
+										pwarn( "Metadata from file '$schmfile' only allows execution in environment '$match'\n", undef, TRUE );
+									} else {
+										pwarn( "Metadata from file '$schmfile' prohibits execution in environment '$environment'\n", undef, TRUE );
+									}
+									# Don't fail, as we could have multiple files for different
+									# environments, all of which but one drop-out here...
+									return( TRUE );
+								}
+								pdebug( "Validated metadata environment restriction '" . ( defined( $invert ) ? $invert : '' ) . "$match'" );
+							} elsif( $line =~ m/Restore:\s+([^#]+)(?:#.*)?\s*$/i ) {
+								$restorefile = $1;
+								pdebug( "Read metadata file-restore request for '$restorefile'" );
+							}
+						}
+
+						pnote( "Read dubious prior version '$schmprevious' from file '$schmfile'\n", undef, TRUE ) unless( not( defined( $schmprevious ) ) or ( $schmprevious =~ m/[\d.]+/ ) or ( $schmprevious =~ m#(?:na|n/a)#i ) );
+						pnote( "Read dubious target version '$schmtarget' from file '$schmfile'\n", undef, TRUE ) unless( not( defined( $schmtarget ) ) or ( $schmtarget =~ m/[\d.]+/ ) );
+						if( ( $schmfile =~ m/^(?:V[[:xdigit:].]+__)?V([[:xdigit:].]+)__/ ) and not( $1 =~ m/^$schmtarget(?:\.\d+)?$/ ) ) {
+							pwarn( "Filename version '$1' differs from metadata version '$schmtarget' from file '$schmfile'\n", undef, TRUE );
+						}
+						if( defined( $schmversion ) and length( $schmversion ) and not( $schmversion eq '0' ) and not( $schmversion =~ m/^$schmtarget(?:\.\d+)?(?:.0+)?$/ ) ) {
+							if( $schmfile =~ m/^V([[:xdigit:].]+)__V([[:xdigit:].]+)__/ ) {
+								if( not( ( $schmversion eq $1 ) and ( $schmtarget eq $2 ) ) ) {
+									pwarn( "Migration schema filename declares transition from version '$1' to version '$2', but file metadata describes the transition from '$schmversion' to '$schmtarget'\n", undef, TRUE );
+								}
+							} else {
+								pwarn( "Metadata version '$schmtarget' differs from command-line argument '$schmversion'\n", undef, TRUE );
+							}
+						}
+						if( defined( $limit ) and not( 'procedure' eq $mode ) ) {
+							( my $sst = $schmtarget ) =~ s/(?:\.0+)+$//;
+							( my $sl = $limit ) =~ s/(?:\.0+)+$//;
+
+							if( defined( $sst ) and defined ( $sl ) and not( $sst eq $sl ) ) {
+								my @sortedversions = sort { versioncmp( $a, $b ) } ( $sst, $sl );
+								my $latest = pop( @sortedversions );
+								if( $latest eq $sst ) {
+									if( $pretend ) {
+										if( $force ) {
+											pwarn( "Schema target version '$schmtarget' is higher than specified target limit '$limit' - would forcibly re-apply ...\n", undef, TRUE );
+										} else {
+											pwarn( "Schema target version '$schmtarget' is higher than specified target limit '$limit' - skipping ...\n", undef, TRUE );
+											return( TRUE );
+										}
+									} else { # not( $pretend )
+										if( $force ) {
+											pwarn( "Schema target version '$schmtarget' is higher than specified target limit '$limit' - forcibly re-applying ...\n", undef, TRUE );
+										} else {
+											pwarn( "Schema target version '$schmtarget' is higher than specified target limit '$limit' - skipping ...\n\n", undef, TRUE );
+											return( TRUE );
+										}
+									}
+								}
+							}
+						}
+
+						if( defined( $restorefile ) and length( $restorefile ) ) {
+							if( not( defined( $action_init ) ) ) {
+								pwarn( "'Restore' directive is only valid in a base initialiser - ignoring ...\n", undef, TRUE ) unless( $first );
+							} else {
+								pnote( "Found restoration directive for file '$restorefile' ...\n", undef, TRUE );
+
+								# $restorefile may be relative or absolute...
+								if( -s ( realpath( "$schmpath/$restorefile" ) or realpath( $restorefile ) ) ) {
+									if( -s realpath( "$schmpath/$restorefile" ) ) {
+										$restorefile = realpath( "$schmpath/$restorefile" );
+										pnote( "Using file location '$restorefile' ...\n", undef, TRUE );
+									} else {
+										$restorefile = realpath( $restorefile );
+									}
+								}
+								if( not( -s $restorefile ) ) {
+									if( not( $pretend ) ) {
+										die( "$fatal Cannot locate file '$restorefile' from root or '$schmpath' directories\n" );
+									} else {
+										pwarn( "Could not locate file '$restorefile' from root or '$schmpath' directories, would abort\n", undef, TRUE );
+									}
+								} else {
+									if( $pretend ) {
+										# At this point, a fresh database will have metadata tracking tables
+										# but no metadata at all, whereas an existing database (which has
+										# accidentally had restore called upon it?) should be populated.
+										if( $safetorestore ) {
+											psim( "Would restore database from file '$restorefile' ...\n", undef, TRUE );
+											return( \$schmversion );
+										} else {
+											if( $force ) {
+												pwarn( "Would forcibly restore database from file '$restorefile', with risk of data-loss ...\n", 3, TRUE );
+												return( TRUE );
+											} else {
+												pwarn( "Would refuse to overwrite populated database from file '$restorefile' to prevent data-loss\n" );
+												return( FALSE );
+											}
+										}
+									} else {
+										if( not( $safetorestore ) ) {
+											if( $force ) {
+												pwarn( "Forcibly restoring database from file '$restorefile', with risk of data-loss ...\n", 3, TRUE );
+											} else {
+												pwarn( "Refusing to overwrite populated database from file '$restorefile' to prevent data-loss\n", 3, TRUE );
+												return( FALSE );
+											}
+										}
+
+										dbrestore( $auth, $restorefile, $progress );
+
+										my $dbh;
+
+										pdebug( "Connecting to database `$db` to migrate metadata if necessary and to determine the new schema version ...\n", undef, TRUE ) unless( $quiet or $silent );
+										my $error = dbopen( \$dbh, $dsn, $user, $pass, $strict );
+										die( "$fatal $error [" . ( caller( 0 ) )[ 3 ] . ':' . __LINE__ . "]\n" ) if $error;
+
+										migratemetadataschema( \$dbh, $db, $vschm, $variables );
+
+										my $tableexists;
+										if( defined( $vschm ) and length( $vschm ) ) {
+											$tableexists = getsqlvalue( \$dbh, "SELECT COUNT(*) FROM `tables` WHERE `table_schema` = '$vschm' AND `table_name` = '$flywaytablename'" );
+										} else {
+											$tableexists = getsqlvalue( \$dbh, "SELECT COUNT(*) FROM `information_schema`.`TABLES` WHERE `TABLE_SCHEMA` = '$db' AND `TABLE_NAME` = '$flywaytablename'" );
+										}
+										if( not( defined( $tableexists ) and $tableexists ) ) {
+											pwarn( "Restored data appears to lack metadata tables - further migrations may fail\n", undef, TRUE );
+											dbclose( \$dbh, undef, undef, TRUE );
+											return( \$schmversion );
+										} else {
+											my $init = getsqlvalue( \$dbh, "SELECT COUNT(*) FROM `$verticadb$flywaytablename` WHERE `success` IS TRUE" );
+											if( not( defined( $init ) ) or ( 0 == $init ) ) {
+												pwarn( "Restored data appears to lack metadata content - further migrations may fail\n", undef, TRUE );
+												dbclose( \$dbh, undef, undef, TRUE );
+												return( \$schmversion );
+											} else {
+												my $versions = getsqlvalues( \$dbh, "SELECT DISTINCT `version` FROM `$verticadb$flywaytablename` WHERE `success` IS TRUE" );
+
+												dbclose( \$dbh, undef, undef, TRUE );
+
+												if( not( scalar( @{ $versions } ) ) ) {
+													pwarn( "Restored data appears to lack metadata content - further migrations may fail\n", undef, TRUE );
+													return( \$schmversion );
+												}
+
+												my @sortedversions = sort { versioncmp( $a, $b ) } @{ $versions };
+												my $version = pop( @sortedversions );
+												return( \$version );
+											}
+										}
+
+										# Unreachable
+										die( 'LOGIC: Line ' . __LINE__ . " should never be reached\n" );
+									}
+								}
+							}
+						} elsif( defined( $action_init ) ) { # not( defined( $restorefile ) and length( $restorefile ) )
+							return( \$schmversion );
+						}
+
+						if( defined( $firstcomment ) ) {
+							my $oldstatus = $status;
+							my $greaterversionpresent = FALSE;
+
+							my $tablename = $flywaytablename;
+							my $statuscolumn = 'success';
+							$status = '1';
+							if( 'procedure' eq $mode ) {
+								$tablename = $mywayprocsname;
+								$statuscolumn = 'status';
+								# For this to work, we /have/ to assume that filenames are consistent and
+								# that they are always named '<function_name>.sql'...
+								#
+								$status = "'$status' AND filename = '$schmfile'";
+							}
+
+							if( not( $quiet or $silent ) ) {
+								pdebug( "\n" );
+								pdebug( "Connecting to database `$db` to perform validation ...\n", undef, TRUE );
+							}
+							$dsn = "DBI:mysql:database=$db;host=$host;port=$port" unless( defined( $dsn ) );
+							my $dbh;
+							my $error = dbopen( \$dbh, $dsn, $user, $pass, $strict );
+							die( "$fatal $error [" . ( caller( 0 ) )[ 3 ] . ':' . __LINE__ . "]\n" ) if $error;
+
+							if( not( defined( $schmtarget ) and length( $schmtarget ) ) ) {
+								if( not( 'procedure' eq $mode ) ) {
+									pwarn( "No target version defined in schema comments from file '$schmfile' - relying on filename alone\n", undef, TRUE );
+								} else {
+									pwarn( "No target version defined in metadata comments from file '$schmfile'- not validating target installation chain\n", undef, TRUE );
+								}
+
+							} elsif( defined( $tablename ) and not( qr/^$tablename$/ |M| \@{ $availabletables } ) ) {
+								pwarn( "metadata table `$tablename` does not exist - not validating target installation chain for file '$schmfile'\n", undef, TRUE );
+
+							} else {
+								# N.B. Logic change - previously, we were simply checking that the target version
+								#      hadn't been applied to the database.  Now, we're checking that nothing
+								#      newer than the target has been applied either.
+
+								# We could sort in the database here, but I'm not sure "ORDER BY" would cope with the
+								# various variations we might be trying to throw at it...
+								#
+								my $installedversions = getsqlvalues( \$dbh, "SELECT DISTINCT `version` FROM `$verticadb$tablename` WHERE `$statuscolumn` = $status" );
+
+								my( $codeversion, $changeversion, $stepversion, $hotfixversion, $otherversion );
+								if( 'procedure' eq $mode ) {
+									( $codeversion, $changeversion, $hotfixversion, $otherversion ) = ( $schmtarget =~ m/^(\d+)\.(\d+)(?:\.(\d+))?(?:\.(.*))?$/ );
+								} else {
+									( $codeversion, $changeversion, $stepversion, $hotfixversion ) = ( $schmfile =~ m/^V([[:xdigit:]]+)\.(\d+)\.(\d+)\.(\d+)(?:\.(.*))?__/ );
+								}
+
+								my $okay = TRUE;
+								my $fresh = TRUE;
+
+								if( scalar( @{ $installedversions } ) and ( qr/^$schmtarget$/ |M| $installedversions ) ) {
+									if( not( $first ) and ( 'procedure' eq $mode ) ) {
+										# Duplicate installs are the norm for Stored Procedure installations, as each
+										# definition is applied with the same metadata version.
+										#
+										$fresh = FALSE;
+									} else {
+										if( $pretend ) {
+											if( $force or ( 'procedure' eq $mode ) ) {
+												pwarn( '' . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " target version '$schmtarget' has already been applied to this database - would forcibly re-apply ...\n", undef, TRUE );
+											} else {
+												pwarn( '' . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " target version '$schmtarget' has already been applied to this database - skipping ...\n" , undef, TRUE);
+												return( TRUE );
+											}
+										} else { # not( $pretend )
+											if( $force or ( 'procedure' eq $mode ) ) {
+												pwarn( '' . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " target version '$schmtarget' has already been applied to this database - forcibly re-applying ...\n", undef, TRUE );
+											} else {
+												pwarn( "Schema target version '$schmtarget' has already been applied to this database - skipping ...\n", undef, TRUE ) unless( $quiet or $silent );
+												return( TRUE );
+											}
+										}
+										$okay = FALSE;
+										$fresh = FALSE;
+									}
+								}
+
+								# We only reach here if the file-version is new, or if
+								# we're forcing re-installation.
+								# XXX: ... or if we're in dry-run mode(?)
+
+								my $latest;
+								my $target;
+								if( scalar( @{ $installedversions } ) ) {
+									my @sortedversions = sort { versioncmp( $a, $b ) } ( @{ $installedversions } );
+									$latest = pop( @sortedversions );
+									@sortedversions = sort { versioncmp( $a, $b ) } ( @sortedversions, $schmtarget );
+									$target = pop( @sortedversions );
+								}
+
+								# The logic here is slightly non-obvious:
+								#  $latest contains the highest version present
+								#  and marked as successfully installed;
+								#  $target will be equal to $latest if the file
+								#  version is already installed, or will be
+								#  equal to the fil version if this is new.
+								# Therefore, if the (inverse) condition below
+								# evaluates to true then we've moved on.
+								# $latest is used purely to track the installed
+								# version.
+
+								if( defined( $latest ) and defined( $target ) and not( $target eq $schmtarget ) ) {
+									# Latest installed version is beyond file version,
+									# but we're in dry-run mode or forcing installation.
+
+									if( $pretend ) {
+										if( $force ) {
+											pwarn( "Existing " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " version '$latest' is greater than target '$schmtarget'" . ( ( $quiet and ( 'procedure' eq $mode ) ) ? " for file '$schmfile'" : '' ) . ", and has already been applied to this database - would forcibly re-apply ...\n", undef, TRUE );
+										} else {
+											pwarn( "Existing " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " version '$latest' is greater than target '$schmtarget'" . ( ( $quiet and ( 'procedure' eq $mode ) ) ? " for file '$schmfile'" : '' ) . ", and has already been applied to this database - skipping ...\n", undef, TRUE );
+											return( TRUE );
+										}
+									} else { # not( $pretend )
+										if( $force ) {
+											pwarn( "Existing " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " version '$latest' is greater than target '$schmtarget'" . ( ( $quiet and ( 'procedure' eq $mode ) ) ? " for file '$schmfile'" : '' ) . ", and has already been applied to this database - forcibly re-applying ...\n", undef, TRUE );
+										} else {
+											pwarn( "Existing " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " version '$latest' is greater than target '$schmtarget'" . ( ( $quiet and ( 'procedure' eq $mode ) ) ? " for file '$schmfile'" : '' ) . ", and has already been applied to this database - skipping ...\n", undef, TRUE ) unless( $quiet or $silent );
+											return( TRUE );
+										}
+									}
+									$greaterversionpresent = TRUE;
+									$okay = FALSE;
+								} elsif( defined( $hotfixversion ) and not( $hotfixversion =~ m/0+/ ) ) {
+									# For this to work for Stored Procedures, we /have/
+									# to assume that filenames are consistent and that
+									# they are always named '<function_name>.sql'...
+									#
+									if( defined( $latest ) and ( $latest eq $schmtarget ) ) {
+										if( $pretend ) {
+											if ( $force ) {
+												pwarn( '' . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " hot-fix version '$schmtarget'" . ( ( $quiet and ( 'procedure' eq $mode ) ) ? " for file '$schmfile'" : '' ) . " is already present - would forcibly re-apply ...\n", undef, TRUE );
+											} else {
+												pwarn( '' . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " hot-fix version '$schmtarget'" . ( ( $quiet and ( 'procedure' eq $mode ) ) ? " for file '$schmfile'" : '' ) . " is already present - skipping ...\n", undef, TRUE );
+												return( TRUE );
+											}
+										} else { # not( $pretend )
+											if ( $force ) {
+												pwarn( '' . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " hot-fix version '$schmtarget'" . ( ( $quiet and ( 'procedure' eq $mode ) ) ? " for file '$schmfile'" : '' ) . " is already present - forcibly re-applying ...\n", undef, TRUE );
+											} else {
+												pwarn( '' . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " hot-fix version '$schmtarget'" . ( ( $quiet and ( 'procedure' eq $mode ) ) ? " for file '$schmfile'" : '' ) . " is already present - skipping ...\n", undef, TRUE );
+												return( TRUE );
+											}
+										}
+										$okay = FALSE;
+									} else {
+										if( $pretend ) {
+											pwarn( '' . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " hot-fix version '$schmtarget' would be applied" . ( defined( $latest ) ? " over existing version '$latest'" : '' ) . ( ( $quiet and ( 'procedure' eq $mode ) ) ? " for file '$schmfile'" : '' ) . " ...\n", undef, TRUE );
+										} else {
+											pwarn( '' . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " hot-fix version '$schmtarget' will be applied" . ( defined( $latest ) ? " over existing version '$latest'" : '' ) . ( ( $quiet and ( 'procedure' eq $mode ) ) ? " for file '$schmfile'" : '' ) . " ...\n", undef, TRUE );
+										}
+									}
+								} elsif( $fresh ) { # and ( $first )
+									pnote( '' . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " version '$schmtarget'" . ( ( $quiet and ( 'procedure' eq $mode ) ) ? " for file '$schmfile'" : '' ) . " is a fresh install\n", undef, TRUE ) unless( $silent );
+								} elsif( $first ) {
+									pnote( '' . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " version '$schmtarget'" . ( ( $quiet and ( 'procedure' eq $mode ) ) ? " for file '$schmfile'" : '' ) . " is a re-install\n", undef, TRUE ) unless( $silent );
+								}
+								if( $okay or ( 'procedure' eq $mode ) ) {
+									$schmversion = $schmtarget unless( looks_like_number( $schmversion ) and ( $schmversion < 0 ) );
+								}
+							}
+
+							if( not( defined( $schmprevious ) ) or ( $schmprevious =~ m#(?:na|n/a)#i ) ) {
+								pnote( "No previous version defined in schema comments - not validating previous installation chain\n", undef, TRUE ) unless( $quiet or $silent );
+#die( "Cannot validate previous versions\n" ) unless( ( 'procedure' eq $mode ) or ( $schmprevious =~ m#(?:na|n/a)#i ) );
+							} elsif( defined( $tablename ) and not( qr/^$tablename$/ |M| \@{ $availabletables } ) ) {
+								pwarn( "metadata table `$tablename` does not exist - not validating previous installation chain\n", undef, TRUE );
+#die( "Cannot validate previous versions\n" );
+							} else {
+								# Ensure that we only consider successfully-applied versions (via $status)...
+								#
+								# N.B.: $status is pre-quoted
+								#
+								my $installedversions = getsqlvalues( \$dbh, "SELECT DISTINCT `version` FROM `$verticadb$tablename` WHERE `$statuscolumn` = $status" );
+								push( @{ $installedversions }, $schmvirtual ) if( defined( $schmvirtual ) );
+
+								my $schmpreviousmatch = $schmprevious;
+								if( $schmprevious =~ m/(?:\.0+)+$/ ) {
+									$schmpreviousmatch =~ s/(\.0+)+$//;
+									$schmpreviousmatch .= qr/(?:\.0+)+/;
+								}
+
+								if( $greaterversionpresent ) {
+									pnote( "Not validating previous versions as target version has already been exceeded for file '$schmfile'\n", undef, TRUE );
+								} else {
+
+									if( scalar( @{ $installedversions } ) and defined( $schmpreviousmatch ) and ( qr/^$schmpreviousmatch$/ |M| $installedversions ) ) {
+										if( 'procedure' eq $mode ) {
+											pdebug( "Prior Stored Procedure definitions '$schmprevious' exist in myway metadata" );
+										} else {
+											pdebug( "Prior schema version '$schmprevious' correctly exists in flyway metadata" );
+										}
+									} else {
+										if( 'procedure' eq $mode ) {
+											# Stored Procedures should be entirely self-contained, so we can apply any
+											# future version at any point, regardless of what is already present (with
+											# and cleanup/migration performed by metadata commands).  Therefore, lacking
+											# a previous version is not an issue, but we shouldn't allow installation of
+											# older and duplicate definitions without '--force'.
+											#
+											pnote( "Prior Stored Procedure definitions '$schmprevious' have not been applied to this database\n", undef, TRUE );
+										} else {
+											if( $pretend ) {
+												if( $force ) {
+													pwarn( "Prior schema version '$schmprevious' has not been applied to this database - would forcibly apply ...\n", undef, TRUE );
+												} else {
+													pwarn( "Prior schema version '$schmprevious' has not been applied to this database - would abort.\n", undef, TRUE );
+												}
+											} else {
+												if( $force ) {
+													pwarn( "Prior schema version '$schmprevious' has not been applied to this database - forcibly applying ...\n", undef, TRUE );
+												} else {
+													die( "$fatal Prior schema version '$schmprevious' (required by '$schmfile') has not been applied to this database - aborting.\n" );
+												}
+											}
+										} # not( 'procedure' eq $mode )
+									} # not( scalar( @{ $installedversions } ) and defined( $schmpreviousmatch ) and ( qr/^$schmpreviousmatch$/ |M| $installedversions ) )
+								} # not( $greaterversionpresent )
+							} # defined( $schmprevious ) and( not( defined( $tablename ) and not( qr/^$tablename$/ |M| \@{ $availabletables } ) ) )
+
+							$schmprevious = undef if( defined( $schmprevious ) and ( $schmprevious =~ m#(?:na|n/a)#i ) );
+
+							$status = $oldstatus;
+						} # defined( $firstcomment )
+
+						if( defined( $firstcomment ) or ( ( 'procedure' eq $mode ) and defined( $secondcomment ) ) ) {
+							if( defined( $firstcomment ) ) {
+								$firstcomment = undef;
+								$secondcomment = TRUE;
+							} else {
+								$secondcomment = undef;
+							}
+						}
+
+						if( defined( $schmdescription ) and length( $schmdescription ) ) {
+							if( defined( $desc ) ) {
+								pnote( "Updating schema description from '$desc' to '$schmdescription'\n", undef, TRUE ) unless( $quiet or $silent );
+							} else {
+								pnote( "Updating schema description to '$schmdescription'\n", undef, TRUE ) unless( $quiet or $silent );
+							}
+							$desc = $schmdescription;
+						}
+
+						print( "\n" ) if( $verbosity and not( $quiet or $silent ) ); # debug(3), notice(2), warn(1)
+					} # not( defined( $firstcomment ) or ( ( 'procedure' eq $mode ) and defined( $secondcomment ) ) )
+				}
+			}
+		}
+	} # }}}
 
 	#
 	# Populate tracking tables, if necessary # {{{
@@ -4124,12 +4451,52 @@ die "Shortcut disabled\n";
 	#
 
 	my $installedrank;
-	my $verticadb = '';
-	$verticadb = "$vschm`.`" if( 'vertica' eq $engine );
 
 	print( "\n" ) unless( defined( $action_init ) or $quiet or $silent );
 
-	if( not( 'procedure' eq $mode ) ) {
+
+	# We finally know that Stored Procedures are safe to apply!
+	if( 'procedure' eq $mode ) {
+		if( defined( $mywayprocsname ) and ( qr/^$mywayprocsname$/ |M| \@{ $availabletables } ) ) {
+			my $uid = ( $ENV{ LOGNAME } or $ENV{ USER } or getpwuid( $< ) );
+			my $oshost = qx( hostname -f );
+			my $sum = qx( sha1sum \"$file\" );
+			chomp( $oshost );
+			chomp( $sum );
+			$sum =~ s/\s+.*$//;
+
+			my $sth = preparesql( \$dbh, <<SQL );
+INSERT INTO `$mywayprocsname` (
+  `id`
+, `dbuser`
+, `dbhost`
+, `osuser`
+, `host`
+, `sha1sum`
+, `path`
+, `filename`
+, `started`
+) VALUES ( ?, ?, ?, ?, ?, ?, ?, ?, SYSDATE() )
+SQL
+# Currently unchanged values: `version`, `description`, `type`, `sqlstarted`, `finished`, `status`.
+			die( "$fatal Unable to create tracking statement handle: " . $dbh -> errstr() . "\n" ) unless( defined( $sth ) and $sth );
+			if( not( $pretend ) ) {
+				pdebug( "Inserting entry to `$mywayprocsname` for file '$schmfile'" );
+				executesql( \$dbh, $sth, undef,
+					   $uuid
+					,  $user
+					,  $host
+					,  $uid
+					,  $oshost
+					,  $sum
+					,  $schmpath
+					,  $schmfile
+
+				);
+			}
+			$sth -> finish();
+		}
+	} else { # not( 'procedure' eq $mode )
 		if( defined( $flywaytablename ) and not( qr/^$flywaytablename$/ |M| \@{ $availabletables } ) ) {
 			pwarn( "Examined " . scalar( @{ $availabletables } ) . " tables:\n", undef, TRUE );
 			print Data::Dumper -> Dump( [ $availabletables ], [ qw( *availabletables ) ] );
@@ -4154,11 +4521,11 @@ die "Shortcut disabled\n";
 					if( scalar( @{ $versions } ) ) {
 						my @sortedversions = sort { versioncmp( $a, $b ) } @{ $versions };
 						my $version = pop( @sortedversions );
-						print( "\n" ) if( $quiet or $silent );
+						pnote( "\n" );
 						pnote( "flyway metadata table `$flywaytablename` is already initialised to version '$version'.\n", undef, TRUE );
 						if( $force ) {
 							if( $pretend ) {
-								pnote( "Would force re-initialisation to version '$schmversion'.\n", undef, TRUE );
+								psim( "Would force re-initialisation to version '$schmversion'.\n", undef, TRUE );
 							} else {
 								pnote( "Forcing re-initialisation to version '$schmversion' ...\n", undef, TRUE );
 								$init = 0;
@@ -4202,7 +4569,7 @@ INSERT INTO `$verticadb$flywaytablename` (
 ) VALUES ( ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ? )
 SQL
 					die( "$fatal Unable to create $flywayinit statement handle: " . $dbh -> errstr() . "\n" ) unless( defined( $sth ) and $sth );
-					if( $safetyoff ) {
+					if( not( $pretend ) ) {
 						executesql( \$dbh, $sth, undef,
 							    $installedrank
 							,   $schmversion
@@ -4238,7 +4605,7 @@ UPDATE `$verticadb$flywaytablename` SET
 WHERE `version` = ?
 SQL
 					die( "$fatal Unable to create updated $flywayinit statement handle: " . $dbh -> errstr() . "\n" ) unless( defined( $sth ) and $sth );
-					if( $safetyoff ) {
+					if( not( $pretend ) ) {
 						executesql( \$dbh, $sth, undef,
 							    $installedrank
 							,   $flywayinitdesc # ( $schmdescription or $flywayinitdesc ) # <- We don't know this yet :(
@@ -4256,7 +4623,7 @@ SQL
 				$sth -> finish();
 				}
 				if( not( $pretend or $quiet or $silent ) ) {
-					print( "\n" );
+					pnote( "\n" );
 					pnote( "flyway metadata table `$flywaytablename` has been initialised to version '$schmversion':\n", undef, TRUE );
 					# XXX: Elsewhere, we're sorting in-code to ensure
 					#      correct ordering (e.g. 0.40 > 0.5) - but
@@ -4268,7 +4635,7 @@ SQL
 					# solution... but I did see one suggestion of
 					# padding data to four digits separated by decimal
 					# points, and then abusing INET_ATON() to perform
-					# a lexical sort!
+					# a lexical sort :o
 					#
 					formatastable( \$dbh, "SELECT * FROM `$verticadb$flywaytablename` ORDER BY `version` DESC LIMIT 5", '   ' );
 				}
@@ -4349,7 +4716,7 @@ SQL
 												pwarn( "Schema version from filename '$fv' is higher than specified target limit '$lv' for file '$schmfile' - would forcibly re-apply ...\n", undef, TRUE );
 											} else {
 												pwarn( "Schema version from filename '$fv' is higher than specified target limit '$lv' for file '$schmfile' - skipping ...\n", undef, TRUE );
-												dbclose( \$dbh );
+												dbclose( \$dbh, undef, undef, TRUE );
 												return( TRUE );
 											}
 										} else { # not( $pretend )
@@ -4357,7 +4724,7 @@ SQL
 												pwarn( "Schema version from filename '$fv' is higher than specified target limit '$lv' for file '$schmfile' - forcibly re-applying ...\n", undef, TRUE );
 											} else {
 												pwarn( "Schema version from filename '$fv' is higher than specified target limit '$lv' for file '$schmfile' - skipping ...\n\n", undef, TRUE );
-												dbclose( \$dbh );
+												dbclose( \$dbh, undef, undef, TRUE );
 												return( TRUE );
 											}
 										}
@@ -4371,11 +4738,11 @@ SQL
 							if( not( $force ) ) {
 								if( ( $match eq $latest ) and ( $latest eq $previous ) ) {
 									pdebug( "Skipping base initialiser file '$schmfile' ...\n", undef, TRUE ) unless( $quiet or $silent );
-									dbclose( \$dbh );
+									dbclose( \$dbh, undef, undef, TRUE );
 									return( TRUE );
 								} elsif( $match eq $previous ) {
 									pdebug( "Skipping pre-initialisation file '$schmfile' ...\n", undef, TRUE ) unless( $silent );
-									dbclose( \$dbh );
+									dbclose( \$dbh, undef, undef, TRUE );
 									return( TRUE );
 								}
 							}
@@ -4390,7 +4757,7 @@ SQL
 							pwarn( "Schema version '$schmversion' has already been applied to this database - would forcibly re-apply ...\n", undef, TRUE );
 						} else {
 							pwarn( "Schema version '$schmversion' has already been applied to this database - skipping ...\n", undef, TRUE );
-							dbclose( \$dbh );
+							dbclose( \$dbh, undef, undef, TRUE );
 							return( TRUE );
 						}
 					} else { # not( $force )
@@ -4398,7 +4765,7 @@ SQL
 							pwarn( "Schema version '$schmversion' has already been applied to this database - forcibly re-applying ...\n", undef, TRUE );
 						} else {
 							pwarn( "Schema version '$schmversion' has already been applied to this database - skipping ...\n\n", undef, TRUE ) unless( $quiet or $silent );
-							dbclose( \$dbh );
+							dbclose( \$dbh, undef, undef, TRUE );
 							return( TRUE );
 						}
 					}
@@ -4433,7 +4800,7 @@ SQL
 				chomp( $oshost );
 				chomp( $sum );
 				$sum =~ s/\s+.*$//;
-				if( $safetyoff ) {
+				if( not( $pretend ) ) {
 					executesql( \$dbh, $sth, undef,
 						   $uuid
 						,  $user
@@ -4457,12 +4824,192 @@ SQL
 
 	# }}}
 
+	if( not( 'procedure' eq $mode ) ) {
+		# We've already read-in all Stored Procedure data, in order to
+		# perform substitutions and to insert metadata - for schema
+		# files, we finally read in the full file here...
+		$invalid = $invalid | not( processfile( $data, $file, undef, undef, $strict ) );
+		die( "$fatal '$file' failed validation - aborting.\n" ) if( $invalid );
+	}
+
+	#
+	# Confirm data validity, and enumerate tables we need to backup # {{{
+	#
+
+	my @dumptables = ();
+	my $dumpusers = FALSE;
+
+	my $output;
+	if( $pretend ) {
+		$output = \&pfatal;
+	} else {
+		if( defined( $verbosity ) and $verbosity > 0 ) { # debug(3), notice(2), warn(1)
+			# Log messages as (high-priority) warnings...
+			$output = \&pwarn;
+		} else {
+			# Only log messages if DEBUG is set...
+			$output = \&pdebug;
+		}
+	}
+
+	# Check for non-deterministic index names and that we actually have
+	# content, which requires that we've already called processfile() against
+	# the whole file...
+	my $statements = 0;
+	foreach my $entry ( @{ $data -> { 'entries' } } ) {
+		if( not( 'HASH' eq ref( $entry ) ) ) {
+			pwarn( "\$entry has unexpected type '" . ref( $entry ) . "'\n" );
+			$invalid = TRUE;
+		} else {
+			next unless( defined( $entry -> { 'type' } ) );
+			next unless( 'statement' eq lc( $entry -> { 'type' } ) );
+
+			#print Dumper $entry if( DEBUG );
+
+			if( not( defined( $entry -> { 'entry' } ) ) ) {
+				$output -> ( 'Unable to parse blank entry' );
+				$invalid = TRUE;
+				next;
+
+			} else {
+				my $text;
+				my $texttype = ' ';
+				if( 'ARRAY' eq ref( $entry -> { 'entry' } ) ) {
+					$text = join( ' ', @{ $entry -> { 'entry' } } );
+					$texttype = 'array ';
+				} else {
+					$text = $entry -> { 'entry' };
+				}
+				$text =~ s/^\s+//g; $text =~ s/\s+/ /g;
+				$text =~ s/([\$\@\%])/\\$1/g;
+				$text = qq($text);
+
+				# MySQL uses indices internally to represent constraints, and so has odd syntax for the creation
+				# of FOREIGN KEY constraints which allows the index which equates to the constraint to be specified
+				# and, although this will generally operate equivalently to naming the constraint itself, there is
+				# a semantic difference here.  At the same time, it is still valid (although unlikely to be be what
+				# was intended) to specify an index name (only) and so we can only issue a warning when this occurs.
+				if( $text =~ m/\sADD\s+(?:CONSTRAINT\s+)?FOREIGN\s+KEY\s*([^(][^()`,\s]+`?)[()`,\s]/i ) {
+					pwarn( "index_name " . ( defined( $1 ) ? $1 : '' ) . " specified in place of CONSTRAINT - this is likely a bug:\n\n$text\n", 1 );
+				}
+
+				if( ( $text =~ m/[`' (]([^`' (]+_ibfk_\d+)[) '`]/ ) and not( $text =~ m/DROP\s+FOREIGN\s+KEY\s+`[^`]+_ibfk_\d+`/i ) ) {
+					pwarn( "Auto-generated constraint name `$1` used as deterministic CONSTRAINT - this usage is deprecated:\n\n$text\n", 1 );
+				}
+
+				# Ensure that constraints are explicitly named, so that we can deterministically drop them later...
+				if( ( $text =~ m/\sFOREIGN\s+KEY[\s(]/i ) and not( ( $text =~ m/\sCONSTRAINT\s+`[^`]+`\s+FOREIGN\s+KEY[\s(]/i ) or ( $text =~ m/DROP\s+FOREIGN\s+KEY\s/i ) ) ) {
+					$output -> ( "Unwilling to create non-deterministic constraint from:\n\n$text\n" );
+					$invalid = TRUE;
+				}
+
+				if( $tokenise and not( defined( $entry -> { 'tokens' } ) ) ) {
+					# FIXME: Filter known edge-cases which the Parser fails to tokenise...
+					if( 'mysql' eq $engine ) {
+						if( not( $text =~ m/^((LOCK|UNLOCK|SET|CREATE\s+PROCEDURE|GRANT|TRUNCATE)\s+|\s*\/\*\!)/i ) ) {
+							$output -> ( 'Unable to parse ' . $texttype . 'entry "' . $text . '"' );
+							# FIXME: Don't abort simply because we hit something we can't parse...
+							#$invalid = TRUE;
+						}
+					}
+
+					# FIXME: Reinstate this once the Parser has full coverage
+					#$invalid = TRUE;
+
+					next;
+				}
+			}
+
+			if( 'mysql' eq $engine ) {
+				if( defined( $entry -> { 'tokens' } -> { 'type' } ) and defined( $entry -> { 'tokens' } -> { 'object' } ) ) {
+					my $type = $entry -> { 'tokens' } -> { 'type' };
+					my $object = $entry -> { 'tokens' } -> { 'object' };
+					if( ( defined( $type ) and ( 'create' eq lc( $type ) ) ) and ( defined( $object ) and ( 'user' eq lc( $object ) ) ) ) {
+						if( defined( $tmpdir ) and -d $tmpdir ) {
+							$dumpusers = TRUE unless( -e $tmpdir . '/' . 'mysql.users.sql' );
+						}
+					}
+				}
+			}
+
+			if( not( $nobackup ) and defined( $entry -> { 'tokens' } ) ) {
+				foreach my $key ( keys( $entry -> { 'tokens' } ) ) {
+					if( ref( $entry -> { 'tokens' } -> { $key } ) eq 'ARRAY' ) {
+						foreach my $element ( @{ $entry -> { 'tokens' } -> { $key } } ) {
+							if( ref( $element ) eq 'HASH' ) {
+								foreach my $basekey ( keys( %{ $element } ) ) {
+									# N.B.: This should never occur when ( $mode eq 'procedure' )...
+									if( $basekey eq 'tbl' ) {
+										my $table = $element -> { $basekey };
+
+										# FIXME:  For input 'INSERT INTO `table`(`column1`,`column2`) VALUES ...',
+										#         Parser output still contains the specified attributes :(
+										# Update: Actually, it's worse - the parser thinks this is a huge inner-join.
+										# Update: Now fixed, hopefully...
+										#$table =~ s/\([^\)]*\)//g;
+										$table =~ s/`//g;
+
+										if( defined( $table ) and ( not( scalar( @dumptables ) and ( qr/^$table$/ |M| \@dumptables ) ) ) ) {
+											pdebug( "Adding table `$table` to backup list ...\n", undef, TRUE );
+											push( @dumptables, $table );
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+
+			$statements++;
+		}
+	}
+	if( not( $statements ) ) {
+		if( not( defined( $schmprevious ) and defined( $schmtarget ) ) ) {
+			pwarn( "No valid SQL statements found; previous and target versions are not both defined\n", undef, TRUE );
+			return( TRUE );
+
+		} elsif( $tokenise ) {
+			# Still issue a warning, but don't abort here - placeholder
+			# schema should be allowed to fill gaps due to reorganisation.
+			#
+			if( defined( $action_init ) or ( $schmfile =~ m/^V[[:xdigit:].]+__V[[:xdigit:].]+__/ ) ) {
+				# Don't alert - base initialisers and migration schema
+				# aren't supposed to have content...
+			} elsif( $force ) {
+				pwarn( "No valid SQL statements found in file '$schmfile', but forcing continued processing for now ...\n", undef, TRUE ) unless( $silent );
+
+			} else {
+				# OTOH, we do want to fail if we read a schema-file
+				# which has accidentally all been commented-out.
+				# If a version really is intended to be skipped, either
+				# a placeholder should be used, or the initial and
+				# target versions should cover the gap.
+				pwarn( "No valid SQL statements found in file '$schmfile'\n", undef, TRUE );
+				return( FALSE );
+			}
+		}
+	}
+	if( $invalid ) {
+		if( $pretend ) {
+			pwarn( "SQL parsing failed for file '$schmfile' - continuing with valid statements only ..." );
+		} else {
+			if( defined( $verbosity ) and $verbosity > 0 ) { # debug(3), notice(2), warn(1)
+				die( "$fatal SQL parsing failed for file '$schmfile'\n" );
+			} else {
+				die( "$fatal SQL parsing failed for file '$schmfile' - please re-execute with at least '--warn' level logging to display discovered issues\n" );
+			}
+		}
+	}
+
+	# }}}
+
 	#
 	# Perform backups # {{{
 	#
 
 	# TODO: Backup Stored Procedures also?
-	if( $statements and not( ( 'procedure' eq $mode ) or $unsafe or( defined( $action_init ) ) ) ) {
+	if( $statements and not( ( 'procedure' eq $mode ) or $nobackup or( defined( $action_init ) ) ) ) {
 		if( $dumpusers ) {
 
 			# I can't imagine that this will change any time soon,
@@ -4471,11 +5018,12 @@ SQL
 			my $systemdb = 'mysql';
 
 			if( $pretend ) {
-				print( "\n" );
+				psim( "\n" );
 				psim( "User alterations detected - would back-up MySQL `users` tables.\n" );
 			} else {
 				if( not( qr/^$systemdb$/ |M| \@{ $availabledatabases } ) ) {
-					warn( "\n$failed `$systemdb` database does not appear to exist.  Detected databases were:\n" );
+					pfail( "\n" );
+					pfail( "`$systemdb` database does not appear to exist.  Detected databases were:\n" );
 					foreach my $database ( @{ $availabledatabases } ) {
 						warn( "\t$database\n" );
 					}
@@ -4488,17 +5036,22 @@ SQL
 
 				my $availablesystemtables;
 
-				print( "\n" ) unless( $quiet or $silent );
-				pdebug( "Connecting to system database `$systemdb` ...\n", undef, TRUE ) unless( $quiet or $silent );
+				if( not( $quiet or $silent ) ) {
+					pdebug( "\n" );
+					pdebug( "Connecting to system database `$systemdb` ...\n", undef, TRUE );
+				}
 				my $systemdsn = "DBI:mysql:database=$systemdb;host=$host;port=$port";
 				my $systemdbh;
 				my $systemerror = dbopen( \$systemdbh, $systemdsn, $user, $pass, $strict );
 				die( "$fatal $systemerror [" . ( caller( 0 ) )[ 3 ] . ':' . __LINE__ . "]\n" ) if $systemerror;
 
 				$availablesystemtables = getsqlvalues( $systemdbh, "SHOW TABLES" );
-				warn( "\n$warning Unable to retrieve list of tables for database `$systemdb`" . ( defined( $systemdbh -> errstr() ) ? ': ' . $systemdbh -> errstr() : '' ) . "\n" ) unless( scalar( @{ $availablesystemtables } ) );
+				if( not( scalar( @{ $availablesystemtables } ) ) ) {
+					pwarn( "\n" );
+					pwarn( "Unable to retrieve list of tables for database `$systemdb`" . ( defined( $systemdbh -> errstr() ) ? ': ' . $systemdbh -> errstr() : '' ) . "\n" );
+				}
 
-				dbclose( \$systemdbh );
+				dbclose( \$systemdbh, undef, undef, TRUE );
 
 				my @usertables = ( 'columns_priv', 'procs_priv', 'proxies_priv', 'tables_priv', 'user' );
 				my @backuptables;
@@ -4507,19 +5060,20 @@ SQL
 					if( qr/^$table$/ |M| \@{ $availablesystemtables } ) {
 						push( @backuptables, $table );
 					} else {
-						warn( "\n$warning `$table` table does not appear to exist in `$systemdb` database.\n" );
+						pwarn( "\n" );
+						pwarn( "`$table` table does not appear to exist in `$systemdb` database.\n" );
 						$showtables = TRUE;
 					}
 				}
 				if( $showtables ) {
-					warn( "$warning Detected databases were:\n" );
+					pwarn( "Detected databases were:\n" );
 					foreach my $table ( @{ $availabletables } ) {
 						warn( "\t$table\n" );
 					}
 					die( "$fatal Aborting\n" ) if( not( @backuptables ) or ( 0 == scalar( @backuptables ) ) );
 				}
 
-				print( "\n" );
+				pdebug( "\n" );
 				pdebug( "User alterations detected - backing-up MySQL `user` and *`_priv` tables ...\n", undef, TRUE );
 
 				my $auth = {
@@ -4534,7 +5088,7 @@ SQL
 				};
 				dbdump( $auth, \@backuptables, $tmpdir, "mysql.userpriv.$uuid.sql", $options ) or die( "$fatal Database backup failed - aborting\n" );
 
-				print( "\n" );
+				pdebug( "\n" );
 				pdebug( "MySQL table backups completed\n", undef, TRUE );
 			}
 		}
@@ -4548,10 +5102,10 @@ SQL
 					pdebug( "Referenced table `$table` has not yet been created ...\n", undef, TRUE );
 				} else {
 					if( $pretend ) {
-						print( "\n" );
+						psim( "\n" );
 						psim( "Would back-up table `$table`.\n" );
 					} else {
-						print( "\n" );
+						pdebug( "\n" );
 						pdebug( "Backing-up table `$table`...\n", undef, TRUE );
 
 						my $auth = {
@@ -4566,7 +5120,7 @@ SQL
 						};
 						dbdump( $auth, $table, $tmpdir, "$db.$table.$uuid.sql", $options ) or die( "$fatal Database backup failed - aborting\n" );
 
-						print( "\n" );
+						pdebug( "\n" );
 						pdebug( "Backup of `$db`.`$table` completed with UUID '$uuid'\n", undef, TRUE );
 					}
 				}
@@ -4594,58 +5148,13 @@ SQL
 
 	# }}}
 
-	my $laststatementwasddl = undef;
-	my $firstcomment = TRUE;
-	my $secondcomment = undef;
-	my $schmdescription = undef;
-	my $schmprevious = undef;
-	my $schmtarget = undef;
-	my $restorefile = undef;
-	my $state = FALSE;
-	my $executed = 0;
-
-	if( 'procedure' eq $mode ) { # {{{
-		my @entries;
-
-		if( $first ) {
-			# Previously, we only processed the metadata as far as
-			# reading the initial metadata.  If we're on the first
-			# iteration, we now need to process the entire file in
-			# order to discover any contents.
-			$invalid = $invalid | not( processfile( $metadata, $metafile, undef, undef, $strict ) );
-			die( "$fatal Metadata validation of file '$metafile' failed - aborting.\n" ) if( $invalid );
-		} # else {
-		#	# Each $entry[] consists of: %{ @entry (text of statement), $line, $type (comment|statement) }
-		#	my @procedurecomments = ();
-		#	foreach my $entry ( $metadata -> { 'entries' } ) {
-		#		foreach my $statement ( @{ $entry } ) {
-		#			if( not( 'statement' eq $statement -> { 'type' } ) ) {
-		#				push( @procedurecomments, $statement );
-		#			}
-		#		}
-		#
-		#	}
-		#	push( @entries, @procedurecomments );
-		#	$metadata -> { 'entries' } = \@procedurecomments;
-		#}
-
-		foreach my $entry ( $metadata -> { 'entries' } ) {
-			push( @entries, @{ $entry } );
-		}
-		foreach my $entry ( $data -> { 'entries' } ) {
-			push( @entries, @{ $entry } );
-		}
-
-		$data -> { 'entries' } = \@entries;
-	} # }}}
-
 	my $schemastart = [ gettimeofday() ];
 
 	my $delim = DEFDELIM;
 
 	# Pre-process tokenised statements in order to abort early (before any
 	# changes have been applied) if we have any prohibited statements...
-	if( not( $allowunsafeoperations ) ) { # {{{
+	if( not( $allowunsafe ) ) { # {{{
 		my $okay = TRUE;
 		foreach my $entry ( $data -> { 'entries' } ) {
 			foreach my $statement ( @{ $entry } ) {
@@ -4654,7 +5163,8 @@ SQL
 						if( defined( $line ) and length( $line ) ) {
 							if( $line =~ m/^\s*DROP\s+(?:TABLE|DATABASE)\s/i ) {
 								if( $okay ) {
-									warn( "\n$fatal Refusing to execute prohibited SQL statement:\n" );
+									pfatal( "\n" );
+									pfatal( "Refusing to execute prohibited SQL statement:\n" );
 									$okay = FALSE;
 								}
 								pwarn( "$line\n", undef, TRUE );
@@ -4667,503 +5177,28 @@ SQL
 		return( FALSE ) unless( $okay );
 	} # }}}
 
-	foreach my $entry ( $data -> { 'entries' } ) {
+	my $state = FALSE;
+	my $executed = 0;
+	$firstcomment = TRUE;
+	$secondcomment = undef;
+	foreach my $entry ( $data -> { 'entries' } ) { # {{{
 		foreach my $statement ( @{ $entry } ) {
 			if( 'comment' eq $statement -> { 'type' } ) {
 				if( 'ARRAY' eq ref( $statement -> { 'entry' } ) ) { # {{{
-					#
-					# Version-tracking data must be in an
-					# array in the first comment - we don't
-					# process data in following comments,
-					# or any non-standard format with
-					# multiple tracking items on different
-					# lines.
-					#
-					# FIXME: We'll only consider single-
-					#        line Description fields, too.
-					#
-					if( defined( $firstcomment ) or ( ( 'procedure' eq $mode ) and defined( $secondcomment ) ) ) { # {{{
-						foreach my $line ( @{ $statement -> { 'entry' } } ) {
-							my $requiredengine;
-
-							chomp( $line );
-							if( $line =~ m/Description:\s+(.*)\s*$/i ) {
-								$schmdescription = $1;
-								pdebug( "Read metadata description '$schmdescription'" );
-							} elsif( $line =~ m/Engine:\s+([^#]+)(?:#.*)?\s*$/i ) {
-								my $requiredengine = $1;
-								pdebug( "Read metadata engine requirement '$requiredengine' (database engine is '$engine')" );
-								if( not( lc( $engine ) eq lc( $requiredengine ) ) ) {
-									pwarn( "Metadata from file '$schmfile' requires database engine '$requiredengine' but the current connection reports a '$engine' back-end\n", undef, TRUE );
-									dbclose( \$dbh );
-									return( FALSE );
-								}
-							} elsif( $line =~ m/Database:\s+([^\s]+)\s*/i ) {
-								pdebug( "Read required database name '$1'" );
-								if( not( lc( $db ) eq lc( $1 ) ) ) {
-									pwarn( "Metadata from file '$schmfile' only allows deployment to database '$1', but current database is '$db'\n", undef, TRUE );
-									dbclose( \$dbh );
-									return( FALSE );
-								}
-							} elsif( $line =~ m/Schema:\s+([^\s]+)\s*/i ) {
-								pdebug( "Read required schema name '$1'" );
-								if( not( defined( $requiredengine ) and ( 'vertica' eq lc( $requiredengine ) ) ) ) {
-									pwarn( "The 'Schema' directive from file '$schmfile' is only valid when 'Engine' is specified and declared to be \"vertica\"\n", undef, TRUE );
-									dbclose( \$dbh );
-									return( FALSE );
-								}
-								if( not( lc( $vschm ) eq lc( $1 ) ) ) {
-									pwarn( "Metadata from file '$schmfile' only allows deployment to schema '$1', but current schema is '$vschm'\n", undef, TRUE );
-									dbclose( \$dbh );
-									return( FALSE );
-								}
-							} elsif( $line =~ m/Previous\s+version:\s+([^\s]+)\s*/i ) {
-								$schmprevious = $1;
-								pdebug( "Read metadata previous version '$schmprevious'" );
-							} elsif( $line =~ m/Target\s+version:\s+([^\s]+)\s*/i ) {
-								$schmtarget = $1;
-								pdebug( "Read metadata target version '$schmtarget'" );
-							} elsif( $line =~ m/Environment:\s+(!)?\s*([^\s]+)\s*/i ) {
-								pdebug( "Read metadata environment restriction '" . ( defined( $1 ) ? $1 : '' ) . "$2'" );
-								$environment = '' unless( defined( $environment ) );
-								my $invert = $1 if( defined( $1 ) and length( $1 ) );
-								my $match = $2;
-								if(
-								  ( ( defined( $invert ) and ( $invert eq '!' ) ) and ( lc( $match ) eq lc( $environment ) ) )
-								  or
-								  ( not( defined( $invert ) and ( $invert eq '!' ) ) and not( lc( $match ) eq lc( $environment ) ) )
-								) {
-									if( '' eq $environment ) {
-										pwarn( "Metadata from file '$schmfile' only allows execution in environment '$match'\n", undef, TRUE );
-									} else {
-										pwarn( "Metadata from file '$schmfile' prohibits execution in environment '$environment'\n", undef, TRUE );
-									}
-									dbclose( \$dbh );
-									# Don't fail, as we could have multiple files for different
-									# environments, all of which but one drop-out here...
-									return( TRUE );
-								}
-								pdebug( "Validated metadata environment restriction '" . ( defined( $invert ) ? $invert : '' ) . "$match'" );
-							} elsif( $line =~ m/Restore:\s+([^#]+)(?:#.*)?\s*$/i ) {
-								$restorefile = $1;
-								pdebug( "Read metadata file-restore request for '$restorefile'" );
-							}
-						}
-
-						pnote( "Read dubious prior version '$schmprevious' from file '$schmfile'\n", undef, TRUE ) unless( not( defined( $schmprevious ) ) or ( $schmprevious =~ m/[\d.]+/ ) or ( $schmprevious =~ m#(?:na|n/a)#i ) );
-						pnote( "Read dubious target version '$schmtarget' from file '$schmfile'\n", undef, TRUE ) unless( not( defined( $schmtarget ) ) or ( $schmtarget =~ m/[\d.]+/ ) );
-						if( ( $schmfile =~ m/^(?:V[[:xdigit:].]+__)?V([[:xdigit:].]+)__/ ) and not( $1 =~ m/^$schmtarget(?:\.\d+)?$/ ) ) {
-							pwarn( "Filename version '$1' differs from metadata version '$schmtarget' from file '$schmfile'\n", undef, TRUE );
-						}
-						if( defined( $schmversion ) and length( $schmversion ) and not( $schmversion eq '0' ) and not( $schmversion =~ m/^$schmtarget(?:\.\d+)?(?:.0+)?$/ ) ) {
-							if( $schmfile =~ m/^V([[:xdigit:].]+)__V([[:xdigit:].]+)__/ ) {
-								if( not( ( $schmversion eq $1 ) and ( $schmtarget eq $2 ) ) ) {
-									pwarn( "Migration schema filename declares transition from version '$1' to version '$2', but file metadata describes the transition from '$schmversion' to '$schmtarget'\n", undef, TRUE );
-								}
-							} else {
-								pwarn( "Metadata version '$schmtarget' differs from command-line argument '$schmversion'\n", undef, TRUE );
-							}
-						}
-						if( defined( $limit ) and not( 'procedure' eq $mode ) ) {
-							( my $sst = $schmtarget ) =~ s/(?:\.0+)+$//;
-							( my $sl = $limit ) =~ s/(?:\.0+)+$//;
-
-							if( defined( $sst ) and defined ( $sl ) and not( $sst eq $sl ) ) {
-								my @sortedversions = sort { versioncmp( $a, $b ) } ( $sst, $sl );
-								my $latest = pop( @sortedversions );
-								if( $latest eq $sst ) {
-									if( $pretend ) {
-										if( $force ) {
-											pwarn( "Schema target version '$schmtarget' is higher than specified target limit '$limit' - would forcibly re-apply ...\n", undef, TRUE );
-										} else {
-											pwarn( "Schema target version '$schmtarget' is higher than specified target limit '$limit' - skipping ...\n", undef, TRUE );
-											dbclose( \$dbh );
-											return( TRUE );
-										}
-									} else { # not( $pretend )
-										if( $force ) {
-											pwarn( "Schema target version '$schmtarget' is higher than specified target limit '$limit' - forcibly re-applying ...\n", undef, TRUE );
-										} else {
-											pwarn( "Schema target version '$schmtarget' is higher than specified target limit '$limit' - skipping ...\n\n", undef, TRUE );
-											dbclose( \$dbh );
-											return( TRUE );
-										}
-									}
-								}
-							}
-						}
-
-						if( defined( $restorefile ) and length( $restorefile ) ) {
-							if( not( defined( $action_init ) ) ) {
-								pwarn( "'Restore' directive is only valid in a base initialiser - ignoring ...\n", undef, TRUE );
-							} else {
-								pnote( "Found restoration directive for file '$restorefile' ...\n", undef, TRUE );
-
-								# $restorefile may be relative or absolute...
-								if( -s ( realpath( "$schmpath/$restorefile" ) or realpath( $restorefile ) ) ) {
-									if( -s realpath( "$schmpath/$restorefile" ) ) {
-										$restorefile = realpath( "$schmpath/$restorefile" );
-										pnote( "Using file location '$restorefile' ...\n", undef, TRUE );
-									} else {
-										$restorefile = realpath( $restorefile );
-									}
-								}
-								if( not( -s $restorefile ) ) {
-									if( $safetyoff ) {
-										die( "$fatal Cannot locate file '$restorefile' from root or '$schmpath' directories\n" );
-									} else {
-										pwarn( "Could not locate file '$restorefile' from root or '$schmpath' directories, would abort\n", undef, TRUE );
-									}
-								} else {
-									if( $safetyoff ) {
-										dbclose( \$dbh );
-										dbrestore( $auth, $restorefile, $progress );
-										my $error = dbopen( \$dbh, $dsn, $user, $pass, $strict );
-										die( "$fatal $error [" . ( caller( 0 ) )[ 3 ] . ':' . __LINE__ . "]\n" ) if $error;
-										migratemetadataschema( \$dbh, $db, $vschm, $variables );
-										my $tableexists;
-										if( defined( $vschm ) and length( $vschm ) ) {
-											$tableexists = getsqlvalue( \$dbh, "SELECT COUNT(*) FROM `tables` WHERE `table_schema` = '$vschm' AND `table_name` = '$flywaytablename'" );
-										} else {
-											$tableexists = getsqlvalue( \$dbh, "SELECT COUNT(*) FROM `information_schema`.`TABLES` WHERE `TABLE_SCHEMA` = '$db' AND `TABLE_NAME` = '$flywaytablename'" );
-										}
-										if( not( defined( $tableexists ) and $tableexists ) ) {
-											pwarn( "Restored data appears to lack metadata tables - further migrations may fail\n", undef, TRUE );
-											dbclose( \$dbh );
-											return( \$schmversion );
-										} else {
-											my $init = getsqlvalue( \$dbh, "SELECT COUNT(*) FROM `$verticadb$flywaytablename` WHERE `success` IS TRUE" );
-											if( not( defined( $init ) ) or ( 0 == $init ) ) {
-												pwarn( "Restored data appears to lack metadata content - further migrations may fail\n", undef, TRUE );
-												dbclose( \$dbh );
-												return( \$schmversion );
-											} else {
-												my $versions = getsqlvalues( \$dbh, "SELECT DISTINCT `version` FROM `$verticadb$flywaytablename` WHERE `success` IS TRUE" );
-
-												dbclose( \$dbh );
-
-												if( not( scalar( @{ $versions } ) ) ) {
-													pwarn( "Restored data appears to lack metadata content - further migrations may fail\n", undef, TRUE );
-													return( \$schmversion );
-												}
-
-												my @sortedversions = sort { versioncmp( $a, $b ) } @{ $versions };
-												my $version = pop( @sortedversions );
-												return( \$version );
-											}
-										}
-									} else {
-										pnote( "Would restore database from file '$restorefile' ...\n", undef, TRUE );
-										dbclose( \$dbh );
-										return( \$schmversion );
-									}
-								}
-							}
-						} elsif( defined( $action_init ) ) { # not( defined( $restorefile ) and length( $restorefile ) )
-							dbclose( \$dbh );
-							return( \$schmversion );
-						}
-
+					if( defined( $firstcomment ) or ( ( 'procedure' eq $mode ) and defined( $secondcomment ) ) ) {
 						if( defined( $firstcomment ) ) {
-							my $oldstatus = $status;
-							my $greaterversionpresent = FALSE;
-
-							my $tablename = $flywaytablename;
-							my $statuscolumn = 'success';
-							$status = '1';
-							if( 'procedure' eq $mode ) {
-								$tablename = $mywayprocsname;
-								$statuscolumn = 'status';
-								# For this to work, we /have/ to assume that filenames are consistent and
-								# that they are always named '<function_name>.sql'...
-								#
-								$status = "'$status' AND filename = '$schmfile'";
-							}
-
-							if( not( defined( $schmtarget ) and length( $schmtarget ) ) ) {
-								if( not( 'procedure' eq $mode ) ) {
-									pwarn( "No target version defined in schema comments from file '$schmfile' - relying on filename alone\n", undef, TRUE );
-								} else {
-									pwarn( "No target version defined in metadata comments from file '$schmfile'- not validating target installation chain\n", undef, TRUE );
-								}
-
-							} elsif( defined( $tablename ) and not( qr/^$tablename$/ |M| \@{ $availabletables } ) ) {
-								pwarn( "metadata table `$tablename` does not exist - not validating target installation chain for file '$schmfile'\n", undef, TRUE );
-
-							} else {
-								# N.B. Logic change - previously, we were simply checking that the target version
-								#      hadn't been applied to the database.  Now, we're checking that nothing
-								#      newer than the target has been applied either.
-
-								# We could sort in the database here, but I'm not sure "ORDER BY" would cope with the
-								# various variations we might be trying to throw at it...
-								#
-								my $installedversions = getsqlvalues( \$dbh, "SELECT DISTINCT `version` FROM `$verticadb$tablename` WHERE `$statuscolumn` = $status" );
-
-								my( $codeversion, $changeversion, $stepversion, $hotfixversion, $otherversion );
-								if( 'procedure' eq $mode ) {
-									( $codeversion, $changeversion, $hotfixversion, $otherversion ) = ( $schmtarget =~ m/^(\d+)\.(\d+)(?:\.(\d+))?(?:\.(.*))?$/ );
-								} else {
-									( $codeversion, $changeversion, $stepversion, $hotfixversion ) = ( $schmfile =~ m/^V([[:xdigit:]]+)\.(\d+)\.(\d+)\.(\d+)(?:\.(.*))?__/ );
-								}
-
-								my $okay = TRUE;
-								my $fresh = TRUE;
-
-								if( scalar( @{ $installedversions } ) and ( qr/^$schmtarget$/ |M| $installedversions ) ) {
-									if( not( $first ) and ( 'procedure' eq $mode ) ) {
-										# Duplicate installs are the norm for Stored Procedure installations, as each
-										# definition is applied with the same metadata version.
-										#
-										$fresh = FALSE;
-									} else {
-										if( $pretend ) {
-											if( $force or ( 'procedure' eq $mode ) ) {
-												pwarn( '' . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " target version '$schmtarget' has already been applied to this database - would forcibly re-apply ...\n", undef, TRUE );
-											} else {
-												pwarn( '' . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " target version '$schmtarget' has already been applied to this database - skipping ...\n" , undef, TRUE);
-												dbclose( \$dbh );
-												return( TRUE );
-											}
-										} else { # not( $pretend )
-											if( $force or ( 'procedure' eq $mode ) ) {
-												pwarn( '' . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " target version '$schmtarget' has already been applied to this database - forcibly re-applying ...\n", undef, TRUE );
-											} else {
-												pwarn( "Schema target version '$schmtarget' has already been applied to this database - skipping ...\n", undef, TRUE ) unless( $quiet or $silent );
-												dbclose( \$dbh );
-												return( TRUE );
-											}
-										}
-										$okay = FALSE;
-										$fresh = FALSE;
-									}
-								}
-
-								# We only reach here if the file-version is new, or if
-								# we're forcing re-installation.
-								# XXX: ... or if we're in dry-run mode(?)
-
-								my $latest;
-								my $target;
-								if( scalar( @{ $installedversions } ) ) {
-									my @sortedversions = sort { versioncmp( $a, $b ) } ( @{ $installedversions } );
-									$latest = pop( @sortedversions );
-									@sortedversions = sort { versioncmp( $a, $b ) } ( @sortedversions, $schmtarget );
-									$target = pop( @sortedversions );
-								}
-
-								# The logic here is slightly non-obvious:
-								#  $latest contains the highest version present
-								#  and marked as successfully installed;
-								#  $target will be equal to $latest if the file
-								#  version is already installed, or will be
-								#  equal to the fil version if this is new.
-								# Therefore, if the (inverse) condition below
-								# evaluates to true then we've moved on.
-								# $latest is used purely to track the installed
-								# version.
-
-								if( defined( $latest ) and defined( $target ) and not( $target eq $schmtarget ) ) {
-									# Latest installed version is beyond file version,
-									# but we're in dry-run mode or forcing installation.
-
-									if( $pretend ) {
-										if( $force ) {
-											pwarn( "Existing " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " version '$latest' is greater than target '$schmtarget'" . ( ( $quiet and ( 'procedure' eq $mode ) ) ? " for file '$schmfile'" : '' ) . ", and has already been applied to this database - would forcibly re-apply ...\n", undef, TRUE );
-										} else {
-											pwarn( "Existing " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " version '$latest' is greater than target '$schmtarget'" . ( ( $quiet and ( 'procedure' eq $mode ) ) ? " for file '$schmfile'" : '' ) . ", and has already been applied to this database - skipping ...\n", undef, TRUE );
-											dbclose( \$dbh );
-											return( TRUE );
-										}
-									} else { # not( $pretend )
-										if( $force ) {
-											pwarn( "Existing " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " version '$latest' is greater than target '$schmtarget'" . ( ( $quiet and ( 'procedure' eq $mode ) ) ? " for file '$schmfile'" : '' ) . ", and has already been applied to this database - forcibly re-applying ...\n", undef, TRUE );
-										} else {
-											pwarn( "Existing " . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " version '$latest' is greater than target '$schmtarget'" . ( ( $quiet and ( 'procedure' eq $mode ) ) ? " for file '$schmfile'" : '' ) . ", and has already been applied to this database - skipping ...\n", undef, TRUE ) unless( $quiet or $silent );
-											dbclose( \$dbh );
-											return( TRUE );
-										}
-									}
-									$greaterversionpresent = TRUE;
-									$okay = FALSE;
-								} elsif( defined( $hotfixversion ) and not( $hotfixversion =~ m/0+/ ) ) {
-									# For this to work for Stored Procedures, we /have/
-									# to assume that filenames are consistent and that
-									# they are always named '<function_name>.sql'...
-									#
-									if( defined( $latest ) and ( $latest eq $schmtarget ) ) {
-										if( $pretend ) {
-											if ( $force ) {
-												pwarn( '' . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " hot-fix version '$schmtarget'" . ( ( $quiet and ( 'procedure' eq $mode ) ) ? " for file '$schmfile'" : '' ) . " is already present - would forcibly re-apply ...\n", undef, TRUE );
-											} else {
-												pwarn( '' . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " hot-fix version '$schmtarget'" . ( ( $quiet and ( 'procedure' eq $mode ) ) ? " for file '$schmfile'" : '' ) . " is already present - skipping ...\n", undef, TRUE );
-												dbclose( \$dbh );
-												return( TRUE );
-											}
-										} else { # not( $pretend )
-											if ( $force ) {
-												pwarn( '' . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " hot-fix version '$schmtarget'" . ( ( $quiet and ( 'procedure' eq $mode ) ) ? " for file '$schmfile'" : '' ) . " is already present - forcibly re-applying ...\n", undef, TRUE );
-											} else {
-												pwarn( '' . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " hot-fix version '$schmtarget'" . ( ( $quiet and ( 'procedure' eq $mode ) ) ? " for file '$schmfile'" : '' ) . " is already present - skipping ...\n", undef, TRUE );
-												dbclose( \$dbh );
-												return( TRUE );
-											}
-										}
-										$okay = FALSE;
-									} else {
-										if( $pretend ) {
-											pwarn( '' . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " hot-fix version '$schmtarget' would be applied" . ( defined( $latest ) ? " over existing version '$latest'" : '' ) . ( ( $quiet and ( 'procedure' eq $mode ) ) ? " for file '$schmfile'" : '' ) . " ...\n", undef, TRUE );
-										} else {
-											pwarn( '' . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " hot-fix version '$schmtarget' will be applied" . ( defined( $latest ) ? " over existing version '$latest'" : '' ) . ( ( $quiet and ( 'procedure' eq $mode ) ) ? " for file '$schmfile'" : '' ) . " ...\n", undef, TRUE );
-										}
-									}
-								} elsif( $fresh ) { # and ( $first )
-									pnote( '' . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " version '$schmtarget'" . ( ( $quiet and ( 'procedure' eq $mode ) ) ? " for file '$schmfile'" : '' ) . " is a fresh install\n", undef, TRUE ) unless( $silent );
-								} elsif( $first ) {
-									pnote( '' . ( ( 'procedure' eq $mode ) ? 'Stored Procedure' : 'Schema' ) . " version '$schmtarget'" . ( ( $quiet and ( 'procedure' eq $mode ) ) ? " for file '$schmfile'" : '' ) . " is a re-install\n", undef, TRUE ) unless( $silent );
-								}
-								if( $okay or ( 'procedure' eq $mode ) ) {
-									$schmversion = $schmtarget unless( looks_like_number( $schmversion ) and ( $schmversion < 0 ) );
-								}
-							}
-
-							if( not( defined( $schmprevious ) ) or ( $schmprevious =~ m#(?:na|n/a)#i ) ) {
-								pnote( "No previous version defined in schema comments - not validating previous installation chain\n", undef, TRUE ) unless( $quiet or $silent );
-die( "Cannot validate previous versions\n" ) unless( ( 'procedure' eq $mode ) or ( $schmprevious =~ m#(?:na|n/a)#i ) );
-							} elsif( defined( $tablename ) and not( qr/^$tablename$/ |M| \@{ $availabletables } ) ) {
-								pwarn( "metadata table `$tablename` does not exist - not validating previous installation chain\n", undef, TRUE );
-die( "Cannot validate previous versions\n" );
-							} else {
-								# Ensure that we only consider successfully-applied versions (via $status)...
-								#
-								# N.B.: $status is pre-quoted
-								#
-								my $installedversions = getsqlvalues( \$dbh, "SELECT DISTINCT `version` FROM `$verticadb$tablename` WHERE `$statuscolumn` = $status" );
-								push( @{ $installedversions }, $schmvirtual ) if( defined( $schmvirtual ) );
-
-								my $schmpreviousmatch = $schmprevious;
-								if( $schmprevious =~ m/(?:\.0+)+$/ ) {
-									$schmpreviousmatch =~ s/(\.0+)+$//;
-									$schmpreviousmatch .= qr/(?:\.0+)+/;
-								}
-
-								if( $greaterversionpresent ) {
-									pnote( "Not validating previous versions as target version has already been exceeded for file '$schmfile'\n", undef, TRUE );
-								} else {
-
-									if( scalar( @{ $installedversions } ) and defined( $schmpreviousmatch ) and ( qr/^$schmpreviousmatch$/ |M| $installedversions ) ) {
-										if( 'procedure' eq $mode ) {
-											pdebug( "Prior Stored Procedure definitions '$schmprevious' exist in myway metadata" );
-										} else {
-											pdebug( "Prior schema version '$schmprevious' correctly exists in flyway metadata" );
-										}
-									} else {
-										if( 'procedure' eq $mode ) {
-											# Stored Procedures should be entirely self-contained, so we can apply any
-											# future version at any point, regardless of what is already present (with
-											# and cleanup/migration performed by metadata commands).  Therefore, lacking
-											# a previous version is not an issue, but we shouldn't allow installation of
-											# older and duplicate definitions without '--force'.
-											#
-											pnote( "Prior Stored Procedure definitions '$schmprevious' have not been applied to this database\n", undef, TRUE );
-										} else {
-											if( $pretend ) {
-												if( $force ) {
-													pwarn( "Prior schema version '$schmprevious' has not been applied to this database - would forcibly apply ...\n", undef, TRUE );
-												} else {
-													pwarn( "Prior schema version '$schmprevious' has not been applied to this database - would abort.\n", undef, TRUE );
-												}
-											} else {
-												if( $force ) {
-													pwarn( "Prior schema version '$schmprevious' has not been applied to this database - forcibly applying ...\n", undef, TRUE );
-												} else {
-													die( "$fatal Prior schema version '$schmprevious' (required by '$schmfile') has not been applied to this database - aborting.\n" );
-												}
-											}
-										} # not( 'procedure' eq $mode )
-									} # not( scalar( @{ $installedversions } ) and defined( $schmpreviousmatch ) and ( qr/^$schmpreviousmatch$/ |M| $installedversions ) )
-								} # not( $greaterversionpresent )
-							} # defined( $schmprevious ) and( not( defined( $tablename ) and not( qr/^$tablename$/ |M| \@{ $availabletables } ) ) )
-
-							$schmprevious = undef if( defined( $schmprevious ) and ( $schmprevious =~ m#(?:na|n/a)#i ) );
-							if( not( $statements ) and not( defined( $schmprevious ) and defined( $schmtarget ) ) ) {
-								pwarn( "No valid SQL statements found; previous and target versions are not both defined\n", undef, TRUE );
-								dbclose( undef, 'Nothing to do' );
-								return( TRUE );
-							}
-
-							$status = $oldstatus;
-
-							# We finally know that Stored Procedures are safe to apply!
-							if( 'procedure' eq $mode ) {
-								if( defined( $mywayprocsname ) and ( qr/^$mywayprocsname$/ |M| \@{ $availabletables } ) ) {
-									my $uid = ( $ENV{ LOGNAME } or $ENV{ USER } or getpwuid( $< ) );
-									my $oshost = qx( hostname -f );
-									my $sum = qx( sha1sum \"$file\" );
-									chomp( $oshost );
-									chomp( $sum );
-									$sum =~ s/\s+.*$//;
-
-									my $sth = preparesql( \$dbh, <<SQL );
-INSERT INTO `$mywayprocsname` (
-    `id`
-  , `dbuser`
-  , `dbhost`
-  , `osuser`
-  , `host`
-  , `sha1sum`
-  , `path`
-  , `filename`
-  , `started`
-) VALUES ( ?, ?, ?, ?, ?, ?, ?, ?, SYSDATE() )
-SQL
-# Currently unchanged values: `version`, `description`, `type`, `sqlstarted`, `finished`, `status`.
-									die( "$fatal Unable to create tracking statement handle: " . $dbh -> errstr() . "\n" ) unless( defined( $sth ) and $sth );
-									if( $safetyoff ) {
-#pdebug( "Inserting entry to `$mywayprocsname` for file '$schmfile'", 3 );
-										pdebug( "DEBUG: Inserting entry to `$mywayprocsname` for file '$schmfile'" );
-										executesql( \$dbh, $sth, undef,
-											   $uuid
-											,  $user
-											,  $host
-											,  $uid
-											,  $oshost
-											,  $sum
-											,  $schmpath
-											,  $schmfile
-
-										);
-									}
-									$sth -> finish();
-								}
-							} # ( 'procedure' eq $mode )
-						} # defined( $firstcomment )
-
-						if( defined( $firstcomment ) or ( ( 'procedure' eq $mode ) and defined( $secondcomment ) ) ) {
-							if( defined( $firstcomment ) ) {
-								$firstcomment = undef;
-								$secondcomment = TRUE;
-							} else {
-								$secondcomment = undef;
-							}
+							$firstcomment = undef;
+							$secondcomment = TRUE;
+						} else {
+							$secondcomment = undef;
 						}
-
-						if( defined( $schmdescription ) and length( $schmdescription ) ) {
-							if( defined( $desc ) ) {
-								pnote( "Updating schema description from '$desc' to '$schmdescription'\n", undef, TRUE ) unless( $quiet or $silent );
-							} else {
-								pnote( "Updating schema description to '$schmdescription'\n", undef, TRUE ) unless( $quiet or $silent );
-							}
-							$desc = $schmdescription;
+					} else { # not( defined( $firstcomment ) or ( ( 'procedure' eq $mode ) and defined( $secondcomment ) ) )
+						foreach my $line ( @{ $statement -> { 'entry' } } ) {
+							chomp( $line );
+							pcomment( "$line\n" ) if( length( $line ) and ( $verbosity or not( $quiet or $silent ) ) ); # debug(3), notice(2), warn(1)
 						}
-
-						print( "\n" ) if( $verbosity and not( $quiet or $silent ) ); # debug(3), notice(2), warn(1)
-					} # }}}
-					foreach my $line ( @{ $statement -> { 'entry' } } ) {
-						chomp( $line );
-						pcomment( "$line\n" ) if( length( $line ) and ( $verbosity or not( $quiet or $silent ) ) ); # debug(3), notice(2), warn(1)
 					}
-				} else {
+				} else { # not( 'ARRAY' eq ref( $statement -> { 'entry' } ) )
 					my $line = $statement -> { 'entry' };
 					chomp( $line );
 					pcomment( "$line\n" ) if( length( $line ) and ( $verbosity or not( $quiet or $silent ) ) ); # debug(3), notice(2), warn(1)
@@ -5171,6 +5206,8 @@ SQL
 			} elsif( 'statement' eq $statement -> { 'type' } ) {
 				if( defined( $statement -> { 'tokens' } -> { 'type' } ) and ( $statement -> { 'tokens' } -> { 'type' } ) ) { # {{{
 					my $type = $statement -> { 'tokens' } -> { 'type' };
+					my $laststatementwasddl = undef;
+
 					if( $type =~ m/delete|delimiter|grant|insert|replace|select|update/i ) {
 						if( $type =~ m/delimiter/i ) {
 							$delim = $statement -> { 'tokens' } -> { 'delimiter' } if( defined( $statement -> { 'tokens' } -> { 'delimiter' } ) and length( defined( $statement -> { 'tokens' } -> { 'delimiter' } ) ) );
@@ -5225,7 +5262,8 @@ SQL
 						# nothing....
 
 					} else {
-						warn( "\n$warning Unknown DDL/non-DDL statement type '$type'\n" );
+						pwarn( "\n" );
+						pwarn( "Unknown DDL/non-DDL statement type '$type'\n" );
 					}
 				}
 
@@ -5237,7 +5275,7 @@ SQL
 					if( $verbosity ) { # debug(3), notice(2), warn(1)
 						psql( "$line\n" );
 						foreach my $match ( ( $line =~ m/$RE{ balanced }{ -begin => '\/*' }{ -end => '*\/' }/g ) ) {
-							if( $match =~ m:^/\*!\d{5} (.+) \*/$: ) {
+							if( $match =~ m:^/\*!\d{5} (.+) \*/$: ) { # / # <- Syntax highlight fail
 								psql( "Hint: $1\n" );
 							}
 						}
@@ -5247,7 +5285,7 @@ SQL
 					$line =~ s/\$\$\s*$//;
 
 					# 'DELIMITER' isn't a reserved-word,
-					# but /really/ should be!
+					# but /really/ should be...
 					#if( not( $line =~ m/^\s*DELIMITER\s/i ) ) {
 					if( not( $line =~ m/(?:^\s*|\Q$delim\E\s+)DELIMITER\s/i ) ) {
 						$sql .= ' ' . $line;
@@ -5258,15 +5296,8 @@ SQL
 				}
 
 				if( defined( $sql ) and length( $sql ) ) {
-					#eval {
-					#	my $result = \$dbh -> do( $sql );
-					#};
-					#if( $@ or ( not( defined( $result ) ) ) ) {
-					#	die( "$fatal Error when processing SQL statement:\n$sql\n" );
-					#}
-
 					my( $started, $start, $elapsed );
-					if( not( $safetyoff ) ) {
+					if( $pretend ) {
 						$executed++ if( $sql !~ m|^/\*!| );
 					} else {
 						my $realsql = $sql;
@@ -5336,7 +5367,7 @@ INSERT INTO `$verticadb$mywayactionsname` (
 SQL
 							my $error = $dbh -> errstr();
 							die( "$fatal Unable to create tracking statement handle" . ( defined( $error ) and length( $error ) ? ": " . $error . "\n" : '' ) ) unless( defined( $sth ) and $sth );
-							if( $safetyoff ) {
+							if( not( $pretend ) ) {
 								executesql( \$dbh, $sth, undef,
 									   $uuid
 									,  $started
@@ -5368,7 +5399,7 @@ SQL
 							}
 						}
 					} else { # ( 'procedure' eq $mode )
-						if( $safetyoff ) {
+						if( not( $pretend ) ) {
 							my $started = getsqlvalue( \$dbh, "SELECT `sqlstarted` FROM `$mywayprocsname` WHERE `id` = '$uuid'" );
 							if( not( defined( $started ) ) or ( 'NULL' eq $started ) ) {
 								pdebug( "Updating myway timing metadata for stored procedure invocation '$uuid' due to creation commencing ...\n", undef, TRUE ) unless( $quiet or $silent );
@@ -5383,7 +5414,7 @@ SQL
 			}
 			print( "\n" ) if( $verbosity and not( $quiet or $silent ) ); # debug(3), notice(2), warn(1)
 
-			pwarn( "\$state is '$state' - falling through ...\n", undef, TRUE ) if( $state );
+			pdebug( "\$state is '$state' - falling through ...\n", undef, TRUE ) if( $state );
 			last if( $state );
 		} # foreach my $statement ( @{ $entry } )
 
@@ -5396,9 +5427,9 @@ SQL
 			}
 		}
 
-		pwarn( "\$state is '$state' - falling through ...\n", undef, TRUE ) if( $state );
+		pdebug( "\$state is '$state' - falling through ...\n", undef, TRUE ) if( $state );
 		last if( $state );
-	} # foreach my $entry ( $data -> { 'entries' } )
+	} # foreach my $entry ( $data -> { 'entries' } ) # }}}
 
 	my $schemaelapsed = tv_interval( $schemastart, [ gettimeofday() ] );
 
@@ -5434,18 +5465,18 @@ SQL
 		dosql( \$dbh, $sql ) or die( "$fatal Closing statement execution failed\n" );
 
 		if( $state ) {
-			if( $safetyoff ) {
+			if( not( $pretend ) ) {
 				pdebug( "Committing transaction data\n", undef, TRUE ) unless( $quiet or $silent );
 				dosql( \$dbh, "COMMIT" ) or die( "$fatal Failed to commit transaction\n" );
 			}
 			dbclose( \$dbh, $status ? undef : 'Failed' );
 
-			return undef;
+			return( FALSE );
 		}
-	}
+	} # not( $pretend )
 
-	if( defined( $tablename ) and not( qr/^$tablename$/ |M| \@{ $availabletables } ) ) {
-		pnote( "Would update " . ( 'procedure' eq $mode ? '' : 'flyway ' ) . "metadata with version '$schmversion' for '$schmfile', if it existed ...\n", undef, TRUE );
+	if( defined( $tablename ) and not( qr/^$tablename$/ |M| \@{ $availabletables } ) ) { # {{{
+		psim( "Would update " . ( 'procedure' eq $mode ? '' : 'flyway ' ) . "metadata with version '$schmversion' for '$schmfile', if it existed ...\n", undef, TRUE );
 	} else {
 		if( $pretend ) {
 			psim( "Would update " . ( 'procedure' eq $mode ? '' : 'flyway ' ) . "metadata with version '$schmversion' for '$schmfile' ...\n" );
@@ -5473,7 +5504,7 @@ INSERT INTO `$verticadb$flywaytablename` (
 ) VALUES ( ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ? )
 SQL
 				die( "$fatal Unable to create tracking statement handle: " . $dbh -> errstr() . "\n" ) unless( defined( $sth ) and $sth );
-				if( $safetyoff ) {
+				if( not( $pretend ) ) {
 					dosql( \$dbh, "UNLOCK TABLES" ) unless( 'vertica' eq $engine );
 					executesql( \$dbh, $sth, undef,
 						  $installedrank
@@ -5517,7 +5548,7 @@ UPDATE `$verticadb$flywaytablename` SET
 WHERE `version` = ?
 SQL
 				die( "$fatal Unable to create updated tracking statement handle: " . $dbh -> errstr() . "\n" ) unless( defined( $sth ) and $sth );
-				if( $safetyoff ) {
+				if( not( $pretend ) ) {
 					dosql( \$dbh, "UNLOCK TABLES" ) unless( 'vertica' eq $engine );
 					executesql( \$dbh, $sth, undef,
 						  $installedrank
@@ -5544,7 +5575,7 @@ WHERE `id` = ?
 SQL
 # `finished` and `status` were UPDATEd just prior...
 			die( "$fatal Unable to create tracking statement handle: " . $dbh -> errstr() . "\n" ) unless( defined( $sth ) and $sth );
-			if( $safetyoff ) {
+			if( not( $pretend ) ) {
 				dosql( \$dbh, "UNLOCK TABLES" ) unless( 'vertica' eq $engine );
 				executesql( \$dbh, $sth, undef,
 					  $schmversion
@@ -5555,9 +5586,9 @@ SQL
 			}
 			$sth -> finish();
 		}
-	} # not( defined( $tablename ) and not( qr/^$tablename$/ |M| \@{ $availabletables } ) )
+	} # not( defined( $tablename ) and not( qr/^$tablename$/ |M| \@{ $availabletables } ) ) # }}}
 
-	if( $safetyoff ) {
+	if( not( $pretend ) ) {
 		pdebug( "Committing transaction data\n", undef, TRUE ) unless( $quiet or $silent );
 		dosql( \$dbh, "COMMIT" ) or die( "$fatal Failed to commit transaction\n" );
 	}
@@ -5588,13 +5619,13 @@ sub main( @ ) { # {{{
 	my( $action_backup, $action_restore, $action_init );
 	my( $action_migrate, $action_check );
 	my( $mode, $dosub, $progress );
-	my( $help, $showversion, $desc, @paths, $file, $unsafe, $keepbackups );
+	my( $help, $showversion, $desc, @paths, $file, $nobackup, $keepbackups );
 	my( $compat, $relaxed, $strict );
 	my( $lock, $keeplock );
 	my( $force, $clear, $compress, $small, $split, $skipmeta, $extinsert );
-	my( $syntax, $odbcdsn, $user, $pass, $host, $db, $vschm, $shortcut );
+	my( $syntax, $odbcdsn, $user, $pass, $host, $db, $vschm );
 	my( $environment, $limit );
-	my( $pretend, $safetyoff, $debug, $silent, $quiet, $notice, $verbose, $warn );
+	my( $pretend, $debug, $silent, $quiet, $notice, $verbose, $warn );
 	my $ok = TRUE;
 	my $getoptout = undef;
 
@@ -5634,12 +5665,12 @@ sub main( @ ) { # {{{
 	, 's|schemata|directory|scripts=s{,}'		=> \@paths
 	, 'f|file|filename|schema|script=s'		=> \$file
 	,   'description=s'				=> \$desc
-	,   'no-backup|no-backups!'			=> \$unsafe
+	,   'no-backup|no-backups!'			=> \$nobackup
 	,   'keep-backup|keep-backups!'			=> \$keepbackups
 
 	,   'clear-metadata!'				=> \$clear
 	,   'force!'					=> \$force
-	, 'a|allow-unsafe-operations|allow-unsafe!'	=> \$allowunsafeoperations
+	, 'a|allow-unsafe-operations|allow-unsafe!'	=> \$allowunsafe
 
 	, 'P|port=i'					=> \$port
 
@@ -5657,7 +5688,6 @@ sub main( @ ) { # {{{
 	, 'e|environment=s'				=> \$environment
 	, 'l|limit|target-limit=s'			=> \$limit
 
-	, 't|trust-filename!'				=> \$shortcut
 	,   'dry-run!'					=> \$pretend
 	,   'debug!'					=> \$debug
 	,   'silent!'					=> \$silent
@@ -5666,7 +5696,7 @@ sub main( @ ) { # {{{
 	, 'w|warn!'					=> \$warn
 	, 'v|verbose+'					=> \$verbose
 	,   'help|usage!'				=> \$help
-	,   'version!'					=> \$showversion
+	, 'V|version!'					=> \$showversion
 
 	,   '<>'					=>  $missingoption
 	#) or die( "$fatal Getopt::Long::GetOptions failed" . ( ( defined $@ and $@ ) ? ": " . $@ : "" ) . "\n" );
@@ -5734,7 +5764,7 @@ sub main( @ ) { # {{{
 
 	if( defined( $vschm ) and length( $vschm ) ) {
 		$ok = FALSE if( not( $syntax eq 'vertica' ) );
-		$unsafe = TRUE unless( defined( $unsafe ) );
+		$nobackup = TRUE unless( defined( $nobackup ) );
 	}
 
 	if( not( defined( $odbcdsn ) and $odbcdsn ) ) {
@@ -5766,7 +5796,6 @@ sub main( @ ) { # {{{
 			$ok = FALSE if( defined( $split ) );
 			$ok = FALSE if( defined( $skipmeta ) );
 			$ok = FALSE if( defined( $extinsert ) );
-#			$ok = FALSE if( defined( $marker ) and not( defined( $dosub ) ) );
 			$ok = FALSE if( defined( $dosub ) and not( 'procedure' eq $mode ) );
 			if( not( defined( $action_init ) ) ) {
 				$ok = FALSE unless( ( defined( $file ) and $file ) or ( @paths and scalar( @paths ) ) );
@@ -5791,27 +5820,20 @@ sub main( @ ) { # {{{
 	} else {
 		$force = FALSE;
 	}
-	if( defined( $allowunsafeoperations ) and $allowunsafeoperations ) {
-		$allowunsafeoperations = TRUE;
+	if( defined( $allowunsafe ) and $allowunsafe ) {
+		$allowunsafe = TRUE;
 	} else {
-		$allowunsafeoperations = FALSE;
+		$allowunsafe = FALSE;
 	}
 	if( defined( $keepbackups ) and $keepbackups ) {
 		$keepbackups = TRUE;
 	} else {
 		$keepbackups = FALSE;
 	}
-	if( defined( $shortcut ) and $shortcut ) {
-		$shortcut = TRUE;
-	} else {
-		$shortcut = FALSE;
-	}
 	if( defined( $pretend ) and $pretend ) {
 		$pretend = TRUE;
-		$safetyoff = FALSE;
 	} else {
 		$pretend = FALSE;
-		$safetyoff = TRUE;
 	}
 	if( defined( $quiet ) and $quiet ) {
 		$quiet = TRUE;
@@ -5852,11 +5874,11 @@ sub main( @ ) { # {{{
 	} else {
 		$extinsert = FALSE;
 	}
-	if( defined( $unsafe ) and $unsafe ) {
-		$unsafe = TRUE;
+	if( defined( $nobackup ) and $nobackup ) {
+		$nobackup = TRUE;
 		$tokenise = FALSE;
 	} else {
-		$unsafe = FALSE;
+		$nobackup = FALSE;
 		$tokenise = TRUE;
 	}
 
@@ -5884,22 +5906,22 @@ sub main( @ ) { # {{{
 	if( $clear and not( $force ) ) {
 		$ok = FALSE;
 	}
-	if( $shortcut and not( $unsafe ) ) {
-		$ok = FALSE;
-	}
 
 	if( not( defined( $odbcdsn ) ) ) {
 		if( not( defined( $port ) and $port > 0 ) ) {
 			$port = PORT;
 		}
 	} else {
+		my $debug = ( DEBUG or ( $verbosity > 2 ) );
+
 		my $output = FALSE;
+		$output = TRUE if( not( $debug ) );
 
 		$tokenise = FALSE;
 
 		if( not( defined( $port ) and $port > 0 ) ) {
 			if( $odbcdsn =~ m/Port=([^;]+)(?:;|$)/i ) {
-				print( "\n" ) unless( $output );
+				pdebug( "\n" ) unless( $output );
 				pdebug( "Using port `$1` from supplied DSN ...\n", undef, TRUE ) unless( $quiet or $silent );
 				$port = $1;
 				$output = TRUE;
@@ -5909,7 +5931,7 @@ sub main( @ ) { # {{{
 		}
 		if( not( defined( $host ) and length( $host ) ) ) {
 			if( $odbcdsn =~ m/ServerName=([^;]+)(?:|;$)/i ) {
-				print( "\n" ) unless( $output );
+				pdebug( "\n" ) unless( $output );
 				pdebug( "Using host `$1` from supplied DSN ...\n", undef, TRUE ) unless( $quiet or $silent );
 				$host = $1;
 				$output = TRUE;
@@ -5919,7 +5941,7 @@ sub main( @ ) { # {{{
 		}
 		if( not( defined( $user ) and length( $user ) ) ) {
 			if( $odbcdsn =~ m/UserName=([^;]+)(?:;|$)/i ) {
-				print( "\n" ) unless( $output );
+				pdebug( "\n" ) unless( $output );
 				pdebug( "Using username `$1` from supplied DSN ...\n", undef, TRUE ) unless( $quiet or $silent );
 				$user = $1;
 				$output = TRUE;
@@ -5929,7 +5951,7 @@ sub main( @ ) { # {{{
 		}
 		if( not( defined( $pass ) and length( $pass ) ) ) {
 			if( $odbcdsn =~ m/Password=([^;]+)(?:;|$)/i ) {
-				print( "\n" ) unless( $output );
+				pdebug( "\n" ) unless( $output );
 				pdebug( "Using password `$1` from supplied DSN ...\n", undef, TRUE ) unless( $quiet or $silent );
 				$pass = $1;
 				$output = TRUE;
@@ -5939,7 +5961,7 @@ sub main( @ ) { # {{{
 		}
 		if( not( defined( $db ) and length( $db ) ) ) {
 			if( $odbcdsn =~ m/Database=([^;]+)(?:;|$)/i ) {
-				print( "\n" ) unless( $output );
+				pdebug( "\n" ) unless( $output );
 				pdebug( "Using database `$1` from supplied DSN ...\n", undef, TRUE ) unless( $quiet or $silent );
 				$db = $1;
 			} else {
@@ -5948,7 +5970,7 @@ sub main( @ ) { # {{{
 			}
 		}
 
-		print( "\n" ) if( $output );
+		print( "\n" ) if( $output and( not( $debug ) ) );
 	}
 
 	#undef( $odbcdsn ) unless( defined( $odbcdsn ) and length( $odbcdsn ) );
@@ -5977,7 +5999,7 @@ sub main( @ ) { # {{{
 		$ok = FALSE if( $action_restore );
 		$ok = FALSE if( $dosub );
 		$ok = FALSE if( $marker );
-		$ok = FALSE if( not( $unsafe ) );
+		$ok = FALSE if( not( $nobackup ) );
 		$ok = FALSE if( $keepbackups );
 		$ok = FALSE if( $compat );
 		$ok = FALSE if( $relaxed );
@@ -5998,7 +6020,7 @@ sub main( @ ) { # {{{
 			print( ( " " x $length ) . "<--init [version]|[--migrate|--check] ...\n" );
 			print( ( " " x $length ) . "<--scripts <directory>|--file <schema>> [[:syntax:]]\n" );
 			print( ( " " x $length ) . "[--vertica-schema <schema name>]\n" );
-			print( ( " " x $length ) . "[--clear-metadata] [--dry-run] [--force] [--debug] [--verbose]\n" );
+			print( ( " " x $length ) . "[--clear-metadata] [--dry-run] [--force] [--debug]\n" );
 			print( "\n" );
 			print( ( " " x $length ) . "ODBC DSN example:  Driver=libverticaodbc.so;Database=db;ServerName=localhost;Port=5433;UserName=x;Password=y\n" );
 			print( "\n" );
@@ -6016,7 +6038,7 @@ sub main( @ ) { # {{{
 			print( ( " " x $length ) . "[--target-limit <version>] [[:mode:]] [[:syntax:]] ...\n" );
 			print( ( " " x $length ) . "[--mysql-compat] [--no-backup|--keep-backup] ...\n" );
 			print( ( " " x $length ) . "[--clear-metadata] [--force] [--dry-run] [--silent] [--quiet]\n" );
-			print( ( " " x $length ) . "[--notice] [--warn] [--debug] [--verbose]\n" );
+			print( ( " " x $length ) . "[--notice] [--warn] [--debug]\n" );
 			print( "\n" );
 			print( ( " " x $length ) . "backup options:   [--compress [:scheme:]] [--transactional]\n" );
 			print( ( " " x $length ) . "                  [--lock [--keep-lock]] [--separate-files]\n" );
@@ -6030,8 +6052,6 @@ sub main( @ ) { # {{{
 			print( "\n" );
 			print( ( " " x $length ) . "syntax:            --syntax <mysql|vertica>\n" ) if( $odbcok );
 			print( "\n" ) if( $odbcok );
-			print( ( " " x $length ) . "--trust-filename - Rely on filename version rather than metadata\n" );
-			print( "\n" );
 			print( ( " " x $length ) . "--mysql-compat   - Required for MySQL prior to v5.6.4\n" );
 			print( ( " " x $length ) . "--mysql-relaxed  - Do not operate in STRICT mode\n" );
 			print( "\n" );
@@ -6068,33 +6088,28 @@ sub main( @ ) { # {{{
 			print( "\n" );
 			print( ( " " x $length ) . "--silent         - Output only fatal errors\n" );
 			print( ( " " x $length ) . "--quiet          - Output only essential messages\n" );
-			print( ( " " x $length ) . "--verbose        - Provide more detailed status information\n" );
 			print( "\n" );
 			print( ( " " x $length ) . "--dry-run        - Validate but do not execute schema SQL\n" );
 		}
 		if( defined( $odbcdsn ) or ( $syntax eq 'vertica' ) ) {
 			if( not( defined( $odbcok ) and $odbcok ) ) {
-				warn( "\n" );
-				pwarn( "Could not load DBD::ODBC module - ODBC functionality not available\n", 3 );
-				warn( "\n" );
+				pwarn( "\nCould not load DBD::ODBC module - ODBC functionality not available\n\n", 3 );
 			}
 		}
 		exit( 0 );
 	} elsif( not( $ok ) ) {
 		warn( "Mutually-exclusive arguments '--schema' and '--schemata' cannot both be specified\n" ) if( defined( $file ) and @paths );
 		warn( "Mutually-exclusive arguments '--dry-run' and '--clear-metadata' cannot both be specified\n" ) if( $pretend and $clear );
-		warn( "Mutually-exclusive arguments '--no-backup' and '--keep-backup' cannot both be specified\n" ) if( $unsafe and $keepbackups );
+		warn( "Mutually-exclusive arguments '--no-backup' and '--keep-backup' cannot both be specified\n" ) if( $nobackup and $keepbackups );
 		warn( "Cannot specify argument '--compress' without option '--backup'\n" ) if( defined( $compress ) and not( defined( $action_backup ) ) );
 		warn( "Cannot specify argument '--lock' or '--keep-lock' without option '--backup'\n" ) if( ( $lock or $keeplock ) and not( defined( $action_backup ) ) );
 		warn( "Cannot specify argument '--separate-files' without option '--backup'\n" ) if( $split and not( defined( $action_backup ) ) );
 		warn( "Cannot specify argument '--skip-metadata' without option '--backup'\n" ) if( $skipmeta and not( defined( $action_backup ) ) );
 		warn( "Cannot specify argument '--extended-insert' without option '--backup'\n" ) if( $extinsert and not( defined( $action_backup ) ) );
 		warn( "Argument '--progress' must have value 'always', 'auto', or 'never'\n" ) unless( defined( $progress ) );
-		warn( "Cannot specify argument '--trust-filename' without option '--no-backup'\n" ) if( $shortcut and not( $unsafe ) );
 		warn( "Cannot specify argument '--keep-lock' without option '--lock'\n" ) if( $keeplock and not( $lock ) );
 		warn( "Cannot specify argument '--clear-metadata' without option '--force'\n" ) if( $clear and not( $force ) );
 		warn( "Cannot specify argument '--lock' with option '--database' (locks are global)\n" ) if( $lock and defined( $db ) );
-#		warn( "Cannot specify argument '--marker' without option '--substitute'\n" ) if( $marker and not( $dosub ) );
 		warn( "Cannot specify argument '--substitute' unless option '--mode' is 'procedure'\n" ) if( $dosub and not( 'procedure' eq $mode ) );
 		if( defined( $odbcdsn ) and not( $odbcok ) ) {
 			warn( "Argument '--dsn' specified but DBD::ODBC module not available\n" );
@@ -6113,7 +6128,7 @@ sub main( @ ) { # {{{
 			warn( "Cannot specify argument '--mode' with option '--dsn'\n" ) if( not( $mode eq 'schema' ) );
 			warn( "Cannot specify argument '--substitute' with option '--dsn'\n" ) if( $dosub );
 			warn( "Cannot specify argument '--marker' with option '--dsn'\n" ) if( defined( $marker ) );
-			warn( "Cannot specify argument '--backup' with option '--dsn'\n" ) if( not( $unsafe ) );
+			warn( "Cannot specify argument '--backup' with option '--dsn'\n" ) if( not( $nobackup ) );
 			warn( "Cannot specify argument '--keep-backup' with option '--dsn'\n" ) if( $keepbackups );
 			warn( "Cannot specify argument '--mysql-compat' with option '--dsn'\n" ) if( $compat );
 			warn( "Cannot specify argument '--mysql-relaxed' with option '--dsn'\n" ) if( $relaxed );
@@ -6251,23 +6266,28 @@ sub main( @ ) { # {{{
 
 					if( defined( $db ) and length( $db ) ) {
 						$backupdsn = "DBI:mysql:database=$db;host=$host;port=$port";
-						print( "\n" ) unless( $quiet or $silent );
-						pdebug( "Connecting to database `$db` ...\n", undef, TRUE ) unless( $quiet or $silent );
+						if( not( $quiet or $silent ) ) {
+							pdebug( "\n" );
+							pdebug( "Connecting to database `$db` ...\n", undef, TRUE );
+						}
 					} else {
 						$backupdsn = "DBI:mysql:host=$host;port=$port";
-						print( "\n" ) unless( $quiet or $silent );
-						pdebug( "Connecting to database instance ...\n", undef, TRUE ) unless( $quiet or $silent );
+						if( not( $quiet or $silent ) ) {
+							pdebug( "\n" );
+							pdebug( "Connecting to database instance ...\n", undef, TRUE );
+						}
 					}
 
 					my $error = dbopen( \$dbh, $backupdsn, $user, $pass, $strict );
 					die( "$fatal $error [" . ( caller( 0 ) )[ 3 ] . ':' . __LINE__ . "]\n" ) if $error;
 
 					if( not ( dosql( \$dbh, "FLUSH TABLES WITH READ LOCK" ) ) ) {
-						warn( "\n$warning Failed to globally lock all instance databases' tables\n" );
+						pwarn( "\n" );
+						pwarn( "Failed to globally lock all instance databases' tables\n" );
 						$lock = FALSE;
 						$keeplock = FALSE;
 					} else {
-						print( "\n" );
+						pdebug( "\n" );
 						pdebug( "All databases on host '$host' are now globally locked for 24 hours, or until\n", undef, TRUE );
 						pdebug( "this process is interupted.\n", undef, TRUE );
 						pdebug( "The backup process will continue concurrently.\n", undef, TRUE );
@@ -6297,17 +6317,19 @@ sub main( @ ) { # {{{
 						( $rc, $sig, $core ) = ( $? >> 8, $? & 127, $? & 128 );
 
 						if( $core ) {
-							warn( "\n$fatal backup process $firstchildpidorzero core-dumped\n" );
+							pfatal( "\n" );
+							pfatal( "backup process $firstchildpidorzero core-dumped\n" );
 							kill( -15, $secondchildpidorzero ) if( $secondchildpidorzero );
 						} elsif( 9 == $sig ) {
-							warn( "\n$warning backup process $firstchildpidorzero was KILLed\n" );
+							pwarn( "\n" );
+							pwarn( "backup process $firstchildpidorzero was KILLed\n" );
 							kill( -15, $secondchildpidorzero ) if( $secondchildpidorzero );
 						} else {
 							pwarn( "backup process $firstchildpidorzero returned $rc" . ( $sig ? " after signal $sig" : '' ) ) unless( 0 == $rc );
 
-							print( "\n" );
-							pdebug( "All databases on host '$host' remain globally locked for 24 hours, or until\n", undef, TRUE );
-							pdebug( "this process is terminated.\n", undef, TRUE );
+							pwarn( "\n", 3 );
+							pwarn( "All databases on host '$host' remain globally locked for 24 hours, or until\n", 3, TRUE );
+							pwarn( "this process is terminated.\n", 3, TRUE );
 						}
 					} else {
 						pwarn( "backup process $firstchildpidorzero disappeared" );
@@ -6318,9 +6340,11 @@ sub main( @ ) { # {{{
 						my( $sig, $core );
 						( $rc, $sig, $core ) = ( $? >> 8, $? & 127, $? & 128 );
 						if( $core ) {
-							warn( "\n$fatal lock process $secondchildpidorzero core-dumped\n" );
+							pfatal( "\n" );
+							pfatal( "lock process $secondchildpidorzero core-dumped\n" );
 						} elsif( 9 == $sig ) {
-							warn( "\n$warning lock process $secondchildpidorzero was KILLed\n" );
+							pwarn( "\n" );
+							pwarn( "lock process $secondchildpidorzero was KILLed\n" );
 						} else {
 							pwarn( "lock process $secondchildpidorzero returned $rc" . ( $sig ? " after signal $sig" : '' ) );
 						}
@@ -6339,12 +6363,16 @@ sub main( @ ) { # {{{
 
 		if( defined( $db ) and length( $db ) ) {
 			$backupdsn = "DBI:mysql:database=$db;host=$host;port=$port";
-			print( "\n" ) unless( $quiet or $silent );
-			pdebug( "Connecting to database `$db` ...\n", undef, TRUE ) unless( $quiet or $silent );
+			if( not( $quiet or $silent ) ) {
+				pdebug( "\n" );
+				pdebug( "Connecting to database `$db` ...\n", undef, TRUE );
+			}
 		} else {
 			$backupdsn = "DBI:mysql:host=$host;port=$port";
-			print( "\n" ) unless( $quiet or $silent );
-			pdebug( "Connecting to database instance ...\n", undef, TRUE ) unless( $quiet or $silent );
+			if( not( $quiet or $silent ) ) {
+				pdebug( "\n" );
+				pdebug( "Connecting to database instance ...\n", undef, TRUE );
+			}
 		}
 
 		my $error = dbopen( \$dbh, $backupdsn, $user, $pass, $strict );
@@ -6361,9 +6389,12 @@ sub main( @ ) { # {{{
 		} else { # $lock
 			if( not( $keeplock ) ) {
 				if( not ( dosql( \$dbh, "FLUSH TABLES WITH READ LOCK" ) ) ) {
-					warn( "\n$warning Failed to lock tables transaction\n" );
+					pwarn( "\n" );
+					pwarn( "Failed to lock tables transaction\n" );
+
 					$lock = FALSE;
 					$keeplock = FALSE;
+
 					$dbh -> disconnect;
 				}
 			}
@@ -6415,7 +6446,7 @@ sub main( @ ) { # {{{
 					# Write per-database files to $location/ ...
 					foreach my $database ( @{ $availabledatabases } ) {
 						next if( qr/^$database$/ |M| [ 'information_schema', 'performance_schema' ] );
-						print( "\n" );
+						pnote( "\n" );
 						pnote( "Backing up database `$database` to '" . ( length( $location ) ? "$location/" : '' ) . "$database.sql' ...\n", undef, TRUE );
 						my $databasesuccess = dbdump( $auth, $database, $location, "$database.sql", $options );
 						if( defined( $databasesuccess ) and $databasesuccess ) {
@@ -6543,12 +6574,14 @@ sub main( @ ) { # {{{
 					if( not( -d $singlepath ) ) {
 						$singlepath = undef;
 						$okay = FALSE;
-						warn( "\n$fatal Cannot resolve directory name for path '$singlefile'\n" );
+						pfatal( "\n" );
+						pfatal( "Cannot resolve directory name for path '$singlefile'\n" );
 					}
 				#}
 				if( defined( $singlepath ) and not( $singlepath eq $path ) ) {
 					$okay = FALSE;
-					warn( "\n$fatal Directory path for file '$singlefile' does not fall within detected common directory '$path'\n" );
+					pfatal( "\n" );
+					pfatal( "Directory path for file '$singlefile' does not fall within detected common directory '$path'\n" );
 				}
 
 				if( basename( $singlefile ) =~ m/\.metadata$/ ) {
@@ -6567,19 +6600,20 @@ sub main( @ ) { # {{{
 		} else {
 			my $shouldsort = TRUE;
 
-                        foreach my $index ( 0 .. scalar( @{ $target } ) ) {
-                                my $file = @{ $target }[ $index ];
-                                if( not( length( $file ) ) or ( $file =~ m/^\s*$/ ) ) {
-                                        delete @{ $target }[ $index ];
-                                } else {
-                                        ( my $version = basename( $file ) ) =~ /^(?:V[[:xdigit:].]+__)?V([[:xdigit:].]+)__/;
+			foreach my $index ( 0 .. scalar( @{ $target } ) ) {
+				my $file = @{ $target }[ $index ];
+				if( not( length( $file ) ) or ( $file =~ m/^\s*$/ ) ) {
+					delete @{ $target }[ $index ];
+				} else {
+					( my $version = basename( $file ) ) =~ /^(?:V[[:xdigit:].]+__)?V([[:xdigit:].]+)__/;
 					if( not( defined( $version ) and length( $version ) ) ) {
-						warn( "\n$warning Target '$file' has invalid name without an identifiable version\n" );
-						warn( "$warning Relying on filesystem sorting only - schema may be applied in an undefined order\n" );
+						pwarn( "\n" );
+						pwarn( "Target '$file' has invalid name without an identifiable version\n" );
+						pwarn( "Relying on filesystem sorting only - schema may be applied in an undefined order\n" );
 						$shouldsort = FALSE;
 					}
-                                }
-                        }
+				}
+			}
 			if( $shouldsort ) {
 				# FIXME: How to handle non-matching filenames here?  Match should be undef and so items pool to the top/bottom of the results?
 				@files = map { $_ -> [ 0 ] } sort { versioncmp( $a -> [ 1 ], $b -> [ 1 ] ) } map { [ $_, basename( $_ ) =~ /V([[:xdigit:].]+)__/ ] } @{ $target };
@@ -6605,11 +6639,11 @@ sub main( @ ) { # {{{
 			# Intentional spaces...
 			pdebug( "  $item\n", undef, TRUE );
 		}
-		print( "\n" );
+		pdebug( "\n" );
 	}
 
 	my $tmpdir;
-	if( $safetyoff and not( $unsafe ) ) {
+	if( not( $pretend ) and not( $nobackup ) ) {
 		$tmpdir = File::Temp -> newdir() or die( "$fatal Temporary directory creation failed: $!, $@\n" );
 		pdebug( "Using temporary directory '$tmpdir' ..." );
 	}
@@ -6631,9 +6665,11 @@ sub main( @ ) { # {{{
 	# Create database, but only if --init is used # {{{
 	#
 
-	if( defined( $action_init ) and $safetyoff ) {
-		print( "\n" ) unless( $quiet or $silent );
-		pdebug( "'--init' specified, ensuring that database `$db` exists ...\n", undef, TRUE ) unless( $quiet or $silent );
+	if( defined( $action_init ) and not( $pretend ) ) {
+		if( not( $quiet or $silent ) ) {
+			pdebug( "\n" );
+			pdebug( "'--init' specified, ensuring that database `$db` exists ...\n", undef, TRUE );
+		}
 		my $dsn = ( defined( $odbcdsn ) ? 'DBI:ODBC:' . $odbcdsn : "DBI:mysql:host=$host;port=$port" );
 		my $dbh;
 		my $error = dbopen( \$dbh, $dsn, $user, $pass, $strict, { RaiseError => 0, PrintError => 0 } );
@@ -6658,8 +6694,10 @@ sub main( @ ) { # {{{
 	# Open database connection to determine engine type and to ensure metadata tables exist # {{{
 	#
 
-	print( "\n" ) unless( $quiet or $silent );
-	pdebug( "Connecting to database `$db` to confirm existing version metadata ...\n", undef, TRUE ) unless( $quiet or $silent );
+	if( not( $quiet or $silent ) ) {
+		pdebug( "\n" );
+		pdebug( "Connecting to database `$db` to confirm existing version metadata ...\n", undef, TRUE );
+	}
 	my $dsn = ( defined( $odbcdsn ) ? 'DBI:ODBC:' . $odbcdsn : "DBI:mysql:database=$db;host=$host;port=$port" );
 	my $dbh;
 	my $error = dbopen( \$dbh, $dsn, $user, $pass, $strict, { RaiseError => 0, PrintError => 0 } );
@@ -6710,13 +6748,11 @@ sub main( @ ) { # {{{
 	$variables -> { 'pretend' }     = $pretend;
 	$variables -> { 'progress' }    = $progress;
 	$variables -> { 'quiet' }       = $quiet;
-	$variables -> { 'safetyoff' }   = $safetyoff;
-	$variables -> { 'shortcut' }    = $shortcut;
 	$variables -> { 'silent' }      = $silent;
 	$variables -> { 'skipmeta' }    = $skipmeta;
 	$variables -> { 'strict' }      = $strict;
 	$variables -> { 'tmpdir' }      = $tmpdir;
-	$variables -> { 'unsafe' }      = $unsafe;
+	$variables -> { 'unsafe' }      = $nobackup;
 	$variables -> { 'vschm' }       = $vschm;
 
 	#
@@ -6729,9 +6765,9 @@ sub main( @ ) { # {{{
 	# and schema (database) when deleting a table... although the (auto-
 	# generated?) documentation also suggests specifying the column also,
 	# which is hopefully simply an oversight...
-	if( $clear ) { # and $safetyoff
-		my $flag = $allowunsafeoperations;
-		$allowunsafeoperations = TRUE;
+	if( $clear ) { # and not( $pretend )
+		my $flag = $allowunsafe;
+		$allowunsafe = TRUE;
 		if( 'procedure' eq $mode ) {
 			dosql( \$dbh, "DROP TABLE IF EXISTS `$mywayprocsname`", TRUE );
 		} else {
@@ -6740,7 +6776,7 @@ sub main( @ ) { # {{{
 			dosql( \$dbh, "DROP TABLE IF EXISTS `$verticadb$mywaytablename`", TRUE );
 			dosql( \$dbh, "DROP TABLE IF EXISTS `$verticadb$mywayhistoryname`", TRUE );
 		}
-		$allowunsafeoperations = $flag;
+		$allowunsafe = $flag;
 	}
 
 	my @tables;
@@ -6768,17 +6804,19 @@ sub main( @ ) { # {{{
 
 		# $compat can only be set if we're deploying to MySQL...
 		if( $compat and $ddl =~ m/\stimestamp\([0-6]\)\s/i ) {
-			print( "\n" );
+			pnote( "\n" );
 			pnote( "Removing micro-second precision from definition for <mysql-5.6.4 compatibility ...\n", undef, TRUE );
 			$ddl =~ s/(\stimestamp)\([0-6]\)(\s)/$1$2/gi;
 		}
 
 		if( $pretend ) {
-			print( "\n" ) unless( $quiet or $silent );
+			psim( "\n" );
 			psim( "Would ensure that $name `$tname` table exists.\n" );
 		} else {
-			print( "\n" ) unless( $quiet or $silent );
-			pdebug( "Ensuring that $name `$tname` table exists ...\n", undef, TRUE ) unless( $quiet or $silent );
+			if( not( $quiet or $silent ) ) {
+				pdebug( "\n" );
+				pdebug( "Ensuring that $name `$tname` table exists ...\n", undef, TRUE );
+			}
 			if( 'vertica' eq $engine ) {
 				if( defined( $vschm ) and length( $vschm ) ) {
 					$ddl =~ s/__SCHEMA__/\"$vschm\"./g;
@@ -6849,7 +6887,8 @@ sub main( @ ) { # {{{
 					my $sth = executesql( \$dbh, undef, $st );
 					if( not( defined( $sth ) and $sth ) ) {
 						my $errstr = $dbh -> errstr();
-						warn( "\n$failed Unable to create statement handle to execute '$st'" . ( defined( $errstr ) and length( $errstr ) ? ": " . $errstr : '' ) . "\n" );
+						pfail( "\n" );
+						pfail( "Unable to create statement handle to execute '$st'" . ( defined( $errstr ) and length( $errstr ) ? ": " . $errstr : '' ) . "\n" );
 					} else {
 						my $foundexecutionstarted = FALSE;
 
@@ -6887,7 +6926,8 @@ sub main( @ ) { # {{{
 					my $sth = executesql( \$dbh, undef, $st );
 					if( not( defined( $sth ) and $sth ) ) {
 						my $errstr = $dbh -> errstr();
-						warn( "\n$failed Unable to create statement handle to execute '$st'" . ( defined( $errstr ) and length( $errstr ) ? ": " . $errstr : '' ) . "\n" );
+						pfail( "\n" );
+						pfail( "Unable to create statement handle to execute '$st'" . ( defined( $errstr ) and length( $errstr ) ? ": " . $errstr : '' ) . "\n" );
 					} else {
 						my $foundoldstatementtype = FALSE;
 
@@ -6953,7 +6993,8 @@ sub main( @ ) { # {{{
 
 		foreach my $item ( @files ) {
 			if( not( -s $item ) ) {
-				warn( "\n$warning Cannot read from file '$item' - skipping\n" );
+				pwarn( "\n" );
+				pwarn( "Cannot read from file '$item' - skipping\n" );
 			} else {
 				pnote( "Processing file '$item' ...\n", undef, TRUE ) unless( $quiet or $silent );
 				eval {
@@ -6980,21 +7021,13 @@ sub main( @ ) { # {{{
 						}
 						$version = '__NOT_APPLIED__';
 					} else {
-						warn( "\n$fatal applyschema() returned invalid data '$version':\n" );
+						pfatal( "\n" );
+						pfatal( "applyschema() returned invalid data '$version':\n" );
 						print Data::Dumper -> Dump( [ $version ], [ qw( *version ) ] );
 						die( "$fatal applyschema() returned invalid response\n" );
 					}
 				};
 				if( $@ ) {
-					#warn( "Failed with error: " . $@ . "\n" );
-					#warn( "$fatal " . $@ . "\n" );
-					#die( "$fatal Aborted\n" );
-					#disable diagnostics;
-					#die( "$fatal " . $@ . "\n" );
-
-					# Unreachable
-					#enable diagnostics;
-
 					$lastversion = undef;
 
 					if( $pretend ) {
@@ -7004,6 +7037,10 @@ sub main( @ ) { # {{{
 					( my $error = $@ ) =~ s/ at .+ line \d+\.$//;
 					$error = join( ' ', split( /\s*\n+\s*/, $error ) );
 					chomp( $error );
+					if( $error =~ m/[A-Z]+:\s/ ) {
+						my $firstword = ( split( /\s/, $error ) )[ 0 ];
+						$error =~ s/^$firstword\s+//;
+					}
 					if( defined( $action_init ) ) {
 						die( "\n$warning Failed to initialise from schema file '$item':\n" . ( ' ' x ( length( $fatal ) + 1 ) ) . "$error\n" );
 					} else {
@@ -7070,11 +7107,7 @@ sub main( @ ) { # {{{
 					if( $latest eq $lv ) {
 						die( "$fatal Having processed " . scalar( @files ) . " file(s), database schema version '$sv' is still behind target version '$lv'\n" );
 					} else {
-						if( $shortcut ) {
-							die( "$fatal Database schema version '$sv' is now ahead of target version '$lv', possibly due to a mismatch between file and metadata versions when trusting filenames\n" );
-						} else {
-							die( "$fatal Logic error - database schema version '$sv' is ahead of target version '$lv'\n" );
-						}
+						die( "$fatal Logic error - database schema version '$sv' is ahead of target version '$lv'\n" );
 					}
 				}
 			}
@@ -7084,14 +7117,7 @@ sub main( @ ) { # {{{
 			die( "$fatal applyschema() failed\n" ) unless( applyschema( $file, $actions, $variables, $auth ) );
 		};
 		if( $@ ) {
-			#warn( "Failed with error: " . $@ . "\n" );
-			#warn( "$fatal " . $@ . "\n" );
-			#die( "$fatal Aborted\n" );
-			#disable diagnostics;
 			die( "$fatal " . $@ . " [" . ( caller( 0 ) )[ 3 ] . ':' . __LINE__ . "]\n" );
-
-			# Unreachable
-			#enable diagnostics;
 		}
 	}
 
@@ -7106,15 +7132,15 @@ sub main( @ ) { # {{{
 				foreach my $entry ( @{ $errors } ) {
 					my( $dir, $message ) = %{ $entry };
 					if( length( $message ) ) {
-						warn( "$failed Error creating directory '$dir': $message\n" );
+						pfail( "Error creating directory '$dir': $message\n" );
 					} else {
-						warn( "$failed make_path general error: $message\n" );
+						pfail( "make_path general error: $message\n" );
 					}
 				}
 				return( undef );
 			}
 
-			print( "\n" );
+			pdebug( "\n" );
 			pdebug( "Moving temporary backups to '$backupdir' ...\n", undef, TRUE );
 			foreach my $file ( <$tmpdir/*> ) {
 				move( $file, $backupdir . '/' ) or warn( "Failed to move file '$file' to destination '$backupdir/': $@\n" );

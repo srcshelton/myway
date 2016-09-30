@@ -4,6 +4,7 @@
 # follows by scripts located in /usr/local/{,s}bin/...
 declare std_LIB="stdlib.sh"
 # shellcheck disable=SC2153
+type -pf 'dirname' >/dev/null 2>&1 || function dirname() { : ; }
 for std_LIBPATH in							\
 	"$( dirname -- "${BASH_SOURCE:-${0:-.}}" )"			\
 	"."								\
@@ -17,6 +18,7 @@ do
 		break
 	fi
 done
+unset -f dirname
 
 export STDLIB_WANT_API=2
 
@@ -271,14 +273,25 @@ function validate() { # {{{
 							note "Zero-versioned schema are valid only as baseline/initialiser schema, read '${version}'"
 						fi
 					else
+						# shellcheck disable=SC2016
 						(( quiet )) || info "$( sed 's/, $//' <<<"File '${name}' version '${version}' indicates ${versionsegment[ 0 ]:+Release '${versionsegment[ 0 ]}', }${versionsegment[ 1 ]:+Change '${versionsegment[ 1 ]}', }${versionsegment[ 2 ]:+Step '${versionsegment[ 2 ]}', }${versionsegment[ 3 ]:+Hotfix '${versionsegment[ 3 ]}', }" )"
 						if (( ${versionsegment[ 3 ]:-0} )); then
 							warn "This schema file is hot-fix '${versionsegment[ 3 ]}' to version '${versionsegment[ 0 ]:-0}.${versionsegment[ 1 ]:-0}.${versionsegment[ 2 ]:-0}', and will be applied in-sequence even if more highly versioned schema have already applied, unless already present"
 						fi
 					fi
-					if grep -q '[^0.]' <<<"${version}" && grep -Eq '(\.0+)+' <<<"${version}"; then
-						warn "Schema file version '${version}' appears to include extraneous version-zeroes: release versions may be zero; change, step, and hotfix versions should count up from one"
-						(( notices++ ))
+					if grep -q '[^0.]' <<<"${version}"; then
+						if grep -Eq '^0+[^0]' <<<"${versionsegment[ 2 ]:-0}"; then
+							warn "Schema file version '${version}' appears to include a zero-prefixed step version '${versionsegment[ 2 ]:-0}"
+							(( notices++ ))
+						fi
+						if grep -Eq '^0+[^0]' <<<"${versionsegment[ 3 ]:-0}"; then
+							warn "Schema file version '${version}' appears to include a zero-prefixed hot-fix version '${versionsegment[ 3 ]:-0}"
+							(( notices++ ))
+						fi
+						if grep -Eq '(\.0+(\.|$))+' <<<"${version}"; then
+							warn "Schema file version '${version}' appears to include unnecessary version-zeroes: release versions may be zero; change, step, and hotfix versions should count up from one"
+							(( notices++ ))
+						fi
 					fi
 
 					if grep -Eq '^0|\.0' <<<"${version}"; then
@@ -588,7 +601,7 @@ function validate() { # {{{
 					fi
 				else
 					info "File '${name}' is only valid in environment '${environmentdirective}'"
-					warn "There should be corresponding environment-locked schema files present in order to provide a comprehensive set whereby every possible environment has a schema file present which applies to it"
+					note "There should be corresponding environment-locked schema files present in order to provide a comprehensive set whereby every possible environment has a schema file present which applies to it"
 					local suggestion=""
 					if [[ -n "${newversion:-}" ]]; then
 

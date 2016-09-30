@@ -42,7 +42,7 @@ Usage: myway.pl <--username <user> --password <passwd> --host <node> ...
                 [--target-limit <version>] [[:mode:]] [[:syntax:]] ...
                 [--mysql-compat] [--no-backup|--keep-backup] ...
                 [--clear-metadata] [--force] [--dry-run] [--silent] [--quiet]
-                [--notice] [--warn] [--debug] [--verbose]
+                [--notice] [--warn] [--debug]
 
                 backup options:   [--compress [:scheme:]] [--transactional]
                                   [--lock [--keep-lock]] [--separate-files]
@@ -55,8 +55,6 @@ Usage: myway.pl <--username <user> --password <passwd> --host <node> ...
                                   [--substitute [--marker <marker>]
 
                 syntax:            --syntax <mysql|vertica>
-
-                --trust-filename - Rely on filename version rather than metadata
 
                 --mysql-compat   - Required for MySQL prior to v5.6.4
                 --mysql-relaxed  - Do not operate in STRICT mode
@@ -92,7 +90,6 @@ Usage: myway.pl <--username <user> --password <passwd> --host <node> ...
 
                 --silent         - Output only fatal errors
                 --quiet          - Output only essential messages
-                --verbose        - Provide more detailed status information
 
                 --dry-run        - Validate but do not execute schema SQL
 ```
