@@ -221,7 +221,7 @@ function validate() { # {{{
 				fi
 				version="$( grep -oP '^V.*?__' <<<"${name}" | sed 's/^V// ; s/__$//' )"
 				migrationversion="$( grep -oP '__V.*?__' <<<"${name}" | sed 's/^__V// ; s/__$//' )"
-				description="$( grep -oP '__.*?\.' <<<"${name}" | tail -n 1 | sed 's/^__// ; s/\.$//' )"
+				description="$( grep -oP '__.*?\.' <<<"${name}" | tail -n 1 | sed 's/^.*__// ; s/\.$//' )"
 				desc="$( sed 's/[^A-Za-z]/_/g' <<<"${description:-}" )"
 				environment="$( grep -oP "\\Q${description:-}\\E\.(not-)?.*?\." <<<"${name}" | cut -d'.' -f 2 )"
 				filetype="$( grep -o '\.d[dmc]l\.sql$' <<<"${name}" | cut -d'.' -f 2 )"
@@ -234,6 +234,13 @@ function validate() { # {{{
 				debug "environment is '${environment:-}'"
 				debug "filetype is '${filetype:-}'"
 				debug "fullname is '${fullname:-}'"
+
+				if ! [[ -n "${version:-}" && -n "${desc}" ]]; then
+					error "File name '${name}' cannot be parsed into valid version components - skipping further validation of this file"
+					(( warnings++ ))
+					continue
+				fi
+
 				if ! [[ "${fullname}" == "${name}" ]]; then
 					warn "Filename '${name}' appears to be non-standard: expected '${fullname}'"
 					(( warnings++ ))

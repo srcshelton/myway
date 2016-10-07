@@ -43,7 +43,7 @@ std_DEBUG="${DEBUG:-0}"
 std_TRACE="${TRACE:-0}"
 
 SCRIPT='myway.pl'
-COMPATIBLE='1.3.0'
+COMPATIBLE='1.3.1'
 VALIDATOR='validateschema.sh'
 
 # We want to be able to debug applyschema.sh without debugging myway.pl...
@@ -484,7 +484,11 @@ function main() { # {{{
 			# ${host} is verified below...
 			:
 		elif [[ -n "${cluster:-}" ]]; then
-			host="$( eval echo "\$${cluster}" )"
+			if [[ -n "${!cluster:-}" ]]; then
+				host="${!cluster}"
+			else
+				die "Database '${db}' has cluster '${cluster}', for which no write master is defined"
+			fi
 		else
 			die "Neither 'host' nor 'cluster' membership is defined for database '${db}' in '${filename}'"
 		fi
