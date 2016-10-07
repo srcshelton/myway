@@ -3803,7 +3803,7 @@ sub metadataupdateflywaytable( $$$$$$ ) { # {{{
 
 	my $sth;
 
-	sqldo( \$dbh, "UNLOCK TABLES" ) unless( $pretend or ( 'vertica' eq $engine ) );
+	sqldo( $dbh, "UNLOCK TABLES" ) unless( $pretend or ( 'vertica' eq $engine ) );
 
 	if( $insertorupdate ) {
 		$sth = sqlprepare( $dbh, <<SQL );
@@ -3836,7 +3836,7 @@ SQL
 			) or die( "$fatal Updating '$tablename' with new record failed" . ( defined( $sth -> errstr() ) ? ": " . $sth -> errstr() : ( defined( ${ $dbh } -> errstr() ) ? ": " . ${ $dbh } -> errstr() : '' ) ) . "\n" );
 		}
 	} else { # not( $insertorupdate )
-		$sth = sqlprepare( \$dbh, <<SQL );
+		$sth = sqlprepare( $dbh, <<SQL );
 UPDATE $tablename SET
     `installed_rank` = ?
   , `description` = ?
@@ -3851,8 +3851,7 @@ WHERE `version` = ?
 SQL
 		die( "$fatal Unable to create updated tracking statement handle: " . $dbh -> errstr() . "\n" ) unless( defined( $sth ) and $sth );
 		if( not( $pretend ) ) {
-			sqldo( \$dbh, "UNLOCK TABLES" ) unless( 'vertica' eq $engine );
-			sqlexecute( \$dbh, $sth, undef,
+			sqlexecute( $dbh, $sth, undef,
 				  $installedrank
 				, $desc
 				, $filetype

@@ -235,7 +235,7 @@ function validate() { # {{{
 				debug "filetype is '${filetype:-}'"
 				debug "fullname is '${fullname:-}'"
 
-				if ! [[ -n "${version:-}" && -n "${desc}" ]]; then
+				if ! [[ -n "${version:-}" && -n "${desc:-}" ]]; then
 					error "File name '${name}' cannot be parsed into valid version components - skipping further validation of this file"
 					(( warnings++ ))
 					continue
@@ -636,7 +636,7 @@ function validate() { # {{{
 					(( warnings++ ))
 				fi
 			fi
-			if [[ "${type}" == "vertica-schema" && ! "${engine:-}" == "vertica" ]]; then
+			if [[ "${type}" == "vertica-schema" && ! -n "${migrationversion:-}" && ! "${engine:-}" == "vertica" ]]; then
 				error "File '${name}' is defiend to be a Vertica schema-file but does not specify 'Engine: Vertica'"
 				(( warnings++ ))
 			fi

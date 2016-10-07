@@ -3,7 +3,6 @@
 # stdlib.sh should be in /usr/local/lib/stdlib.sh, which can be found as
 # follows by scripts located in /usr/local/{,s}bin/...
 declare std_LIB='stdlib.sh'
-type -pf 'dirname' >/dev/null 2>&1 || function dirname() { : ; }
 # shellcheck disable=SC2153
 type -pf 'dirname' >/dev/null 2>&1 || function dirname() { : ; }
 for std_LIBPATH in							\
@@ -517,9 +516,9 @@ function main() { # {{{
 
 		if (( validate )); then
 			(( quiet | silent )) || info "Validating database '${db}' ..."
-			#if ! ${validator} ${filename:+--config "${filename}"} -d "${db}" -s "${actualpath:-${path}/schema}" $( (( keepgoing )) && echo '-k' ) $( (( dryrun )) && echo '--dry-run' ) $( (( quiet )) && echo '--quiet' ) $( (( silent )) && echo '--silent' ) --from-applyschema; then
+			#if ! ${validator} ${filename:+--config "${filename}"} -d "${db}" -s "${actualpath:-${path}/schema}" $( (( dryrun )) && echo '--dry-run' ) $( (( quiet )) && echo '--quiet' ) $( (( silent )) && echo '--silent' ) --from-applyschema; then
 			# shellcheck disable=SC2046
-			if ! ${validator} ${filename:+--config "${filename}"} -d "${db}" -s "${actualpath:-${path}/schema}" $( (( keepgoing )) && echo '-k' ) $( (( dryrun )) && echo '--dry-run' ) $( (( quiet )) && echo '--quiet' ) $( (( silent )) && echo '--silent' ) --from-applyschema; then
+			if ! ${validator} ${filename:+--config "${filename}"} -d "${db}" -s "${actualpath:-${path}/schema}" $( (( dryrun )) && echo '--dry-run' ) $( (( quiet )) && echo '--quiet' ) $( (( silent )) && echo '--silent' ) --from-applyschema; then
 				#die "Validation of database '${db}' failed - aborting"
 				(( silent )) || error "Validation of database '${db}' failed - in the future, will abort"
 			fi
