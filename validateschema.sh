@@ -318,9 +318,14 @@ function validate() { # {{{
 						fi
 						if grep -Pq '^\d+$' <<<"${newversion}"; then
 							newversion+=".1"
+						else
+							# We should only get here if the original version was 0 or 00.0000.0,
+							# indicating a baseline file - which /should/ be V0.
+							newversion="0"
 						fi
 
-						info "File '${filename}' version '${version}' appears to be a legacy version - assuming modern version of '${newversion}'"
+						[[ "${newversion}" != "${version}" ]] &&
+							info "File '${filename}' version '${version}' appears to be a legacy version - assuming modern version of '${newversion}'"
 
 						if [[ -n "${migrationversion:-}" ]] && grep -Pq '^0*\d+(\.0*\d+)?(\.0*\d+)?(\.0*\d+)?$' <<<"${migrationversion}"; then
 							newmigrationversion="$( sed -r 's/^0+// ; s/^\.// ; s/^0+// ; s/\.0+$// ; s/\.0+$//' <<<"${migrationversion}" )"
@@ -596,7 +601,7 @@ function validate() { # {{{
 				debug "Finished checking line"
 			done < <( awk -- "${script:-}" "${file}" ) # while read -r line
 
-			if [[ -n "${newversion:-}" && "${version}" =~ ^\\d+\.\\d+\.\\d+(\.\\d+)?$ ]]; then
+			if [[ -n "${newversion:-}" && "${version}" =~ ^[0-9]+(\.[0-9]+){2,}$ ]]; then
 				fullname="V${newversion}${newmigrationversion:+__V${newmigrationversion}}__${metadescription:-${description:-<description>}}${environment:+.${environment}}.${filetype:-${defaulttype:-}}.sql"
 				[[ -z "${defaulttype:-}" ]] && fullname="${fullname/../.}" # Fix migration schema <sigh>
 
