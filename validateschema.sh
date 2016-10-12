@@ -145,8 +145,6 @@ function validate() { # {{{
 			(( silent )) || debug "Completed checking file '${name}': ${warnings} Fatal Errors or Warnings, ${notices} Notices, ${styles} Comments"
 		fi
 
-		(( child )) || echo
-
 		warnings=0 notices=0 styles=0
 
 	else
@@ -279,7 +277,7 @@ function validate() { # {{{
 							warn "Cannot determine valid version from file '${name}' version '${version}'"
 							(( warnings++ ))
 						else
-							note "Zero-versioned schema are valid only as baseline/initialiser schema, read '${version}'"
+							note "File '${name}' has version '${version}' which is only valid for a baseline/initialiser schema"
 						fi
 					else
 						# shellcheck disable=SC2016
@@ -650,7 +648,7 @@ function validate() { # {{{
 				fi
 			fi
 			if [[ "${type}" == "vertica-schema" && ! -n "${migrationversion:-}" && ! "${engine:-}" == "vertica" ]]; then
-				error "File '${name}' is defiend to be a Vertica schema-file but does not specify 'Engine: Vertica'"
+				error "File '${name}' is defined to be a Vertica schema-file but does not specify 'Engine: Vertica'"
 				(( warnings++ ))
 			fi
 
@@ -735,8 +733,6 @@ function validate() { # {{{
 			else
 				(( silent )) | info "Completed checking schema file '${name}': ${warnings} Fatal Errors or Warnings, ${notices} Notices, ${styles} Comments"
 			fi
-
-			(( child )) || echo
 
 			warnings=0 notices=0 styles=0
 
@@ -990,6 +986,8 @@ function main() { # {{{
 			exit 0 # continue
 		fi
 
+		(( quiet | silent )) || { (( founddb )) && echo ; }
+
 		local details="$( std::getfilesection "${filename}" "${db}" | sed -r 's/#.*$// ; /^[^[:space:]]+\.[^[:space:]]+\s*=/s/\./_/' | grep -Ev '^\s*$' | sed -r 's/\s*=\s*/=/' )"
 		[[ -n "${details:-}" ]] || die "Database '${db}' lacks a configuration block in '${filename}'"
 		debug "${db}:\n${details}\n"
@@ -1010,8 +1008,8 @@ function main() { # {{{
 				exit 3 # See below...
 			fi
 		else
-			(( quiet | silent )) || echo
 			(( silent )) || info "Processing configuration to validate database '${db}' ..."
+			(( silent )) || { [[ -n "${dblist:-}" && "${dblist}" == "${db}" ]] && echo ; }
 		fi
 
 		local -a messages=()
@@ -1249,6 +1247,8 @@ function main() { # {{{
 				warn "Object '${filename}' should not be present in directory '${ppath}' and will be ignored during schema file processing"
 				(( warnings++ ))
 			fi
+
+			(( silent )) || { [[ -n "${dblist:-}" && "${dblist}" == "${db}" ]] && echo ; }
 		done
 		debug "Schema processed for database '${db}'\n"
 

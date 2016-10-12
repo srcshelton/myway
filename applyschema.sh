@@ -393,12 +393,13 @@ function main() { # {{{
 		# manually sanitise the environment on each iteration.
 		#
 		(
-
 		if [[ -n "${dblist:-}" ]] && ! grep -q ",${db}," <<<",${dblist},"; then
 			#(( quiet | silent )) || info "Skipping deselected database '${db}' ..."
 			debug "Skipping deselected database '${db}' ..."
 			exit 0 # continue
 		fi
+
+		(( quiet | silent )) || { (( founddb )) && echo ; }
 
 		local details="$( std::getfilesection "${filename}" "${db}" | sed -r 's/#.*$// ; /^[^[:space:]]+\.[^[:space:]]+\s*=/s/\./_/' | grep -Ev '^\s*$' | sed -r 's/\s*=\s*/=/' )"
 		[[ -n "${details:-}" ]] || die "Database '${db}' lacks a configuration block in '${filename}'"
@@ -417,6 +418,7 @@ function main() { # {{{
 			exit 3 # See below...
 		else
 			(( silent )) || info "Processing configuration for database '${db}' ..."
+			(( silent )) || { [[ -n "${dblist:-}" && "${dblist}" == "${db}" ]] && echo ; }
 		fi
 
 		local -a messages=()
@@ -793,6 +795,7 @@ function main() { # {{{
 			fi
 
 			debug "Load completed for database '${db}'\n"
+			(( silent )) || { [[ -n "${dblist:-}" && "${dblist}" == "${db}" ]] && echo ; }
 		fi
 
 		(( founddb && rc )) && exit 4

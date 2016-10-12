@@ -141,6 +141,9 @@ function main() { # {{{
 		# Run the block below in a sub-shell so that we don't have to
 		# manually sanitise the environment on each iteration.
 		#
+
+		[[ "${databases}" =~ ^${db} ]] || echo
+
 		( # ) # <- Syntax highlight fail
 
 		local details="$( std::getfilesection "${filename}" "${db}" | sed -r 's/#.*$// ; /^[^[:space:]]+\.[^[:space:]]+\s*=/s/\./_/' | grep -Ev '^\s*$' | sed -r 's/\s*=\s*/=/' )"
