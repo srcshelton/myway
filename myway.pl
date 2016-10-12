@@ -6439,18 +6439,28 @@ sub main( @ ) { # {{{
 			print( ( " " x $length ) . "<--init [version]|[--migrate|--check] ...\n" );
 			print( ( " " x $length ) . "<--scripts <directory>|--file <schema>> [[:syntax:]]\n" );
 			print( ( " " x $length ) . "[--vertica-schema <schema name>]\n" );
-			print( ( " " x $length ) . "[--clear-metadata] [--dry-run] [--force] [--debug]\n" );
+			print( ( " " x $length ) . "[--clear-metadata] [--force] [--dry-run] [--silent] [--quiet]\n" );
+			print( ( " " x $length ) . "[--notice] [--warn] [--debug]\n" );
 			print( "\n" );
-			print( ( " " x $length ) . "ODBC DSN example:  Driver=libverticaodbc.so;Database=db;ServerName=localhost;Port=5433;UserName=x;Password=y\n" );
+			print( ( " " x $length ) . "ODBC DSN example:  Driver={Vertica};Database=db;ServerName=localhost;Port=5433;UserName=x;Password=y\n" );
+			print( "\n" );
+			print( ( " " x $length ) . "                   ... where 'Vertica' is an entry in /etc/odbcinst.ini:\n" );
+			print( "\n" );
+			print( ( " " x $length ) . "                   [Vertica]\n" );
+			print( ( " " x $length ) . "                   Description = HPE Vertica ODBC Driver\n" );
+			print( ( " " x $length ) . "                   Driver = /opt/vertica/lib64/libverticaodbc.so\n" );
 			print( "\n" );
 			print( ( " " x $length ) . "syntax:            --syntax <mysql|vertica>\n" );
 			print( "\n" );
 			print( ( " " x $length ) . "--vertica-schema - Specify Vertica database/schema name\n" );
 		} else {
-			print(       "Usage: $myway <--username <user> --password <passwd> --host <node> ...\n" ) if( $odbcok );
-			print( ( " " x $length ) . " [--port <port>] --database <db>> ...\n" ) if( $odbcok );
-			print( ( " " x $length ) . "| <--dsn <dsn>> [[:syntax:]] ...\n" ) if( $odbcok );
-			print(       "Usage: $myway -u <username> -p <password> -h <host> -d <database> [-P <port>]\n" ) if( not( $odbcok ) );
+			if( $odbcok ) {
+			print(       "Usage: $myway <--username <user> --password <passwd> --host <node> ...\n" );
+			print( ( " " x $length ) . " [--port <port>] --database <db>> ...\n" );
+			print( ( " " x $length ) . "| <--dsn <dsn>> [[:syntax:]] ...\n" );
+			} else {
+			print(       "Usage: $myway -u <username> -p <password> -h <host> -d <database> [-P <port>]\n" );
+			}
 			print( ( " " x $length ) . "<--backup [directory] [:backup options:]|...\n" );
 			print( ( " " x $length ) . " --restore <file> [:restore options:]|--init [version]>|...\n" );
 			print( ( " " x $length ) . "[--migrate|--check] <--scripts <directory>|--file <schema>> ...\n" );
@@ -6469,37 +6479,54 @@ sub main( @ ) { # {{{
 			print( ( " " x $length ) . "mode:              --mode <schema|procedure>\n" );
 			print( ( " " x $length ) . "                  [--substitute [--marker <marker>]\n" );
 			print( "\n" );
-			print( ( " " x $length ) . "syntax:            --syntax <mysql|vertica>\n" ) if( $odbcok );
-			print( "\n" ) if( $odbcok );
+			if( $odbcok ) {
+			print( ( " " x $length ) . "syntax:            --syntax <mysql|vertica>\n" );
+			print( "\n" );
+			}
+			if( $syntax eq 'mysql' ) {
+			print( ( " " x $length ) . "  * MySQL compatibility:\n" );
+			print( "\n" );
 			print( ( " " x $length ) . "--mysql-compat   - Required for MySQL prior to v5.6.4\n" );
 			print( ( " " x $length ) . "--mysql-relaxed  - Do not operate in STRICT mode\n" );
+			print( "\n" );
+			}
+			print( ( " " x $length ) . "  * Backup options:\n" );
+			print( "\n" );
+			print( ( " " x $length ) . "--no-backup      - Do not take backups before making changes\n" );
+			print( ( " " x $length ) . "--keep-backup    - Copy backups to a local directory on exit\n" );
 			print( "\n" );
 			print( ( " " x $length ) . "--compress       - Compress backups [using <scheme> algorithm]\n" );
 			print( ( " " x $length ) . "--transactional  - Don't lock transactional tables\n" );
 			print( ( " " x $length ) . "--lock           - Lock instance for duration of backup\n" );
 			print( ( " " x $length ) . "--keep-lock      - Keep lock for up to 24 hours after backup\n" );
 			print( "\n" );
+			print( ( " " x $length ) . "  * Stored Procedure options:\n" );
+			print( "\n" );
 			print( ( " " x $length ) . "--substitute     - Replace the string '" . ( ( defined( $marker ) and length( $marker ) ) ? $marker : MARKER ) . "' with version\n" );
 			print( ( " " x $length ) . "                   number from stored procedure directory name\n" );
 			print( ( " " x $length ) . "--marker         - Use string in place of '" . MARKER . "'\n" );
-			print( "\n" );
-			print( ( " " x $length ) . "--no-backup      - Do not take backups before making changes\n" );
-			print( ( " " x $length ) . "--keep-backup    - Copy backups to a local directory on exit\n" );
-			print( "\n" );
-			print( ( " " x $length ) . "--description    - Override description for single schema files\n" );
-			print( ( " " x $length ) . "--allow-unsafe   - Allow DROP TABLE & DROP DATABASE statements\n" );
-			print( "\n" );
-			print( ( " " x $length ) . "--environment    - Specify environment for metadata filtering\n" );
-			print( ( " " x $length ) . "--target-limit   - Specify required final schema version\n" );
 		}
 		{
 			print( "\n" );
+			print( ( " " x $length ) . "  * Schema options:\n" );
+			print( "\n" );
+			print( ( " " x $length ) . "--allow-unsafe   - Allow DROP TABLE & DROP DATABASE statements\n" );
+			print( "\n" );
+			print( ( " " x $length ) . "  * Metadata options:\n" );
+			print( "\n" );
+			print( ( " " x $length ) . "--description    - Override description for a single schema file\n" );
+			#print( ( " " x $length ) . "--set-version    - Override version for a single schema file\n" );
+			print( "\n" );
+			print( ( " " x $length ) . "--environment    - Specify environment for metadata filtering\n" );
+			print( ( " " x $length ) . "--target-limit   - Specify required final schema version\n" );
+			print( "\n" );
 			print( ( " " x $length ) . "--clear-metadata - Remove all {my,fly}way metadata tables\n" );
+			print( "\n" );
 			print( ( " " x $length ) . "--force          - Allow a database to be re-initialised or\n" );
 			print( ( " " x $length ) . "                   ignore previous and target versions when\n" );
 			print( ( " " x $length ) . "                   applying schema files\n" );
 			print( "\n" );
-			print( ( " " x $length ) . "  Output control:\n" );
+			print( ( " " x $length ) . "  * Output control:\n" );
 			print( "\n" );
 			print( ( " " x $length ) . "--warn           - Output additional warning messages only\n" );
 			print( ( " " x $length ) . "--notice         - Output standard progress messages\n" );
@@ -6509,6 +6536,8 @@ sub main( @ ) { # {{{
 			print( ( " " x $length ) . "--quiet          - Output only essential messages\n" );
 			print( "\n" );
 			print( ( " " x $length ) . "--dry-run        - Validate but do not execute schema SQL\n" );
+			print( "\n" );
+			print( "(N.B. '--dry-run' requires an initialised database to prepare statements against)\n" );
 		}
 		if( defined( $odbcdsn ) or ( $syntax eq 'vertica' ) ) {
 			if( not( defined( $odbcok ) and $odbcok ) ) {

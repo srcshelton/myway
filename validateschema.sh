@@ -145,6 +145,8 @@ function validate() { # {{{
 			(( silent )) || debug "Completed checking file '${name}': ${warnings} Fatal Errors or Warnings, ${notices} Notices, ${styles} Comments"
 		fi
 
+		(( child )) || echo
+
 		warnings=0 notices=0 styles=0
 
 	else
@@ -317,6 +319,9 @@ function validate() { # {{{
 						if grep -Pq '^\d+$' <<<"${newversion}"; then
 							newversion+=".1"
 						fi
+
+						info "File '${filename}' version '${version}' appears to be a legacy version - assuming modern version of '${newversion}'"
+
 						if [[ -n "${migrationversion:-}" ]] && grep -Pq '^0*\d+(\.0*\d+)?(\.0*\d+)?(\.0*\d+)?$' <<<"${migrationversion}"; then
 							newmigrationversion="$( sed -r 's/^0+// ; s/^\.// ; s/^0+// ; s/\.0+$// ; s/\.0+$//' <<<"${migrationversion}" )"
 							if grep -Pq '^\d+\.\d+\.\d+$' <<<"${newmigrationversion}"; then
@@ -591,19 +596,22 @@ function validate() { # {{{
 				debug "Finished checking line"
 			done < <( awk -- "${script:-}" "${file}" ) # while read -r line
 
-			if [[ -n "${newversion:-}" ]]; then
+			if [[ -n "${newversion:-}" && "${version}" =~ ^\\d+\.\\d+\.\\d+(\.\\d+)?$ ]]; then
 				fullname="V${newversion}${newmigrationversion:+__V${newmigrationversion}}__${metadescription:-${description:-<description>}}${environment:+.${environment}}.${filetype:-${defaulttype:-}}.sql"
 				[[ -z "${defaulttype:-}" ]] && fullname="${fullname/../.}" # Fix migration schema <sigh>
 
 				note "File '${name}' appears to contain legacy version string '${version}' - suggest migration to new naming scheme '${fullname}'"
 				(( notices++ ))
+			elif [[ "${version}" =~ (^|\.)0\\d+(\.|$) ]]; then
+				note "File '${name}' appears to contain unnecessary zeroes in version string '${version}'"
+				(( notices++ ))
 			fi
 
 			if [[ -n "${environmentdirective:-}" ]]; then
 				if [[ "${environmentdirective}" =~ ^! ]]; then
-					info "File '${name}' is not valid in environment '${environmentdirective%!}'"
-					if ! [[ "${name}" =~ \.not-${environmentdirective%!}\. ]]; then
-						warn "Filename '${name}' does not include environment 'not-${environmentdirective%!}'"
+					info "File '${name}' is not valid in environment '${environmentdirective#!}'"
+					if ! [[ "${name}" =~ \.not-${environmentdirective#!}\. ]]; then
+						warn "Filename '${name}' does not include environment 'not-${environmentdirective#!}'"
 						(( warnings++ ))
 					fi
 				else
@@ -619,8 +627,8 @@ function validate() { # {{{
 					fi
 					info "If nothing needs to be done for other environments, please provide a migration schema to skip this step (possibly '${suggestion}' if only this version is to be stepped-over)"
 					unset suggestion
-					if ! [[ "${name}" =~ \.${environmentdirective%!}\. ]]; then
-						warn "Filename '${name}' does not include environment '${environmentdirective%!}'"
+					if ! [[ "${name}" =~ \.${environmentdirective#!}\. ]]; then
+						warn "Filename '${name}' does not include environment '${environmentdirective#!}'"
 						(( warnings++ ))
 					fi
 				fi
@@ -722,6 +730,8 @@ function validate() { # {{{
 			else
 				(( silent )) | info "Completed checking schema file '${name}': ${warnings} Fatal Errors or Warnings, ${notices} Notices, ${styles} Comments"
 			fi
+
+			(( child )) || echo
 
 			warnings=0 notices=0 styles=0
 
@@ -989,11 +999,11 @@ function main() { # {{{
 		fi
 
 		if grep -Eiq "${falsy}" <<<"${managed:-}"; then
-			if ! (( child )); then
+			if (( child )); then
 				(( quiet | silent )) || { echo ; info "Skipping unmanaged database '${db}' ..." ; }
+				founddb=1
+				exit 3 # See below...
 			fi
-			founddb=1
-			exit 3 # See below...
 		else
 			(( quiet | silent )) || echo
 			(( silent )) || info "Processing configuration to validate database '${db}' ..."
