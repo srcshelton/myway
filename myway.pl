@@ -107,6 +107,9 @@ use constant PORT        =>  3306;
 use constant VERTICAPORT =>  5433;
 use constant MARKER      => '`<<VERSION>>';
 
+use constant LOGMAX      =>  3; # debug
+use constant SQLRETRYMAX =>  3;
+
 # Necessary non-default modules:
 #
 # * DBI::Format ( DBI::Shell, Text::Reform, IO::Tee )
@@ -2762,7 +2765,7 @@ sub sqldo( $$;$ ) { # {{{
 			} else {
 				$retries ++;
 				if( not( dbcheckconnection( $dbh ) ) ) {
-					return( FALSE ) unless( $retries < 4 );
+					return( FALSE ) unless( $retries <= SQLRETRYMAX );
 					pwarn( "Retrying SQL statement \"$st\" after $retries failures ...\n", undef, TRUE );
 					return( sqldo( $dbh, $st, $force ) );
 				}
@@ -2781,7 +2784,7 @@ sub sqldo( $$;$ ) { # {{{
 			} else {
 				$retries ++;
 				if( not( dbcheckconnection( $dbh ) ) ) {
-					return( FALSE ) unless( $retries < 4 );
+					return( FALSE ) unless( $retries <= SQLRETRYMAX );
 					pwarn( "Retrying SQL statement \"$st\" after $retries failures ...\n", undef, TRUE );
 					return( sqldo( $dbh, $st, $force ) );
 				}
@@ -2806,7 +2809,7 @@ sub sqldo( $$;$ ) { # {{{
 		} else {
 			$retries ++;
 			if( not( dbcheckconnection( $dbh ) ) ) {
-				return( FALSE ) unless( $retries < 4 );
+				return( FALSE ) unless( $retries <= SQLRETRYMAX );
 				pwarn( "Retrying SQL statement \"$st\" after $retries failures ...\n", undef, TRUE );
 				return( sqldo( $dbh, $st, $force ) );
 			}
@@ -2888,7 +2891,7 @@ sub sqlprepare( $$ ) { # {{{
 		} else {
 			$retries ++;
 			if( not( dbcheckconnection( $dbh, ( defined( $sth ) ? \$sth : undef ) ) ) ) {
-				return( undef ) unless( $retries < 4 );
+				return( undef ) unless( $retries <= SQLRETRYMAX );
 				pwarn( "Retrying SQL statement \"$st\" after $retries failures ...\n", undef, TRUE );
 				return( sqlprepare( $dbh, $st ) );
 			}
@@ -2921,7 +2924,7 @@ sub sqlprepare( $$ ) { # {{{
 			#        appears to prevent this from being more than
 			#        a cosmetic issue, however...
 			if( not( dbcheckconnection( $dbh, ( defined( $sth ) ? \$sth : undef ) ) ) ) {
-				return( undef ) unless( $retries < 4 );
+				return( undef ) unless( $retries <= SQLRETRYMAX );
 				pdebug( "Retrying SQL statement \"$st\" after $retries failures ...\n", undef, TRUE );
 				return( sqlprepare( $dbh, $st ) );
 			}
@@ -3034,7 +3037,7 @@ sub sqlexecute( $$;$@ ) { # {{{
 		} else {
 			$retries ++;
 			if( not( dbcheckconnection( $dbh ) ) ) {
-				return( undef ) unless( $retries < 4 );
+				return( undef ) unless( $retries <= SQLRETRYMAX );
 				my $statement = $st;
 				$statement = $dbh -> { 'Statement' } unless( defined( $st ) and length( $st ) );
 				pwarn( "Retrying SQL statement \"$statement\" after $retries failures ...\n", undef, TRUE );
@@ -3058,7 +3061,7 @@ sub sqlexecute( $$;$@ ) { # {{{
 		} else {
 			$retries ++;
 			if( not( dbcheckconnection( $dbh, ( defined( $sth ) ? \$sth : undef ) ) ) ) {
-				return( undef ) unless( $retries < 4 );
+				return( undef ) unless( $retries <= SQLRETRYMAX );
 				my $statement = $st;
 				$statement = $sth -> { 'Statement' } unless( defined( $st ) and length( $st ) );
 				pwarn( "Retrying SQL statement \"$statement\" after $retries failures ...\n", undef, TRUE );
@@ -3778,11 +3781,11 @@ sub metadataupdateflywaytable( $$$$$$ ) { # {{{
 
 			return( FALSE );
 		}
-		pwarn( ( caller( 1 ) )[ 3 ] . " called " . ( caller( 0 ) )[ 3 ] . " with mandatory parameter \$installedrank undefined - defaulting to '$installedrank'", 3, TRUE );
+		pwarn( ( caller( 1 ) )[ 3 ] . " called " . ( caller( 0 ) )[ 3 ] . " with mandatory parameter \$installedrank undefined - defaulting to '$installedrank'", LOGMAX, TRUE );
 	}
 	if( not( defined( $desc ) and length( $desc ) ) ) {
 		$desc = 'Not specified';
-		pwarn( ( caller( 1 ) )[ 3 ] . " called " . ( caller( 0 ) )[ 3 ] . " with mandatory parameter \$desc undefined - defaulting to '$desc'", 3, TRUE );
+		pwarn( ( caller( 1 ) )[ 3 ] . " called " . ( caller( 0 ) )[ 3 ] . " with mandatory parameter \$desc undefined - defaulting to '$desc'", LOGMAX, TRUE );
 	}
 	if( not( defined( $filetype ) and length( $filetype ) ) ) {
 		$filetype = 'SQL';
@@ -3790,11 +3793,11 @@ sub metadataupdateflywaytable( $$$$$$ ) { # {{{
 	}
 	if( not( defined( $schmfile ) and length( $schmfile ) ) ) {
 		$schmfile = '/dev/null';
-		pwarn( ( caller( 1 ) )[ 3 ] . " called " . ( caller( 0 ) )[ 3 ] . " with mandatory parameter \$schmfile undefined - defaulting to '$schmfile'", 3, TRUE );
+		pwarn( ( caller( 1 ) )[ 3 ] . " called " . ( caller( 0 ) )[ 3 ] . " with mandatory parameter \$schmfile undefined - defaulting to '$schmfile'", LOGMAX, TRUE );
 	}
 	if( not( defined( $user ) and length( $user ) ) ) {
 		$user = 'Unknown';
-		pwarn( ( caller( 1 ) )[ 3 ] . " called " . ( caller( 0 ) )[ 3 ] . " with mandatory parameter \$user undefined - defaulting to '$user'", 3, TRUE );
+		pwarn( ( caller( 1 ) )[ 3 ] . " called " . ( caller( 0 ) )[ 3 ] . " with mandatory parameter \$user undefined - defaulting to '$user'", LOGMAX, TRUE );
 	}
 	if( not( defined( $duration ) ) ) {
 		$duration = 0;
@@ -4501,7 +4504,7 @@ sub applyschema( $$$$;$ ) { # {{{
 							# Already set
 							pwarn( "Using filename version '$schmversion' as target, due to lack of valid metadata version\n" );
 						} elsif( looks_like_number( $schmversion ) and ( $schmversion < 0 ) ) {
-							pwarn( "Using synthesised version '$schmversion' as target, due to lack of valid metadata or filename version\n", 3 );
+							pwarn( "Using synthesised version '$schmversion' as target, due to lack of valid metadata or filename version\n", LOGMAX );
 						}
 
 						if( defined( $limit ) and not( 'procedure' eq $mode ) ) {
@@ -4591,7 +4594,7 @@ sub applyschema( $$$$;$ ) { # {{{
 											return( \$schmversion );
 										} else {
 											if( $force ) {
-												pwarn( "Would forcibly restore database from file '$restorefile', with risk of data-loss ...\n", 3, TRUE );
+												pwarn( "Would forcibly restore database from file '$restorefile', with risk of data-loss ...\n", LOGMAX, TRUE );
 												return( TRUE );
 											} else {
 												pwarn( "Would refuse to overwrite populated database from file '$restorefile' to prevent data-loss\n" );
@@ -4601,9 +4604,9 @@ sub applyschema( $$$$;$ ) { # {{{
 									} else {
 										if( not( $safetorestore ) ) {
 											if( $force ) {
-												pwarn( "Forcibly restoring database from file '$restorefile', with risk of data-loss ...\n", 3, TRUE );
+												pwarn( "Forcibly restoring database from file '$restorefile', with risk of data-loss ...\n", LOGMAX, TRUE );
 											} else {
-												pwarn( "Refusing to overwrite populated database from file '$restorefile' to prevent data-loss\n", 3, TRUE );
+												pwarn( "Refusing to overwrite populated database from file '$restorefile' to prevent data-loss\n", LOGMAX, TRUE );
 												return( FALSE );
 											}
 										}
@@ -6317,7 +6320,7 @@ sub main( @ ) { # {{{
 			$port = PORT;
 		}
 	} else {
-		my $debug = ( DEBUG or ( $verbosity > 2 ) );
+		my $debug = ( DEBUG or ( $verbosity > 2 ) ); # debug(3)
 
 		my $output = FALSE;
 		$output = TRUE if( not( $debug ) );
@@ -6522,7 +6525,7 @@ sub main( @ ) { # {{{
 		}
 		if( defined( $odbcdsn ) or ( $syntax eq 'vertica' ) ) {
 			if( not( defined( $odbcok ) and $odbcok ) ) {
-				pwarn( "\nCould not load DBD::ODBC module - ODBC functionality not available\n\n", 3 );
+				pwarn( "\nCould not load DBD::ODBC module - ODBC functionality not available\n\n", LOGMAX );
 			}
 		}
 		exit( 0 );
@@ -6795,9 +6798,9 @@ sub main( @ ) { # {{{
 					} else {
 						pwarn( "backup process $firstchildpidorzero returned $rc" . ( $sig ? " after signal $sig" : '' ) ) unless( 0 == $rc );
 
-						pwarn( "\n", 3 );
-						pwarn( "All databases on host '$host' remain globally locked for 24 hours, or until\n", 3, TRUE );
-						pwarn( "this process is terminated.\n", 3, TRUE );
+						pwarn( "\n", LOGMAX );
+						pwarn( "All databases on host '$host' remain globally locked for 24 hours, or until\n", LOGMAX, TRUE );
+						pwarn( "this process is terminated.\n", LOGMAX, TRUE );
 					}
 				} else {
 					pwarn( "backup process $firstchildpidorzero disappeared" );
@@ -6965,7 +6968,7 @@ sub main( @ ) { # {{{
 		dbclose( \$dbh, undef, undef, TRUE ) if( defined( $dbh ) );
 
 		if( defined( $success) and $success ) {
-			pnote( "Backup process completed successfully\n", 3 );
+			pnote( "Backup process completed successfully\n", LOGMAX );
 
 			exit( 0 );
 		} else {
@@ -7661,7 +7664,7 @@ sub main( @ ) { # {{{
 			pdebug( "\n" );
 			pdebug( "Moving temporary backups to '$backupdir' ...\n", undef, TRUE );
 			foreach my $file ( glob( qq( "${tmpdir}/*" ) ) ) {
-				move( $file, $backupdir . '/' ) or pwarn( "Failed to move file '$file' to destination '$backupdir/': $@\n", 3 );
+				move( $file, $backupdir . '/' ) or pwarn( "Failed to move file '$file' to destination '$backupdir/': $@\n", LOGMAX );
 			}
 			pdebug( "Backups relocated\n", undef, TRUE );
 		}
