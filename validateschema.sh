@@ -2,15 +2,15 @@
 
 # stdlib.sh should be in /usr/local/lib/stdlib.sh, which can be found as
 # follows by scripts located in /usr/local/{,s}bin/...
-declare std_LIB="stdlib.sh"
-# shellcheck disable=SC2153
+declare std_LIB='stdlib.sh'
 type -pf 'dirname' >/dev/null 2>&1 || function dirname() { : ; }
+# shellcheck disable=SC2153
 for std_LIBPATH in							\
 	"$( dirname -- "${BASH_SOURCE:-${0:-.}}" )"			\
-	"."								\
+	'.'								\
 	"$( dirname -- "$( type -pf "${std_LIB}" 2>/dev/null )" )"	\
 	"$( dirname -- "${BASH_SOURCE:-${0:-.}}" )/../lib"		\
-	"/usr/local/lib"						\
+	'/usr/local/lib'						\
 	 ${FPATH:+${FPATH//:/ }}					\
 	 ${PATH:+${PATH//:/ }}
 do
@@ -20,6 +20,7 @@ do
 done
 unset -f dirname
 
+# For std::inherit...
 export STDLIB_WANT_API=2
 
 # Attempt to use colourised output if the environment indicates that this is
@@ -46,7 +47,13 @@ std_TRACE="${TRACE:-0}"
 
 # Override `die` to return '2' on fatal error...
 function die() { # {{{
-	[[ -n "${*:-}" ]] && std_DEBUG=1 std::log >&2 "FATAL: " "${*}"
+	if [[ -n "${*:-}" ]]; then
+		if [[ 'function' == "$( type -t std::colour )" ]]; then
+			std_DEBUG=1 std::log >&2 "$( std::colour 'FATAL: ' )" "${*}"
+		else
+			std_DEBUG=1 std::log >&2 'FATAL: ' "${*}"
+		fi
+	fi
 	std::cleanup 2
 
 	# Unreachable
@@ -70,16 +77,16 @@ function lock() { # {{{
 } # lock # }}}
 
 function validate() { # {{{
-	local type max name="" file=""
-	local version="" migrationversion=""
-	local newversion="" newmigrationversion="" metadescription=""
-	local description="" environment="" filetype="" fullname="" engine=""
-	local schema="" environmentdirective="" defaulttype="ddl"
-	local -l desc=""
+	local type max name='' file=''
+	local version='' migrationversion=''
+	local newversion='' newmigrationversion='' metadescription=''
+	local description='' environment='' filetype='' fullname='' engine=''
+	local schema='' environmentdirective='' defaulttype='ddl'
+	local -l desc=''
 	local -i std_PARSEARGS_parsed=0 rc=0 warnings=0 notices=0 styles=0
 	local -a files=() versionsegment=()
 	local -A seen=()
-	
+
 	eval std::inherit -- versions descriptions metadescriptions foundinit
 
 	eval "$( std::parseargs --var files -- "${@:-}" )"
@@ -90,7 +97,10 @@ function validate() { # {{{
 		files=( "${@:-}" )
 	}
 
-	(( ${#files[@]} )) || return 1
+	if ! (( ${#files[@]} )); then
+		error "Function validate() requires at least one file to operate upon"
+		return 1
+	fi
 
 	grep -P 'x' <<<'x' >/dev/null 2>&1 || {
 		error "Your 'grep' binary ($( type -pf grep 2>/dev/null )) does not support '-P'erl-mode - aborting"
@@ -109,7 +119,7 @@ function validate() { # {{{
 
 	debug "validate() called on ${type:-unknown} file(s) '${files[*]}'"
 
-	local script=""
+	local script=''
 	std::define script <<-EOF
 		BEGIN		{ output = 0 }
 		/\/\*/		{ output = 1 }
@@ -161,7 +171,7 @@ function validate() { # {{{
 			fi
 
 			name="$( basename "${file}" )"
-			if [[ "${type}" == "metadata" ]]; then
+			if [[ "${type}" == 'metadata' ]]; then
 				if ! [[ "${file}" =~ /${name%.metadata}/ ]]; then
 					warn "Metadata file '${name}' SHOULD reside in a directory named '${name%.metadata}'"
 					(( warnings++ ))
@@ -315,11 +325,11 @@ function validate() { # {{{
 							newversion="$( cut -d'.' -f 1 <<<"${newversion}" ).${digit}"
 						fi
 						if grep -Pq '^\d+$' <<<"${newversion}"; then
-							newversion+=".1"
+							newversion+='.1'
 						else
 							# We should only get here if the original version was 0 or 00.0000.0,
 							# indicating a baseline file - which /should/ be V0.
-							newversion="0"
+							newversion='0'
 						fi
 
 						[[ "${newversion}" != "${version}" ]] &&
@@ -338,7 +348,7 @@ function validate() { # {{{
 								newmigrationversion="$( cut -d'.' -f 1 <<<"${newmigrationversion}" ).${digit}"
 							fi
 							if grep -Pq '^\d+$' <<<"${newmigrationversion}"; then
-								newmigrationversion+=".1"
+								newmigrationversion+='.1'
 							fi
 						fi
 						unset digit
@@ -347,7 +357,7 @@ function validate() { # {{{
 					if [[ -n "${max:-}" && "${max}" != "${version}" ]]; then
 						local vsort='sort -Vr'
 						if (( novsort )); then
-							vsort="sort -gr"
+							vsort='sort -gr'
 						fi
 
 						if [[ "${version}" == "$( echo -e "${version}\n${max}" | $vsort | head -n 1 )" ]]; then
@@ -359,14 +369,14 @@ function validate() { # {{{
 			fi # ! [[ "${type}" == "metadata" ]]
 
 			debug "Examining '${file}' for metadata ..."
-			local line="" fragment="" directive="" value=""
-			local -l frag=""
+			local line='' fragment='' directive='' value=''
+			local -l frag=''
 
-			#echo >&2 "file is '${file}'"
-			#echo >&2 "foundinit is '${foundinit}'"
-			#echo >&2 "versions contains '${!versions[@]}'"
-			#echo >&2 "descriptions contains '${!descriptions[@]}'"
-			#echo >&2 "metadescriptions contains '${!metadescriptions[@]}'"
+			#output >&2 "file is '${file}'"
+			#output >&2 "foundinit is '${foundinit}'"
+			#output >&2 "versions contains '${!versions[@]}'"
+			#output >&2 "descriptions contains '${!descriptions[@]}'"
+			#output >&2 "metadescriptions contains '${!metadescriptions[@]}'"
 
 			while read -r line; do
 				if ! grep -q '[a-zA-Z]' <<<"${line}"; then
@@ -387,7 +397,7 @@ function validate() { # {{{
 					debug "Read metadata directive '${directive} ${value}'"
 
 					case "${frag}" in
-						"description:")
+						'description:')
 							if (( "${seen[${frag%:}]:-}" )); then
 								error "Metadata from file '${name}' specifies '${frag%:}' directive multiple times"
 								(( warnings++ ))
@@ -422,7 +432,7 @@ function validate() { # {{{
 
 							unset metadesc
 							;;
-						"engine:")
+						'engine:')
 							if (( "${seen[${frag%:}]:-}" )); then
 								error "Metadata from file '${name}' specifies '${frag%:}' directive multiple times"
 								(( warnings++ ))
@@ -432,12 +442,12 @@ function validate() { # {{{
 
 							local -l metavalue="${value:-}"
 							case "${metavalue:-}" in
-								"mysql")
+								'mysql')
 									info "Engine specified in file '${name}' does not have to be specified if it is MySQL, which is default"
 									(( styles++ ))
 									;;
-								"vertica")
-									engine="vertica"
+								'vertica')
+									engine="${metavalue}"
 									# shellcheck disable=SC2126
 									if (( $( sed 's/"[^"]*"//' "${file}" | sed "s/'[^']*'//" | grep -o '`' | wc -l ) )); then
 										warn "Vertica schema '${name}' appears to contain MySQL-style quoting"
@@ -451,7 +461,7 @@ function validate() { # {{{
 							esac
 							unset metavalue
 							;;
-						"database:")
+						'database:')
 							if (( "${seen[${frag%:}]:-}" )); then
 								error "Metadata from file '${name}' specifies '${frag%:}' directive multiple times"
 								(( warnings++ ))
@@ -464,7 +474,7 @@ function validate() { # {{{
 								(( notices++ ))
 							fi
 							;;
-						"schema:")
+						'schema:')
 							if (( "${seen[${frag%:}]:-}" )); then
 								error "Metadata from file '${name}' specifies '${frag%:}' directive multiple times"
 								(( warnings++ ))
@@ -474,7 +484,7 @@ function validate() { # {{{
 
 							schema="${value:-}"
 							;;
-						"previous_version:")
+						'previous_version:')
 							if (( "${seen[${frag%:}]:-}" )); then
 								error "Metadata from file '${name}' specifies '${frag%:}' directive multiple times"
 								(( warnings++ ))
@@ -526,7 +536,7 @@ function validate() { # {{{
 								fi
 							fi
 							;;
-						"target_version:")
+						'target_version:')
 							if (( "${seen[${frag%:}]:-}" )); then
 								error "Metadata from file '${name}' specifies '${frag%:}' directive multiple times"
 								(( warnings++ ))
@@ -549,7 +559,7 @@ function validate() { # {{{
 								(( warnings++ ))
 							fi
 							;;
-						"environment:")
+						'environment:')
 							if (( "${seen[${frag%:}]:-}" )); then
 								error "Metadata from file '${name}' specifies '${frag%:}' directive multiple times"
 								(( warnings++ ))
@@ -559,7 +569,7 @@ function validate() { # {{{
 
 							environmentdirective="${value}"
 							;;
-						"restore:")
+						'restore:')
 							if (( "${seen[${frag%:}]:-}" )); then
 								error "Metadata from file '${name}' specifies '${frag%:}' directive multiple times"
 								(( warnings++ ))
@@ -579,7 +589,7 @@ function validate() { # {{{
 							fi
 							unset ppath
 							;;
-						*:)
+						*':')
 							if (( "${seen[${frag%:}]:-}" )); then
 								error "Metadata from file '${name}' specifies '${frag%:}' directive multiple times"
 								(( warnings++ ))
@@ -596,7 +606,7 @@ function validate() { # {{{
 							;;
 					esac
 				fi
-				debug "Finished checking line"
+				debug 'Finished checking line'
 			done < <( awk -- "${script:-}" "${file}" ) # while read -r line
 
 			if [[ -n "${newversion:-}" && "${version}" =~ ^[0-9]+(\.[0-9]+){2,}$ ]]; then
@@ -619,8 +629,8 @@ function validate() { # {{{
 					fi
 				else
 					info "File '${name}' is only valid in environment '${environmentdirective}'"
-					note "There should be corresponding environment-locked schema files present in order to provide a comprehensive set whereby every possible environment has a schema file present which applies to it"
-					local suggestion=""
+					note 'There should be corresponding environment-locked schema files present in order to provide a comprehensive set whereby every possible environment has a schema file present which applies to it'
+					local suggestion=''
 					if [[ -n "${newversion:-}" ]]; then
 
 						suggestion="V${newversion}__V${newversion}__${metadescription:-${description:-<description>}}.not-${environmentdirective}.sql"
@@ -636,38 +646,38 @@ function validate() { # {{{
 					fi
 				fi
 			fi
-			environmentdirective=""
-			metadescription=""
+			environmentdirective=''
+			metadescription=''
 
-			line="" fragment="" directive="" value="" frag=""
+			line='' fragment='' directive='' value='' frag=''
 
 			if [[ -n "${schema:-}" ]]; then
-				if ! [[ "${engine:-}" == "vertica" ]]; then
+				if ! [[ "${engine:-}" == 'vertica' ]]; then
 					error "File '${name}' includes a Vertica schema directive ('${schema}') without specifying 'Engine: Vertica'"
 					(( warnings++ ))
 				fi
 			fi
-			if [[ "${type}" == "vertica-schema" && ! -n "${migrationversion:-}" && ! "${engine:-}" == "vertica" ]]; then
+			if [[ "${type}" == 'vertica-schema' && ! -n "${migrationversion:-}" && ! "${engine:-}" == 'vertica' ]]; then
 				error "File '${name}' is defined to be a Vertica schema-file but does not specify 'Engine: Vertica'"
 				(( warnings++ ))
 			fi
 
-			if ! (( ${seen["description"]:-} )); then
+			if ! (( ${seen['description']:-} )); then
 				note "Metadata from file '${name}' lacks a 'Description' directive"
 				(( notices++ ))
 			fi
-			if ! [[ "${type}" == "metadata" ]]; then
-				if ! (( ${seen["previous_version"]:-} )); then
+			if ! [[ "${type}" == 'metadata' ]]; then
+				if ! (( ${seen['previous_version']:-} )); then
 					error "Metadata from file '${name}' lacks a 'Previous Version' directive"
 					(( warnings++ ))
 				fi
 			fi
-			if ! (( ${seen["target_version"]:-} )); then
+			if ! (( ${seen['target_version']:-} )); then
 				error "Metadata from file '${name}' lacks a 'Target Version' directive"
 				(( warnings++ ))
 			fi
 
-			debug "Finished checking metadata"
+			debug 'Finished checking metadata'
 
 			# Does gitbash support coloured output?
 			# Best not assume...
@@ -726,12 +736,12 @@ function validate() { # {{{
 			unset cgrep
 
 			if (( warnings )); then
-				(( silent )) | warn "Completed checking schema file '${name}': ${warnings} Fatal Errors or Warnings, ${notices} Notices, ${styles} Comments"
+				(( silent )) || warn "Completed checking schema file '${name}': ${warnings} Fatal Errors or Warnings, ${notices} Notices, ${styles} Comments"
 				rc=1
 			elif (( notices )); then
-				(( silent )) | note "Completed checking schema file '${name}': ${warnings} Fatal Errors or Warnings, ${notices} Notices, ${styles} Comments"
+				(( silent )) || note "Completed checking schema file '${name}': ${warnings} Fatal Errors or Warnings, ${notices} Notices, ${styles} Comments"
 			else
-				(( silent )) | info "Completed checking schema file '${name}': ${warnings} Fatal Errors or Warnings, ${notices} Notices, ${styles} Comments"
+				(( silent )) || info "Completed checking schema file '${name}': ${warnings} Fatal Errors or Warnings, ${notices} Notices, ${styles} Comments"
 			fi
 
 			warnings=0 notices=0 styles=0
@@ -739,7 +749,11 @@ function validate() { # {{{
 		done # for file in "${files[@]:-}"
 	fi
 
-	(( rc )) && error "Warnings or Fatal Errors found - Validation failed"
+	if (( rc )); then
+		error "Warnings or Fatal Errors found - Validation of '$( basename "$( dirname "${file}" )" )/$( basename "${file}" )' failed"
+	else
+		(( silent )) || info "Validation of '$( basename "$( dirname "${file}" )" )/$( basename "${file}" )' succeeded"
+	fi
 
 	return ${rc:-1}
 } # validate # }}}
@@ -757,17 +771,17 @@ function main() { # {{{
 	local -i warnings=0 notices=0 styles=0
 
 	local -i novsort=0
-	if ! sort -V <<<"" >/dev/null 2>&1; then
-		warn "Version sort unavailable - Stored Procedure and Schema" \
-		     "file load-order cannot be guaranteed."
-		error "You may see spurious warnings about missing prior" \
-		      "versions if you continue."
-		info "To resolve this issue, please upgrade to the latest" \
-		     "git-for-windows release..."
-		echo
-		warn "Press ctrl+c now to abort ..."
+	if ! sort -V <<<'' >/dev/null 2>&1; then
+		warn 'Version sort unavailable - Stored Procedure and Schema' \
+		     'file load-order cannot be guaranteed.'
+		error 'You may see spurious warnings about missing prior' \
+		      'versions if you continue.'
+		info 'To resolve this issue, please upgrade to the latest' \
+		     'git-for-windows release...'
+		output
+		warn 'Press ctrl+c now to abort ...'
 		sleep 10
-		warn "Proceeding ..."
+		warn 'Proceeding ...'
 		novsort=1
 		(( warnings++ ))
 	fi
@@ -795,11 +809,11 @@ function main() { # {{{
 				elif [[ "${1}" =~ ^-- ]]; then
 					die "Argument '${1}' to option ${arg} looks like an option... aborting"
 				else
-					dblist="${1}"
+					dblist="${dblist:+,}${1}"
 				fi
 				;;
 			-h|--help)
-				export std_USAGE="[--config <file>] [--schema <path>] [ [--databases <database>[,...]] | [--clusters <cluster>[,...]] ] [--dry-run] [--quiet|--silent] [--no-wrap] | [--locate <database>]"
+				export std_USAGE='[--config <file>] [--schema <path>] [ [--databases <database>[,...]] | [--clusters <cluster>[,...]] ] [--dry-run] [--quiet|--silent] [--no-wrap] | [--locate <database>]'
 				std::usage
 				;;
 			-l|--locate|--whereis|--server|--host)
@@ -835,7 +849,7 @@ function main() { # {{{
 				elif [[ "${1}" =~ ^-- ]]; then
 					die "Argument '${1}' to option ${arg} looks like an option... aborting"
 				else
-					clist="${1}"
+					clist="${clist:+,}${1}"
 				fi
 				;;
 			   --dry-run|--verify)
@@ -861,19 +875,19 @@ function main() { # {{{
 	done
 
 	if [[ -n "${dblist:-}" && -n "${clist:-}" ]]; then
-		die "Options --databases and --clusters are mutually exclusive"
+		die 'Options --databases and --clusters are mutually exclusive'
 	fi
 
-	filename="$( std::findfile -app dbtools -name schema.conf -dir /etc ${filename:+-default "${filename}"} )"
+	filename="$( std::findfile -app 'dbtools' -name 'schema.conf' -dir '/etc' ${filename:+-default "${filename}"} )"
 	if [[ ! -r "${filename}" ]]; then
-		die "Cannot read configuration file: please use --config to specify location"
+		die 'Cannot read configuration file, please use --config to specify location'
 	else
 		debug "Using configuration file '${filename}' ..."
 	fi
 
-	local defaults="$( std::getfilesection "${filename}" "DEFAULT" | sed -r 's/#.*$// ; /^[^[:space:]]+\.[^[:space:]]+\s*=/s/\./_/' | grep -Ev '^\s*$' | sed -r 's/\s*=\s*/=/' )"
-	local hosts="$( std::getfilesection "${filename}" "CLUSTERHOSTS" | sed -r 's/#.*$// ; /^[^[:space:]]+\.[^[:space:]]+\s*=/s/\./_/' | grep -Ev '^\s*$' | sed -r 's/\s*=\s*/=/' )"
-	local databases="$( std::getfilesection "${filename}" "DATABASES" | sed -r 's/#.*$// ; /^[^[:space:]]+\.[^[:space:]]+\s*=/s/\./_/' | grep -Ev '^\s*$' | sed -r 's/\s*=\s*/=/' )"
+	local defaults="$( std::getfilesection "${filename}" 'DEFAULT' | sed -r 's/#.*$// ; /^[^[:space:]]+\.[^[:space:]]+\s*=/s/\./_/' | grep -Ev '^\s*$' | sed -r 's/\s*=\s*/=/' )"
+	local hosts="$( std::getfilesection "${filename}" 'CLUSTERHOSTS' | sed -r 's/#.*$// ; /^[^[:space:]]+\.[^[:space:]]+\s*=/s/\./_/' | grep -Ev '^\s*$' | sed -r 's/\s*=\s*/=/' )"
+	local databases="$( std::getfilesection "${filename}" 'DATABASES' | sed -r 's/#.*$// ; /^[^[:space:]]+\.[^[:space:]]+\s*=/s/\./_/' | grep -Ev '^\s*$' | sed -r 's/\s*=\s*/=/' )"
 
 	[[ -n "${databases:-}" ]] || die "No databases defined in '${filename}'"
 
@@ -896,11 +910,11 @@ function main() { # {{{
 		[[ -n "${details:-}" ]] || die "Database '${db}' lacks a configuration block in '${filename}'"
 		debug "${db}:\n${details}\n"
 
-		local host="$( ${mgrep} "host=" <<<"${details}" | cut -d'=' -f 2 )"
+		local host="$( ${mgrep} 'host=' <<<"${details}" | cut -d'=' -f 2 )"
 		if [[ -n "${host:-}" ]]; then
 			output "Database '${db}' has write master '${host}'"
 		else
-			local cluster="$( ${mgrep} "cluster=" <<<"${details}" | cut -d'=' -f 2 )"
+			local cluster="$( ${mgrep} 'cluster=' <<<"${details}" | cut -d'=' -f 2 )"
 			[[ -n "${cluster:-}" ]] || die "Database '${db}' has no defined cluster membership in '${filename}'"
 
 			local master="$( ${mgrep} "^${cluster}=" <<<"${hosts}" | cut -d'=' -f 2 )"
@@ -916,7 +930,7 @@ function main() { # {{{
 
 	local -i result rc=0 founddb=0
 
-	debug "Establishing lock ..."
+	debug 'Establishing lock ...'
 
 	if [[ -s "${lockfile}" ]]; then
 		local -i blockingpid
@@ -971,22 +985,28 @@ function main() { # {{{
 		# Run the block below in a sub-shell so that we don't have to
 		# manually sanitise the environment on each iteration.
 		#
-		(
-		declare -A versions=()
-		declare -A descriptions=()
-		declare -A metadescriptions=()
-		declare -i foundinit=0
+		( # {{{
+		local -A versions=()
+		local -A descriptions=()
+		local -A metadescriptions=()
+		local -i foundinit=0
 
 		if [[ -n "${dblist:-}" ]] && ! grep -q ",${db}," <<<",${dblist},"; then
-			if ! (( child )); then
-				#(( quiet | silent )) || { echo ; info "Skipping deselected database '${db}' ..." ; }
-				(( std_DEBUG )) && echo
+			if (( std_DEBUG )) && ! (( child )); then
+				output
 				debug "Skipping deselected database '${db}' ..."
 			fi
 			exit 0 # continue
 		fi
 
-		(( quiet | silent )) || { (( founddb )) && echo ; }
+		if ! (( quiet | silent )); then
+			# If founddb == 1 then we've already seen prior data-
+			# base entries, and produced output for them.  We
+			# then want a blank line here to separate the output.
+			if ! (( std_DEBUG )); then
+				(( founddb )) && [[ -n "${std_LASTOUTPUT:-}" ]] && output
+			fi
+		fi
 
 		local details="$( std::getfilesection "${filename}" "${db}" | sed -r 's/#.*$// ; /^[^[:space:]]+\.[^[:space:]]+\s*=/s/\./_/' | grep -Ev '^\s*$' | sed -r 's/\s*=\s*/=/' )"
 		[[ -n "${details:-}" ]] || die "Database '${db}' lacks a configuration block in '${filename}'"
@@ -995,21 +1015,35 @@ function main() { # {{{
 		eval "${details}"
 
 		if [[ -n "${clist:-}" ]] && ! grep -q ",${cluster:-.*}," <<<",${clist},"; then
-			if ! (( child )); then
-				(( quiet | silent )) || { echo ; info "Skipping database '${db}' from deselected cluster '${cluster:-all}' ..." ; }
+			if ! (( child )) && ! (( quiet | silent )); then
+				output
+				info "Skipping database '${db}' from deselected cluster '${cluster:-all}' ..."
 			fi
 			exit 0 # continue
 		fi
 
 		if grep -Eiq "${falsy}" <<<"${managed:-}"; then
 			if (( child )); then
-				(( quiet | silent )) || { echo ; info "Skipping unmanaged database '${db}' ..." ; }
+				if ! (( quiet | silent )); then
+					output
+					info "Skipping unmanaged database '${db}' ..."
+				fi
 				founddb=1
 				exit 3 # See below...
 			fi
 		else
-			(( silent )) || info "Processing configuration to validate database '${db}' ..."
-			(( silent )) || { [[ -n "${dblist:-}" && "${dblist}" == "${db}" ]] && echo ; }
+			if ! (( silent )); then
+				info "Processing configuration to validate database '${db}' ..."
+				if ! (( std_DEBUG )); then
+					# If we're not producing debug output,
+					# which wants to be as succinct
+					# (e.g. compressed) as possible, and
+					# if we're processing only a single
+					# database, then output a blank line
+					# here...
+					[[ -n "${dblist:-}" && "${dblist}" == "${db}" ]] && [[ -n "${std_LASTOUTPUT:-}" ]] && output
+				fi
+			fi
 		fi
 
 		local -a messages=()
@@ -1019,7 +1053,7 @@ function main() { # {{{
 			actualpath="${path:-}"
 		fi
 		path="$( readlink -e "${actualpath:-.}" )" || die "Failed to canonicalise path '${actualpath}': ${?}"
-		actualpath=""
+		actualpath=''
 
 		if [[ -z "${path:-}" ]]; then
 			messages+=( "Path to schema files and stored procedures not defined for database '${db}'" )
@@ -1035,7 +1069,7 @@ function main() { # {{{
 						actualpath="${path%/}"
 					fi
 				else
-					if [[ "$( basename "${path}" )" == "schema" ]]; then
+					if [[ "$( basename "${path}" )" == 'schema' ]]; then
 						local text="Correcting path '${path}'"
 						path="$( dirname "${path}" )"
 						text+=" to '${path}' for database '${db}' ..."
@@ -1070,7 +1104,11 @@ function main() { # {{{
 		if [[ -n "${host:-}" ]]; then
 			:
 		elif [[ -n "${cluster:-}" ]]; then
-			host="$( eval echo "\$${cluster}" )"
+			if [[ -n "${!cluster:-}" ]]; then
+				host="${!cluster}"
+			else
+				error "Database '${db}' has cluster '${cluster}', for which no write master is defined"
+			fi
 		else
 			die "Neither 'host' nor 'cluster' membership is defined for database '${db}' in '${filename}'"
 		fi
@@ -1103,7 +1141,7 @@ function main() { # {{{
 				while read -r filename; do
 					if [[ -f "${filename}" && "$( basename "${filename}" )" =~ \.sql$ ]]; then
 						if (( hasdir )); then
-							warn "Invalid mix of files and directories at same level"
+							warn 'Invalid mix of files and directories at same level'
 							(( warnings++ ))
 						fi
 						if (( silent )); then
@@ -1122,7 +1160,7 @@ function main() { # {{{
 						fi
 					elif [[ -f "${filename}" ]]; then
 						if (( hasdir )); then
-							warn "Invalid mix of files and directories at same level"
+							warn 'Invalid mix of files and directories at same level'
 							(( warnings++ ))
 						fi
 						if [[ "$( basename "${filename}" )" =~ \.metadata$ ]]; then
@@ -1162,7 +1200,6 @@ function main() { # {{{
 		else
 			ppath="${path}/schema/${db}"
 		fi
-		#for filename in $( find "${ppath}" -mindepth 1 -maxdepth 1 -print0 | sort -Vz | xargs -r0 echo ); do
 		for filename in $(
 			local k o v
 			local -A prefices=()
@@ -1183,13 +1220,14 @@ function main() { # {{{
 			filename="$( basename "${filename}" )"
 
 			if [[ -f "${ppath}/${filename}" && "${filename}" =~ \.sql$ ]]; then
-				if [[ -n "${syntax:-}" && "${syntax}" == "vertica" ]]; then
+				debug "Validating file '${ppath}/${filename}' ..."
+				if [[ -n "${syntax:-}" && "${syntax}" == 'vertica' ]]; then
 					if (( silent )); then
 						# shellcheck disable=SC2154
 						validate -type 'vertica-schema' ${version_max:+-max "${version_max}" }-files "${ppath}/${filename}" >/dev/null 2>&1
 					elif (( quiet )); then
 						# shellcheck disable=SC2154
-						validate -type 'vertica-schema' ${version_max:+-max "${version_max}" }-files "${ppath}/${filename}" >/dev/null
+						validate -type 'vertica-schema' ${version_max:+-max "${version_max}" }-files "${ppath}/${filename}" >/dev/null && std_LASTOUTPUT=""
 					else
 						# shellcheck disable=SC2154
 						validate -type 'vertica-schema' ${version_max:+-max "${version_max}" }-files "${ppath}/${filename}"
@@ -1200,7 +1238,7 @@ function main() { # {{{
 						validate -type 'schema' ${version_max:+-max "${version_max}" }-files "${ppath}/${filename}" >/dev/null 2>&1
 					elif (( quiet )); then
 						# shellcheck disable=SC2154
-						validate -type 'schema' ${version_max:+-max "${version_max}" }-files "${ppath}/${filename}" >/dev/null
+						validate -type 'schema' ${version_max:+-max "${version_max}" }-files "${ppath}/${filename}" >/dev/null && std_LASTOUTPUT=""
 					else
 						# shellcheck disable=SC2154
 						validate -type 'schema' ${version_max:+-max "${version_max}" }-files "${ppath}/${filename}"
@@ -1208,9 +1246,11 @@ function main() { # {{{
 				fi
 				(( rc += ${?} ))
 				founddb=1
+
 			elif [[ -d "${ppath}/${filename}" ]]; then
 				note "Directory '${filename}' should not be present in directory '${ppath}' and will be ignored during schema file processing"
 				(( notices++ ))
+
 			elif [[ -f "${ppath}/${filename}" ]]; then
 
 				# TODO: Alternatively, any referenced files
@@ -1242,14 +1282,20 @@ function main() { # {{{
 					else
 						debug "File '${filename}' is referenced in a metadata 'Restore:' directive"
 					fi
+					unset files restorefiles script
 				fi
 			else
 				warn "Object '${filename}' should not be present in directory '${ppath}' and will be ignored during schema file processing"
 				(( warnings++ ))
 			fi
 
-			(( silent )) || { [[ -n "${dblist:-}" && "${dblist}" == "${db}" ]] && echo ; }
-		done
+			if ! (( silent )); then
+				# If we think we've produced output and we're
+				# processing only a single database, then
+				# output a blank line here...
+				[[ -n "${dblist:-}" && "${dblist}" == "${db}" ]] && [[ -n "${std_LASTOUTPUT:-}" ]] && output
+			fi
+		done # filename
 		debug "Schema processed for database '${db}'\n"
 
 		(( founddb && rc )) && exit 4
@@ -1258,7 +1304,10 @@ function main() { # {{{
 		# shellcheck disable=SC2015
 		(( rc )) && false || true
 
-		)
+		# Run in sub-shell so that the following is not necessary...
+		unset versions descriptions metadescriptions foundinit details messages reorder procedurepath ppath
+
+		) # }}}
 
 		result=${?}
 		case ${result} in
@@ -1282,30 +1331,29 @@ function main() { # {{{
 				rc+=${result}
 				;;
 		esac
-	done
+	done # db in ${databases}
 
 	(( std_TRACE )) && set +o xtrace
 
-
-	debug "Releasing lock ..."
+	debug 'Releasing lock ...'
 	[[ -e "${lockfile}" && "$( <"${lockfile}" )" == "${$}" ]] && rm "${lockfile}"
 
 	# ${rc} should have recovered from the sub-shell, above...
 	if (( rc )) && (( dryrun )); then
 		(( silent )) || warn "Validation completed with errors, or database doesn't exist"
 	elif (( rc )); then
-		(( silent )) || warn "Validation completed with errors"
+		(( silent )) || warn 'Validation completed with errors'
 	elif (( !( founddb ) )); then
-		(( silent )) || error "Specified database(s) not present in configuration file"
+		(( silent )) || error 'Specified database(s) not present in configuration file'
 		rc=1
 	else
-		(( silent )) || info "Validation completed"
+		(( silent )) || info 'Validation completed'
 	fi
 
 	return ${rc}
 } # main # }}}
 
-export LC_ALL="C"
+export LC_ALL='C'
 set -o pipefail
 
 std::requires --no-quiet 'pgrep'

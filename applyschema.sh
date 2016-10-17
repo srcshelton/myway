@@ -3,8 +3,8 @@
 # stdlib.sh should be in /usr/local/lib/stdlib.sh, which can be found as
 # follows by scripts located in /usr/local/{,s}bin/...
 declare std_LIB='stdlib.sh'
-# shellcheck disable=SC2153
 type -pf 'dirname' >/dev/null 2>&1 || function dirname() { : ; }
+# shellcheck disable=SC2153
 for std_LIBPATH in							\
 	"$( dirname -- "${BASH_SOURCE:-${0:-.}}" )"			\
 	'.'								\
@@ -34,7 +34,8 @@ unset -f dirname
 # shellcheck disable=SC1091,SC2015
 # shellcheck source=/usr/local/lib/stdlib.sh
 [[ -r "${std_LIBPATH}/${std_LIB}" ]] && source "${std_LIBPATH}/${std_LIB}" || {
-	echo >&2 "FATAL:  Unable to source ${std_LIB} functions: ${?}"
+	# shellcheck disable=SC2154
+	echo >&2 "FATAL:  Unable to source ${std_LIB} functions: ${?}${std_ERRNO:+ (ERRNO ${std_ERRNO})}"
 	exit 1
 }
 
@@ -97,6 +98,7 @@ function main() { # {{{
 
 	# Sigh...
 	[[ -d '/opt/vertica/bin' ]] && export PATH="${PATH:+${PATH}:}/opt/vertica/bin"
+	[[ -d '/usr/local/opt/vertica/bin' ]] && export PATH="${PATH:+${PATH}:}/usr/local/opt/vertica/bin"
 
 	${myway} --help >/dev/null 2>&1 || die "${myway} is failing to" \
 		"execute - please confirm that all required perl modules are" \
@@ -237,9 +239,8 @@ function main() { # {{{
 
 	filename="$( std::findfile -app 'dbtools' -name 'schema.conf' -dir '/etc' ${filename:+-default "${filename}"} )"
 	if [[ ! -r "${filename}" ]]; then
-		die 'Cannot read configuration file'
+		die 'Cannot read configuration file, please use --config to specify location'
 	else
-		#(( quiet | silent )) || info "Using configuration file '${filename}' ..."
 		debug "Using configuration file '${filename}' ..."
 	fi
 
@@ -255,25 +256,25 @@ function main() { # {{{
 
 	# The 'grep' build used by gitbash doesn't support '-m'!
 	# (... but does, surprisingly, apparently support '-P')
-	local grepm='grep -m 1'
-	grep -m 1 'x' <<<'x' >/dev/null 2>&1 || grepm='grep'
+	local mgrep='grep -m 1'
+	${mgrep} 'x' <<<'x' >/dev/null 2>&1 || mgrep='grep'
 
 	if [[ -n "${db:-}" ]]; then
-		local name="$( ${grepm} -o "^${db}$" <<<"${databases}" )"
+		local name="$( ${mgrep} -o "^${db}$" <<<"${databases}" )"
 		[[ -n "${name:-}" ]] || die "Database '${db}' not defined in '${filename}'"
 
 		local details="$( std::getfilesection "${filename}" "${name}" | sed -r 's/#.*$// ; /^[^[:space:]]+\.[^[:space:]]+\s*=/s/\./_/' | grep -Ev '^\s*$' | sed -r 's/\s*=\s*/=/' )"
 		[[ -n "${details:-}" ]] || die "Database '${db}' lacks a configuration block in '${filename}'"
 		debug "${db}:\n${details}\n"
 
-		local host="$( ${grepm} 'host=' <<<"${details}" | cut -d'=' -f 2 )"
+		local host="$( ${mgrep} 'host=' <<<"${details}" | cut -d'=' -f 2 )"
 		if [[ -n "${host:-}" ]]; then
 			output "Database '${db}' has write master '${host}'"
 		else
-			local cluster="$( ${grepm} 'cluster=' <<<"${details}" | cut -d'=' -f 2 )"
+			local cluster="$( ${mgrep} 'cluster=' <<<"${details}" | cut -d'=' -f 2 )"
 			[[ -n "${cluster:-}" ]] || die "Database '${db}' has no defined cluster membership in '${filename}'"
 
-			local master="$( ${grepm} "^${cluster}=" <<<"${hosts}" | cut -d'=' -f 2 )"
+			local master="$( ${mgrep} "^${cluster}=" <<<"${hosts}" | cut -d'=' -f 2 )"
 			[[ -n "${master:-}" ]] || die "Cluster '${cluster}' (of which '${db}' is a stated member) is not defined in '${filename}'"
 
 			output "Database '${db}' is a member of cluster '${cluster}' with write master '${master}'"
@@ -282,7 +283,7 @@ function main() { # {{{
 		exit 0
 	fi
 
-	unset grepm
+	unset mgrep
 
 	local -i result rc=0 founddb=0
 
@@ -296,7 +297,7 @@ function main() { # {{{
 			if kill -0 ${blockingpid} >/dev/null 2>&1; then
 				#local processname="$( ps -e | grep "^${blockingpid}" | rev | cut -d' ' -f 1 | rev )"
 				local processname="$( pgrep -lF "${lockfile}" | cut -d' ' -f 2- )"
-				die "Lock file '${lockfile}' (belonging to process '${processname}', PID '${blockingpid}') exists - aborting"
+				die "Lock file '${lockfile}' (belonging to process '${processname:-}', PID '${blockingpid}') exists - aborting"
 			else
 				warn "Lock file '${lockfile}' (belonging to obsolete PID '${blockingpid}') exists - removing stale lock"
 				rm -f "${lockfile}" || die "Lock file removal failed: ${?}"
@@ -392,14 +393,11 @@ function main() { # {{{
 		# Run the block below in a sub-shell so that we don't have to
 		# manually sanitise the environment on each iteration.
 		#
-		(
+		( # {{{
 		if [[ -n "${dblist:-}" ]] && ! grep -q ",${db}," <<<",${dblist},"; then
-			#(( quiet | silent )) || info "Skipping deselected database '${db}' ..."
 			debug "Skipping deselected database '${db}' ..."
 			exit 0 # continue
 		fi
-
-		(( quiet | silent )) || { (( founddb )) && echo ; }
 
 		local details="$( std::getfilesection "${filename}" "${db}" | sed -r 's/#.*$// ; /^[^[:space:]]+\.[^[:space:]]+\s*=/s/\./_/' | grep -Ev '^\s*$' | sed -r 's/\s*=\s*/=/' )"
 		[[ -n "${details:-}" ]] || die "Database '${db}' lacks a configuration block in '${filename}'"
@@ -416,9 +414,17 @@ function main() { # {{{
 			(( silent )) || info "Skipping unmanaged database '${db}' ..."
 			founddb=1
 			exit 3 # See below...
-		else
-			(( silent )) || info "Processing configuration for database '${db}' ..."
-			(( silent )) || { [[ -n "${dblist:-}" && "${dblist}" == "${db}" ]] && echo ; }
+		fi
+
+		if ! (( silent )); then
+			if ! (( silent )); then
+				(( founddb )) && output
+			fi
+
+			info "Processing configuration for database '${db}' ..."
+			if ! (( std_DEBUG )); then
+				[[ -n "${dblist:-}" && "${dblist}" == "${db}" ]] && output
+			fi
 		fi
 
 		local -a messages=()
@@ -795,7 +801,9 @@ function main() { # {{{
 			fi
 
 			debug "Load completed for database '${db}'\n"
-			(( silent )) || { [[ -n "${dblist:-}" && "${dblist}" == "${db}" ]] && echo ; }
+			if ! (( silent )); then
+				[[ -n "${dblist:-}" && "${dblist}" == "${db}" ]] && [[ -n "${std_LASTOUTPUT:-}" ]] && output
+			fi
 		fi
 
 		(( founddb && rc )) && exit 4
@@ -807,7 +815,7 @@ function main() { # {{{
 		# Run in sub-shell so that the following is not necessary...
 		unset response allowfail option extraparams params messages details
 
-		)
+		) # }}}
 
 		result=${?}
 		case ${result} in
