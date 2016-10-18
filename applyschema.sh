@@ -43,7 +43,7 @@ std_DEBUG="${DEBUG:-0}"
 std_TRACE="${TRACE:-0}"
 
 SCRIPT='myway.pl'
-COMPATIBLE='1.3.1'
+COMPATIBLE='1.3.2'
 VALIDATOR='validateschema.sh'
 
 # We want to be able to debug applyschema.sh without debugging myway.pl...
@@ -610,7 +610,9 @@ function main() { # {{{
 			extraparams+=( '--dry-run' )
 		fi
 
-		debug "About to prepare schema: '${myway} ${params[*]} ${extraparams[*]}'"
+		debug "About to initialise database: '${myway} ${params[*]} ${extraparams[*]}'"
+		debug "N.B. Parameters not required by the --init stage are not passed until later..."
+
 		local -i allowfail=0
 		if (( dryrun )); then
 			allowfail=1
@@ -715,6 +717,7 @@ function main() { # {{{
 						(( silent )) || info "Launching '${SCRIPT}' with path '${ppath}' to update Stored Procedures for database '${db}' ..."
 
 						debug "About to apply Stored Procedures: ${myway} ${params[*]} ${procparams[*]} ${extraparams[*]} ${extra[*]:-}"
+						debug "N.B. Parameters not required by the --mode=procedure stage are not passed until later..."
 						if (( silent )); then
 							${myway} "${params[@]}" "${procparams[@]}" "${extraparams[@]}" >/dev/null 2>&1
 						elif (( quiet )); then
@@ -777,6 +780,7 @@ function main() { # {{{
 			fi
 
 			debug "About to apply schema: '${myway} ${params[*]} ${extraparams[*]}'"
+			debug "N.B. All outstanding parameters are passed at this stage..."
 			if (( silent )); then
 				${myway} "${params[@]}" "${extraparams[@]}" >/dev/null 2>&1
 			elif (( quiet )); then

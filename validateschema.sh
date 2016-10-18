@@ -326,7 +326,9 @@ function validate() { # {{{
 						fi
 						if grep -Pq '^\d+$' <<<"${newversion}"; then
 							newversion+='.1'
-						else
+						#elif grep -Pq '^(\d+\.)+$' <<<"${newversion}"; then
+							#:
+						elif [[ "${version}" =~ ^[0.]+$ ]]; then
 							# We should only get here if the original version was 0 or 00.0000.0,
 							# indicating a baseline file - which /should/ be V0.
 							newversion='0'
@@ -621,30 +623,61 @@ function validate() { # {{{
 			fi
 
 			if [[ -n "${environmentdirective:-}" ]]; then
-				if [[ "${environmentdirective}" =~ ^! ]]; then
-					info "File '${name}' is not valid in environment '${environmentdirective#!}'"
-					if ! [[ "${name}" =~ \.not-${environmentdirective#!}\. ]]; then
-						warn "Filename '${name}' does not include environment 'not-${environmentdirective#!}'"
-						(( warnings++ ))
-					fi
-				else
-					info "File '${name}' is only valid in environment '${environmentdirective}'"
-					note 'There should be corresponding environment-locked schema files present in order to provide a comprehensive set whereby every possible environment has a schema file present which applies to it'
-					local suggestion=''
-					if [[ -n "${newversion:-}" ]]; then
+				local -i n=1
+				local environmentcomponent component
+				local -a environments
+				while environmentcomponent="$( cut -d',' -f ${n} <<<"${environmentdirective}" )" && [[ -n "${environmentcomponent:-}" ]]; do
+					environmentcomponent="$( sed 's/^\s*// ; s/\s*$//' <<<"${environmentcomponent}" )"
+					if [[ "${environmentcomponent}" =~ ^! ]]; then
+						environments+=( "not-${environmentcomponent#!}" )
 
-						suggestion="V${newversion}__V${newversion}__${metadescription:-${description:-<description>}}.not-${environmentdirective}.sql"
+						info "File '${name}' is not valid in environment '${environmentcomponent#!}'"
+
+						# Guarding '.' characters must be present at either
+						# end of the environment string in order for the
+						# environment to be isolated when the filename was
+						# originally processed, as above...
+						if ! [[ "${name}" =~ [.,]not-${environmentcomponent#!}[.,] ]]; then
+							warn "Filename '${name}' does not include environment 'not-${environmentcomponent#!}'"
+							(( warnings++ ))
+						fi
 					else
-						#suggestion="$( sed -r "s/^(V.*__)(.*)$/\\1\\1\\2/ ; s/\.d[mdc]l\./.not-${environmentdirective}./" <<<"${name}" )"
-						suggestion="V${version}__V${version}__${metadescription:-${description:-<description>}}.not-${environmentdirective}.sql"
+						environments+=( "${environmentcomponent}" )
+
+						info "File '${name}' is only valid in environment '${environmentcomponent}'"
+
+						# See above comment in regards to guarding
+						if ! [[ "${name}" =~ [.,]${environmentcomponent#!}[.,] ]]; then
+							warn "Filename '${name}' does not include environment '${environmentcomponent}'"
+							(( warnings++ ))
+						fi
+
 					fi
-					info "If nothing needs to be done for other environments, please provide a migration schema to skip this step (possibly '${suggestion}' if only this version is to be stepped-over)"
-					unset suggestion
-					if ! [[ "${name}" =~ \.${environmentdirective#!}\. ]]; then
-						warn "Filename '${name}' does not include environment '${environmentdirective#!}'"
-						(( warnings++ ))
+					[[ "${environmentdirective}" =~ , ]] || break
+					(( n++ ))
+				done
+
+				local suggestion=''
+				environmentcomponent=''
+				for component in "${environments[@]:-}"; do
+					if [[ "${component}" =~ ^not- ]]; then
+						environmentcomponent+=",${component#not-}"
+					else
+						environmentcomponent+=",not-${component}"
 					fi
+				done
+				environmentcomponent="${environmentcomponent:1}"
+				if [[ -n "${newversion:-}" ]]; then
+					suggestion="V${newversion}__V${newversion}__${metadescription:-${description:-<description>}}.${environmentcomponent}.sql"
+				else
+					suggestion="V${version}__V${version}__${metadescription:-${description:-<description>}}.${environmentcomponent}.sql"
 				fi
+				note 'There should be corresponding environment-locked schema files present in order to provide a comprehensive set whereby every possible environment has a schema file present which applies to it'
+				info "If nothing needs to be done for other environments, please provide a migration schema to skip this step (possibly '${suggestion}' if only this version is to be stepped-over)"
+				unset suggestion
+
+				unset environmentcomponent
+				unset n
 			fi
 			environmentdirective=''
 			metadescription=''

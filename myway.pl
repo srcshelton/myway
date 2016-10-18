@@ -93,7 +93,7 @@ no if ( $] >= 5.02 ), warnings => 'experimental::autoderef';
 # ... in actual fact, diagnostics causes more problems than it solves.  It does
 # appear to be, in reality, quite silly.
 
-use constant VERSION     =>  "1.3.1.1";
+use constant VERSION     =>  "1.3.2";
 
 use constant TRUE        =>  1;
 use constant FALSE       =>  0;
@@ -4123,16 +4123,36 @@ sub applyschema( $$$$;$ ) { # {{{
 											pnote( "Adjusting Stored Procedure names with version string '$procedureversion' from metadata\n", undef, TRUE ) unless( $quiet or $silent );
 										}
 									}
-								} elsif( $line =~ m/Environment:\s+(!)?\s*([^\s]+)\s*/i ) {
-									my $invert = $1;
-									my $match = $2;
-									if(
-									  ( ( $invert eq '!' ) and ( $match eq $environment ) )
-									  or
-									  ( not( $invert eq '!' ) and not( $match eq $environment ) )
-									) {
-										pwarn( "Metadata file '$metafile' prohibits execution in environment $environment\n", undef, TRUE );
-										return( TRUE );
+								} elsif( $line =~ m/Environment:\s+([^\s]+)\s*$/i ) {
+									if( defined( $1 ) and length( $1 ) ) {
+										foreach my $restriction ( split( /\s*[,\s]+\s*/, $1 ) ) {
+											my( $invert, $match );
+											$restriction =~ m/^\s*(!)?\s*([^\s]+)\s*$/;
+											$invert = $1 if( defined( $1 ) and length( $1 ) );
+											$match = $2 if( defined( $2 ) and length( $2 ) );
+											if( not( defined( $match ) ) ) {
+												pwarn( "Metadata directive '$line' is not valid\n", undef, TRUE );
+												return( FALSE );
+											}
+											pdebug( "Read metadata environment restriction '" . ( defined( $invert ) ? $invert : '' ) . "$match'" );
+											## no critic (ProhibitConditionalDeclarations)
+											$environment = '' unless( defined( $environment ) );
+											if(
+											  ( ( defined( $invert ) and ( $invert eq '!' ) ) and ( lc( $match ) eq lc( $environment ) ) )
+											  or
+											  ( not( defined( $invert ) and ( $invert eq '!' ) ) and not( lc( $match ) eq lc( $environment ) ) )
+											) {
+												if( '' eq $environment ) {
+													pwarn( "Metadata from file '$schmfile' only allows execution in environment '$match'\n", undef, TRUE );
+												} else {
+													pwarn( "Metadata from file '$schmfile' prohibits execution in environment '$environment'\n", undef, TRUE );
+												}
+												# Don't fail, as we could have multiple files for different
+												# environments, all of which but one drop-out here...
+												return( TRUE );
+											}
+											pdebug( "Validated metadata environment restriction '" . ( defined( $invert ) ? $invert : '' ) . "$match'" );
+										}
 									}
 								}
 							}
@@ -4417,27 +4437,37 @@ sub applyschema( $$$$;$ ) { # {{{
 							} elsif( $line =~ m/Target\s+version:\s+([^\s]+)\s*/i ) {
 								$schmtarget = $1;
 								pdebug( "Read metadata target version '$schmtarget'" );
-							} elsif( $line =~ m/Environment:\s+(!)?\s*([^\s]+)\s*/i ) {
-								pdebug( "Read metadata environment restriction '" . ( defined( $1 ) ? $1 : '' ) . "$2'" );
-								## no critic (ProhibitConditionalDeclarations)
-								$environment = '' unless( defined( $environment ) );
-								my $invert = $1 if( defined( $1 ) and length( $1 ) );
-								my $match = $2;
-								if(
-								  ( ( defined( $invert ) and ( $invert eq '!' ) ) and ( lc( $match ) eq lc( $environment ) ) )
-								  or
-								  ( not( defined( $invert ) and ( $invert eq '!' ) ) and not( lc( $match ) eq lc( $environment ) ) )
-								) {
-									if( '' eq $environment ) {
-										pwarn( "Metadata from file '$schmfile' only allows execution in environment '$match'\n", undef, TRUE );
-									} else {
-										pwarn( "Metadata from file '$schmfile' prohibits execution in environment '$environment'\n", undef, TRUE );
+							} elsif( $line =~ m/Environment:\s+([^\s]+)\s*$/i ) {
+								if( defined( $1 ) and length( $1 ) ) {
+									foreach my $restriction ( split( /\s*[,\s]+\s*/, $1 ) ) {
+										my( $invert, $match );
+										$restriction =~ m/^\s*(!)?\s*([^\s]+)\s*$/;
+										$invert = $1 if( defined( $1 ) and length( $1 ) );
+										$match = $2 if( defined( $2 ) and length( $2 ) );
+										if( not( defined( $match ) ) ) {
+											pwarn( "Metadata directive '$line' is not valid\n", undef, TRUE );
+											return( FALSE );
+										}
+										pdebug( "Read metadata environment restriction '" . ( defined( $invert ) ? $invert : '' ) . "$match'" );
+										## no critic (ProhibitConditionalDeclarations)
+										$environment = '' unless( defined( $environment ) );
+										if(
+										  ( ( defined( $invert ) and ( $invert eq '!' ) ) and ( lc( $match ) eq lc( $environment ) ) )
+										  or
+										  ( not( defined( $invert ) and ( $invert eq '!' ) ) and not( lc( $match ) eq lc( $environment ) ) )
+										) {
+											if( '' eq $environment ) {
+												pwarn( "Metadata from file '$schmfile' only allows execution in environment '$match'\n", undef, TRUE );
+											} else {
+												pwarn( "Metadata from file '$schmfile' prohibits execution in environment '$environment'\n", undef, TRUE );
+											}
+											# Don't fail, as we could have multiple files for different
+											# environments, all of which but one drop-out here...
+											return( TRUE );
+										}
+										pdebug( "Validated metadata environment restriction '" . ( defined( $invert ) ? $invert : '' ) . "$match'" );
 									}
-									# Don't fail, as we could have multiple files for different
-									# environments, all of which but one drop-out here...
-									return( TRUE );
 								}
-								pdebug( "Validated metadata environment restriction '" . ( defined( $invert ) ? $invert : '' ) . "$match'" );
 							} elsif( $line =~ m/Restore:\s+([^#]+)(?:#.*)?\s*$/i ) {
 								$restorefile = $1;
 								pdebug( "Read metadata file-restore request for '$restorefile'" );
