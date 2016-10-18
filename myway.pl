@@ -564,7 +564,7 @@ sub pdebug( $;$$ ) { # {{{
 	chomp $text;
 
 	our $debug = "DEBUG: ";
-	$debug = '=>' if( defined( $short ) );
+	$debug = '=>' if( defined( $short ) and $short );
 
 	foreach my $line ( split /\n/, $text ) {
 		chomp $line;
@@ -669,7 +669,7 @@ sub pnote( $;$$ ) { # {{{
 	chomp $text;
 
 	our $note = "NOTICE:";
-	$note = '*>' if( defined( $short ) );
+	$note = '*>' if( defined( $short ) and $short );
 
 	foreach my $line ( split /\n/, $text ) {
 		chomp $line;
@@ -697,7 +697,7 @@ sub pwarn( $;$$ ) { # {{{
 	chomp $text;
 
 	our $warn = $warning;
-	$warn = '!>' if( defined( $short ) );
+	$warn = '!>' if( defined( $short ) and $short );
 
 	foreach my $line ( split /\n/, $text ) {
 		chomp $line;
@@ -2021,7 +2021,7 @@ sub dbdump( $;$$$$ ) { # {{{
 	my $password = $auth -> { 'password' };
 	my $host =     $auth -> { 'host' };
 
-	my( $compress, $transactional, $skipmeta, $extinsert );
+	my( $compress, $transactional, $skipmeta, $skipdefiner, $extinsert );
 	if( defined( $variables ) ) {
 		return( FALSE ) unless( ref( $variables ) eq 'HASH' );
 
@@ -2032,16 +2032,34 @@ sub dbdump( $;$$$$ ) { # {{{
 		$compress      = $variables -> { 'compress' }      if( exists( $variables -> { 'compress' } ) );
 		$transactional = $variables -> { 'transactional' } if( exists( $variables -> { 'transactional' } ) );
 		$skipmeta      = $variables -> { 'skipmeta' }      if( exists( $variables -> { 'skipmeta' } ) );
+		$skipdefiner   = $variables -> { 'skipdefiner' }   if( exists( $variables -> { 'skipdefiner' } ) );
 		$extinsert     = $variables -> { 'extinsert' }     if( exists( $variables -> { 'extinsert' } ) );
 
 		# }}}
 	}
 
+	my $memorybackend;
+	my $canskipdefiners = FALSE;
 	my $port;
 	$port = $auth -> { 'port' } if( defined( $auth -> { 'port' } ) and $auth -> { 'port' } );
 	$port = PORT unless( defined( $port ) and $port );
 
-	my $memorybackend;
+	system( "mysqldump >/dev/null 2>&1" );
+	if( $? < 0 ) {
+		die( "$fatal Unable to execute `mysqldump` command: $!\n" );
+	} else {
+		my $rc      = $? >>   8;
+		#my $signal = $? &  127;
+		#my $core   = $? &  128;
+
+		if( not( 0 == $rc ) ) {
+			if( 127 == $rc ) {
+				die( "$fatal Unable to locate `mysqldump` commandi($rc): $!\n" );
+			} elsif( not( 1 == $rc ) ) {
+				pwarn( "`mysqldump` returned unexpected status '$rc' when executed to determine availability" );
+			}
+		}
+	}
 
 	if( defined( $filename ) and length( $filename ) and -d $filename and ( not( defined( $destination ) ) or not( length( $destination ) ) ) ) {
 		$destination = $filename;
@@ -2301,22 +2319,31 @@ sub dbdump( $;$$$$ ) { # {{{
 			$optdump .= ' --master-data=2';
 			#$optdump .= ' --dump-slave=2';
 
-			# N.B. The '--gtid' option is present in MariaDB mysqldump
-			#      10.0.13 and above only (although earlier 10.1.x versions
-			#      may also lack the option...)
-			if( qx( mysqldump --version ) =~ m/ Distrib ([^-,]+)[-,]/ ) {
-				my $match = $1;
-				if( not( defined( $match ) and length( $match ) ) ) {
-					pnote( "\n" );
-					pnote( "Unable to determine mysqldump version, not enabling GTID support\n", undef, TRUE );
-				} else {
-					my @sortedversions = sort { versioncmp( $a, $b ) } ( $match, '10.0.12' );
-					my $latest = pop( @sortedversions );
-					if( not( $latest eq '10.0.12' ) ) {
-						pnote( "\n" );
-						pnote( "mysqldump supports Global Transaction IDs - adding '--gtid' option\n", undef, TRUE );
-						$optdump .= ' --gtid';
-					}
+			# N.B. The '--gtid' option is present in MariaDB
+			#      mysqldump 10.0.13 and above only (although
+			#      earlier 10.1.x versions may also lack the
+			#      option...)
+			#
+			# Here, we're relying on mysqldump's behviour that if
+			# invoked with only a single recognised option then it
+			# will output its help text and return '1', but if the
+			# option is not recognised then it will output a much
+			# more terse error and return '2'.  This is likely more
+			# robust than assuming functionality based on versions
+			# (see above), but is vulnerable to changes in
+			# mysqldump itself...
+			#
+			system( "mysqldump --gtid >/dev/null 2>&1" );
+			if( $? < 0 ) {
+				die( "$fatal Unable to execute `mysqldump --gtid` command: $!\n" );
+			} else {
+				my $rc      = $? >>   8;
+				#my $signal = $? &  127;
+				#my $core   = $? &  128;
+
+				if( 1 == $rc ) {
+					pnote( "`mysqldump` supports Global Transaction IDs - adding '--gtid' option\n", undef, TRUE );
+					$optdump .= ' --gtid';
 				}
 			}
 		}
@@ -2326,6 +2353,32 @@ sub dbdump( $;$$$$ ) { # {{{
 	} else {
 		$optdump .= ' --skip-extended-insert';
 	}
+
+	# See previous comment for discussion of the viability of this
+	# approach...
+	#
+	if( not( $skipdefiner ) ) {
+		# Skip the logic below - wanting to skip removal of definers
+		# and having mysqldump do so for us actually reduces to the
+		# same situation...
+		$canskipdefiners = TRUE;
+	} else {
+		system( "mysqldump --skip-definer >/dev/null 2>&1" );
+		if( $? < 0 ) {
+			die( "$fatal Unable to execute `mysqldump --skip-definer` command: $!\n" );
+		} else {
+			my $rc      = $? >>   8;
+			#my $signal = $? &  127;
+			#my $core   = $? &  128;
+
+			if( 1 == $rc ) {
+				pnote( "`mysqldump` supports skipping DEFINER arguments to CREATE statements - adding '--skip-definer' option\n", undef, TRUE );
+				$optdump .= ' --skip-definer';
+				$canskipdefiners = TRUE;
+			}
+		}
+	}
+
 	if( defined( $verbosity ) and ( $verbosity > 0 ) ) { # debug(3), notice(2), warn(1)
 		$optdump .= ' --verbose';
 	}
@@ -2333,16 +2386,35 @@ sub dbdump( $;$$$$ ) { # {{{
 	my $msg = 'Commencing database backup';
 	$msg .= ' - there may be a delay while a GLOBAL READ LOCK is obtained' if( not( $transactional ) );
 	pdebug( "\n" );
-	pdebug( "$msg ...\n", undef, TRUE );
+	pdebug( "$msg ...\n", undef, TRUE ) unless( $quietorsilent );
 	pwarn( "\n" );
-	pwarn( "Passing control to 'mysqldump' from this point onwards.\n\n", undef, TRUE );
+	pwarn( "Passing control to `mysqldump` from this point onwards.\n\n", undef, TRUE );
 
 	# N.B.: We're not capturing STDERR in either instance...
 	#
-	if( not( defined( $memorybackend ) ) ) {
+	if( ( 'SCALAR' eq ref( $memorybackend ) ) or ( 'ARRAY' eq ref( $memorybackend ) ) ) {
+		pdebug( "Shell-command is: 'mysqldump $optauth $optdb $opttab $optdump'" );
+		$memorybackend = qx/ mysqldump $optauth $optdb $opttab $optdump /;
+		if( not( defined( $memorybackend ) ) ) {
+			return( undef );
+		} else {
+			return( TRUE );
+		}
+	} else {
 		my $output = ( defined( $destination ) and length( $destination ) ? $destination . '/' : '' ) . $filename;
 		my $command = "mysqldump $optauth $optdb $opttab $optdump ";
 		$command = "strace -vvfFtTs 128 -o \"${output}.strace\" $command" if( DEBUG );
+
+		if( not( $canskipdefiners ) ) {
+			pwarn( "`mysqldump` does not support skipping 'DEFINER' arguments - attempting to fix in-line...", LOGMAX, not( $quietorsilent ) );
+			# We'll use hard-coded ' ' in place of \s or [:space:]
+			# since this is what `mysqldump` outputs...
+			my $fixdefiner = <<'EOF';
+sed -u 's|\/\*\!50017 DEFINER=`[^`]*`@`[^`]*`\s*\*\/||g ; /^CREATE DEFINER=[^ ]\+ \(FUNCTION\|PROCEDURE\)/s| DEFINER=`[^`]*`@`[^`]*` | |g'
+EOF
+			chomp( $fixdefiner );
+			$command .= ' | ' . $fixdefiner;
+		}
 
 		if( defined( $compress ) and length( $compress ) ) {
 			if( 'gzip' eq $compress ) {
@@ -2358,7 +2430,11 @@ sub dbdump( $;$$$$ ) { # {{{
 				die( "$fatal Unknown compression scheme '$compress'\n" );
 			}
 		} else {
-			$command .= "--result-file=\"$output\"";
+			if( $canskipdefiners ) {
+				$command .= "--result-file=\"$output\"";
+			} else {
+				$command .= " > \"$output\"";
+			}
 		}
 		eval {
 			touch( $output );
@@ -2391,15 +2467,6 @@ sub dbdump( $;$$$$ ) { # {{{
 
 		#return( $result );
 		return( TRUE );
-
-	} elsif( ( 'SCALAR' eq ref( $memorybackend ) ) or ( 'ARRAY' eq ref( $memorybackend ) ) ) {
-		pdebug( "Shell-command is: 'mysqldump $optauth $optdb $opttab $optdump'" );
-		$memorybackend = qx/ mysqldump $optauth $optdb $opttab $optdump /;
-		if( not( defined( $memorybackend ) ) ) {
-			return( undef );
-		} else {
-			return( TRUE );
-		}
 	}
 
 	# Unreachable
@@ -6078,10 +6145,16 @@ sub main( @ ) { # {{{
 	my( $help, $showversion, $desc, @paths, $file, $nobackup, $keepbackups );
 	my( $compat, $relaxed, $strict );
 	my( $lock, $keeplock );
-	my( $force, $clear, $compress, $small, $split, $skipmeta, $extinsert );
+	my( $force, $clear, $compress, $small, $split, $skipmeta, $skipdefiner );
+	my( $extinsert );
 	my( $syntax, $odbcdsn, $user, $pass, $host, $db, $vschm );
 	my( $environment, $limit );
 	my( $pretend, $debug, $silent, $quiet, $notice, $verbose, $warn );
+
+	# Pre-set negatable options which are on by default, but which can be
+	# turned off...
+	$skipdefiner = TRUE;
+
 	my $ok = TRUE;
 	my $getoptout = undef;
 
@@ -6105,6 +6178,7 @@ sub main( @ ) { # {{{
 	,   'compress:s'				=> \$compress
 	,   'split|separate-files!'			=> \$split
 	,   'skip-metadata!'				=> \$skipmeta
+	,   'skip-definer!'				=> \$skipdefiner
 	,   'extended-insert!'				=> \$extinsert
 
 	, 'r|restore=s'					=> \$action_restore
@@ -6325,6 +6399,11 @@ sub main( @ ) { # {{{
 	} else {
 		$skipmeta = FALSE;
 	}
+	if( defined( $skipdefiner ) and $skipdefiner ) {
+		$skipdefiner = TRUE;
+	} else {
+		$skipdefiner = FALSE;
+	}
 	if( defined( $extinsert ) and $extinsert ) {
 		$extinsert = TRUE;
 	} else {
@@ -6503,7 +6582,8 @@ sub main( @ ) { # {{{
 			print( "\n" );
 			print( ( " " x $length ) . "backup options:   [--compress [:scheme:]] [--transactional]\n" );
 			print( ( " " x $length ) . "                  [--lock [--keep-lock]] [--separate-files]\n" );
-			print( ( " " x $length ) . "                  [--skip-metadata] [--extended-insert]\n" );
+			print( ( " " x $length ) . "                  [--skip-metadata] [--no-skip-definer]\n" );
+			print( ( " " x $length ) . "                  [--extended-insert]\n" );
 			print( ( " " x $length ) . "scheme:           <gzip|bzip2|xz|lzma>\n" );
 			print( "\n" );
 			print( ( " " x $length ) . "restore options:  [--progress[=<always|auto|never>]]\n" );
@@ -6585,6 +6665,7 @@ sub main( @ ) { # {{{
 		warn( "Cannot specify argument '--lock' or '--keep-lock' without option '--backup'\n" ) if( ( $lock or $keeplock ) and not( defined( $action_backup ) ) );
 		warn( "Cannot specify argument '--separate-files' without option '--backup'\n" ) if( $split and not( defined( $action_backup ) ) );
 		warn( "Cannot specify argument '--skip-metadata' without option '--backup'\n" ) if( $skipmeta and not( defined( $action_backup ) ) );
+		warn( "Cannot specify argument '--no-skip-definer' without option '--backup'\n" ) if( not( $skipdefiner ) and not( defined( $action_backup ) ) );
 		warn( "Cannot specify argument '--extended-insert' without option '--backup'\n" ) if( $extinsert and not( defined( $action_backup ) ) );
 		warn( "Argument '--progress' must have value 'always', 'auto', or 'never'\n" ) unless( defined( $progress ) );
 		warn( "Cannot specify argument '--keep-lock' without option '--lock'\n" ) if( $keeplock and not( $lock ) );
@@ -6602,6 +6683,7 @@ sub main( @ ) { # {{{
 			warn( "Cannot specify argument '--compress' with option '--dsn'\n" ) if( defined( $compress ) );
 			warn( "Cannot specify argument '--separate-files' with option '--dsn'\n" ) if( $split );
 			warn( "Cannot specify argument '--skip-metadata' with option '--dsn'\n" ) if( $skipmeta );
+			warn( "Cannot specify argument '--no-skip-definer' with option '--dsn'\n" ) if( not( $skipdefiner ) );
 			warn( "Cannot specify argument '--extended-insert' with option '--dsn'\n" ) if( $extinsert );
 			warn( "Cannot specify argument '--restore' with option '--dsn'\n" ) if( defined( $action_restore ) );
 			warn( "Cannot specify argument '--mode' with option '--dsn'\n" ) if( not( $mode eq 'schema' ) );
@@ -6954,6 +7036,7 @@ sub main( @ ) { # {{{
 					  'compress'		=> $compress
 					, 'transactional'	=> $small
 					, 'skipmeta'		=> $skipmeta
+					, 'skipdefiner'		=> $skipdefiner
 					, 'extinsert'		=> $extinsert
 				};
 				if( defined( $db ) and length( $db ) ) {
@@ -7015,7 +7098,7 @@ sub main( @ ) { # {{{
 		dbclose( \$dbh, undef, undef, TRUE ) if( defined( $dbh ) );
 
 		if( defined( $success) and $success ) {
-			pnote( "Backup process completed successfully\n", LOGMAX );
+			pnote( "Backup process completed successfully\n", LOGMAX, TRUE ) unless( $quietorsilent );
 
 			exit( 0 );
 		} else {
@@ -7277,6 +7360,7 @@ sub main( @ ) { # {{{
 	$variables -> { 'quiet' }       = $quiet;
 	$variables -> { 'silent' }      = $silent;
 	$variables -> { 'skipmeta' }    = $skipmeta;
+	$variables -> { 'skipdefiner' } = $skipdefiner;
 	$variables -> { 'strict' }      = $strict;
 	$variables -> { 'tmpdir' }      = $tmpdir;
 	$variables -> { 'unsafe' }      = $nobackup;

@@ -369,7 +369,7 @@ function main() { # {{{
 	fi
 
 	if ! (( validate )); then
-		warn 'Validation disabled - applied schema may not be standards compliant'
+		warn 'Validation disabled - applied schema may not be standards-compliant'
 	else
 		# stdlib.sh prior to v2.0.0 incorrectly didn't accept
 		# multi-argument calls to std::requires
@@ -417,9 +417,7 @@ function main() { # {{{
 		fi
 
 		if ! (( silent )); then
-			if ! (( silent )); then
-				(( founddb )) && output
-			fi
+			(( founddb )) && output
 
 			info "Processing configuration for database '${db}' ..."
 			if ! (( std_DEBUG )); then
