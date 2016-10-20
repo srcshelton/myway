@@ -43,7 +43,7 @@ std_DEBUG="${DEBUG:-0}"
 std_TRACE="${TRACE:-0}"
 
 SCRIPT='myway.pl'
-COMPATIBLE='1.3.2'
+COMPATIBLE='1.4.0'
 VALIDATOR='validateschema.sh'
 
 # We want to be able to debug applyschema.sh without debugging myway.pl...
@@ -121,7 +121,7 @@ function main() { # {{{
 		novsort=1
 	fi
 
-	local arg schema db dblist clist
+	local arg schema db vdb dblist clist
 	local -l progress='auto'
 	local -i dryrun=0 quiet=0 silent=0 keepgoing=0 force=0 validate=1
 	local -a extra=()
@@ -332,6 +332,7 @@ function main() { # {{{
 
 	(( std_TRACE )) && set -o xtrace
 
+	local database dsn
 	local -l syntax
 
 	# We're going to eval our config file sections - hold onto your hats!
@@ -544,12 +545,25 @@ function main() { # {{{
 						params+=( -h "${host}" )
 					fi
 					if ! grep -Eiq '(^|;)database=([^;]+)(;|$)' <<<"${dsn}"; then
-						params+=( -d "${db}" )
+						if [[ -n "${database:-}" ]]; then
+							params+=( -d "${database}" )
+							vdb="${database}"
+						else
+							params+=( -d "${db}" )
+							vdb="${db}"
+						fi
+					else
+						vdb="$( grep -Eio '(^|;)database=([^;]+)(;|$)' <<<"${dsn}" | cut -d'=' -f 2 | cut -d';' -f 1 )"
+						debug "Updated database from '${database:-${db}}' to '${vdb}' from DSN '${dsn}'"
 					fi
 					if [[ -n "${schema:-}" ]]; then
 						params+=( --vertica-schema "${schema}" )
 					else
-						warn "No 'schema' value specified for Vertica database - unless 'SEARCH_PATH' is set appropriately, statements may fail"
+						# Default to the name of the database being migrated?
+						#warn "No 'schema' value specified for Vertica database - unless 'SEARCH_PATH' is set appropriately, statements may fail"
+						schema="${db}"
+						params+=( --vertica-schema "${schema}" )
+						warn "No 'schema' value specified for Vertica database - defaulting to '${schema}'"
 					fi
 					;;
 				'')
@@ -608,6 +622,12 @@ function main() { # {{{
 			extraparams+=( '--dry-run' )
 		fi
 
+		if [[ 'vertica' != "${syntax:-}" ]] && ! mysql -u "${dbadmin}" -p"${passwd}" -h "${host}" <<<'QUIT' >/dev/null 2>&1; then
+			die "Cannot connect to MySQL instance on host '${host}' as user '${dbadmin}' - is database running?"
+		elif [[ 'vertica' == "${syntax:-}" ]] && type -pf vsql >/dev/null 2>&1 && ! vsql -U "${dbadmin}" -w "${passwd}" -h "${host}" <<<'\q' >/dev/null 2>&1; then
+			die "Cannot connect to Vertica instance on host '${host}' as user '${dbadmin}' - is database running?"
+		fi
+
 		debug "About to initialise database: '${myway} ${params[*]} ${extraparams[*]}'"
 		debug "N.B. Parameters not required by the --init stage are not passed until later..."
 
@@ -621,7 +641,7 @@ function main() { # {{{
 			#
 			if [[ 'vertica' == "${syntax:-}" ]]; then
 				if type -pf vsql >/dev/null 2>&1; then
-					if vsql -U "${dbadmin}" -w "${passwd}" -h "${host}" -d "${db}" <<<'\q' >/dev/null 2>&1; then
+					if vsql -U "${dbadmin}" -w "${passwd}" -h "${host}" -d "${vdb}" <<<'\q' >/dev/null 2>&1; then
 						allowfail=1
 					fi
 				else
@@ -651,14 +671,27 @@ function main() { # {{{
 			${myway} "${params[@]}" "${extraparams[@]}" --init
 		fi
 		result=${?}
+
+		local connectoutput=""
+		local -i canconnect=1
+		if [[ 'vertica' != "${syntax:-}" ]] && ! connectoutput="$( mysql -u "${dbadmin}" -p"${passwd}" -h "${host}" "${db}" <<<'QUIT' 2>&1 )"; then
+			canconnect=0
+		elif [[ 'vertica' == "${syntax:-}" ]] && type -pf vsql >/dev/null 2>&1 && ! connectoutput="$( vsql -U "${dbadmin}" -w "${passwd}" -h "${host}" -d "${vdb}" <<<'\q' 2>&1 )"; then
+			canconnect=0
+		fi
+
 		if (( result )); then
 			if (( allowfail )); then
 				(( quiet || silent )) || info "Initialisation of database '${db}' (${myway} ${params[*]} ${extraparams[*]} --init) expected failure: ${result}"
 			else
 				if (( keepgoing )); then
 					warn "Initialisation of database '${db}' (${myway} ${params[*]} ${extraparams[*]} --init) failed: ${result}"
-					output $'\n\nContinuing to next database, if any ...\n'
 					rc=1
+
+					# Output if we've no further errors...
+					if (( canconnect )); then
+						output $'\n\nContinuing to next database, if any ...\n'
+					fi
 				else
 					output >&2 "${response}"
 					die "Initialisation of database '${db}' (${myway} ${params[*]} ${extraparams[*]} --init) failed: ${result}"
@@ -666,96 +699,112 @@ function main() { # {{{
 			fi
 		fi
 
-		if [[ 'vertica' != "${syntax:-}" ]] && ! mysql -u "${dbadmin}" -p"${passwd}" -h "${host}" "${db}" <<<'QUIT' >/dev/null 2>&1; then
-			(( silent )) || warn "Skipping further simulation for non-existent database '${db}'"
-			rc=1
-		elif [[ 'vertica' == "${syntax:-}" ]] && type -pf vsql >/dev/null 2>&1 && ! vsql -U "${dbadmin}" -w "${passwd}" -h "${host}" -d "${db}" <<<'\q' >/dev/null 2>&1; then
-			(( silent )) || warn "Skipping further simulation for non-existent Vertica database '${db}'"
-			rc=1
-		else
-			# N.B. Vertica does not support Stored Procedures.
-			#
+		if ! (( canconnect )); then
 			if [[ 'vertica' != "${syntax:-}" ]]; then
-				# Load stored-procedures next, as references to tables aren't
-				# checked until the SP is actually executed, but SPs may be
-				# invoked as part of schema deployment.
-				#
-				if grep -Eiq "${truthy}" <<<"${procedures:-}"; then
-					local -a procparams=( --mode procedure )
-					if [[ -n "${procedures_marker:-}" ]]; then
-						procparams+=( --substitute --marker "${procedures_marker}" )
+				(( silent )) || warn "Skipping migration for non-existent database '${db}':"
+				output >&2 "${connectoutput:-}"
+				rc=1
+			elif [[ 'vertica' == "${syntax:-}" ]]; then
+				(( silent )) || warn "Skipping migration for non-existent Vertica database '${db}':"
+				output >&2 "${connectoutput:-}"
+				rc=1
+			fi
+
+			if (( keepgoing )); then
+				output $'\n\nContinuing to next database, if any ...\n'
+			fi
+		elif (( result )) && ! (( allowfail )); then
+			# Don't perform schema migration if we failed to
+			# initialise and we're not allowing failures...
+			:
+		else
+			# At this point, we've successfully initialised (or
+			# we've failed at this but ${allowfail} is set), and we
+			# have been able to connect to the database we're
+			# attempting to migrate.
+			#
+
+			# Load stored-procedures next, as references to tables aren't
+			# checked until the SP is actually executed, but SPs may be
+			# invoked as part of schema deployment.
+			#
+			# N.B. Vertica 8.x does support Stored Procedures.
+			#
+			if grep -Eiq "${truthy}" <<<"${procedures:-}"; then
+				local -a procparams=( --mode procedure )
+				if [[ -n "${procedures_marker:-}" ]]; then
+					procparams+=( --substitute --marker "${procedures_marker}" )
+				else
+					procparams+=( --substitute )
+				fi
+
+				local -a reorder=( sort -V )
+				if (( novsort )); then
+					reorder=( tac )
+				fi
+
+				local procedurepath="${path}/procedures"
+				if [[ -d "${path}"/schema/"${db}"/procedures ]]; then
+					procedurepath="${path}"/schema/"${db}"/procedures
+				fi
+
+				local ppath
+				local -i sploaded=0
+				while read -r ppath; do
+					[[ -f "${ppath}/${db}.metadata" ]] || continue
+
+					extraparams=( --scripts "${ppath}" )
+					#if (( ${#extra[@]} )); then
+					if [[ -n "${extra[*]:-}" ]]; then
+						extraparams+=( "${extra[@]}" )
+					fi
+					if (( dryrun )); then
+						extraparams+=( '--dry-run' )
+					fi
+
+					(( silent )) || info "Launching '${SCRIPT}' with path '${ppath}' to update Stored Procedures for database '${db}' ..."
+
+					debug "About to apply Stored Procedures: ${myway} ${params[*]} ${procparams[*]} ${extraparams[*]} ${extra[*]:-}"
+					debug "N.B. Parameters not required by the --mode=procedure stage are not passed until later..."
+					if (( silent )); then
+						${myway} "${params[@]}" "${procparams[@]}" "${extraparams[@]}" >/dev/null 2>&1
+					elif (( quiet )); then
+						# Loses return code to grep :(
+						#${myway} "${params[@]}" "${procparams[@]}" "${extraparams[@]}" 2>&1 >/dev/null | grep -Ev --line-buffered "${silentfilter}"
+
+						# Throw away stdout but redirect stderr to stdout...
+						# shellcheck disable=SC2069
+						${myway} "${params[@]}" "${procparams[@]}" "${extraparams[@]}" 2>&1 >/dev/null
 					else
-						procparams+=( --substitute )
+						${myway} "${params[@]}" "${procparams[@]}" "${extraparams[@]}"
 					fi
-
-					local -a reorder=( sort -V )
-					if (( novsort )); then
-						reorder=( tac )
-					fi
-
-					local procedurepath="${path}/procedures"
-					if [[ -d "${path}"/schema/"${db}"/procedures ]]; then
-						procedurepath="${path}"/schema/"${db}"/procedures
-					fi
-
-					local ppath
-					local -i sploaded=0
-					while read -r ppath; do
-						[[ -f "${ppath}/${db}.metadata" ]] || continue
-
-						extraparams=( --scripts "${ppath}" )
-						#if (( ${#extra[@]} )); then
-						if [[ -n "${extra[*]:-}" ]]; then
-							extraparams+=( "${extra[@]}" )
-						fi
-						if (( dryrun )); then
-							extraparams+=( '--dry-run' )
-						fi
-
-						(( silent )) || info "Launching '${SCRIPT}' with path '${ppath}' to update Stored Procedures for database '${db}' ..."
-
-						debug "About to apply Stored Procedures: ${myway} ${params[*]} ${procparams[*]} ${extraparams[*]} ${extra[*]:-}"
-						debug "N.B. Parameters not required by the --mode=procedure stage are not passed until later..."
-						if (( silent )); then
-							${myway} "${params[@]}" "${procparams[@]}" "${extraparams[@]}" >/dev/null 2>&1
-						elif (( quiet )); then
-							# Loses return code to grep :(
-							#${myway} "${params[@]}" "${procparams[@]}" "${extraparams[@]}" 2>&1 >/dev/null | grep -Ev --line-buffered "${silentfilter}"
-
-							# Throw away stdout but redirect stderr to stdout...
-							# shellcheck disable=SC2069
-							${myway} "${params[@]}" "${procparams[@]}" "${extraparams[@]}" 2>&1 >/dev/null
-						else
-							${myway} "${params[@]}" "${procparams[@]}" "${extraparams[@]}"
-						fi
-						result=${?}
-						if (( result )); then
-							if (( keepgoing )); then
-								warn "Loading of stored procedures into database '${db}' (${myway} ${params[*]} ${procparams[*]} ${extraparams[*]}${extra[*]:+ ${extra[*]}}) failed: ${result}"
-								output $'\n\nContinuing to next database, if any ...\n'
-								rc=1
-							else
-								die "Loading of stored procedures into database '${db}' (${myway} ${params[*]} ${extraparams[*]}${extra[*]:+ ${extra[*]}}) failed: ${result}"
-							fi
-						else
-							sploaded=1
-						fi
-					done < <( find "${procedurepath}"/ -mindepth 1 -maxdepth 2 -type d 2>/dev/null | grep "${db}" | "${reorder[@]}" )
-
-					if ! (( sploaded )); then
+					result=${?}
+					if (( result )); then
 						if (( keepgoing )); then
-							warn "Stored procedure load requested for database '${db}', but no valid Stored Procedures were processed"
+							warn "Loading of stored procedures into database '${db}' (${myway} ${params[*]} ${procparams[*]} ${extraparams[*]}${extra[*]:+ ${extra[*]}}) failed: ${result}"
 							output $'\n\nContinuing to next database, if any ...\n'
 							rc=1
 						else
-							die "Stored procedure load requested for database '${db}', but no valid Stored Procedures were processed"
+							die "Loading of stored procedures into database '${db}' (${myway} ${params[*]} ${extraparams[*]}${extra[*]:+ ${extra[*]}}) failed: ${result}"
 						fi
+					else
+						sploaded=1
 					fi
+				done < <( find "${procedurepath}"/ -mindepth 1 -maxdepth 2 -type d 2>/dev/null | grep "${db}" | "${reorder[@]}" )
 
-					debug "Stored Procedures loaded for database '${db}'\n"
-
-					unset sploaded ppath procedurepath reorder procparams
+				if ! (( sploaded )); then
+					if (( keepgoing )); then
+						warn "Stored procedure load requested for database '${db}', but no valid Stored Procedures were processed"
+						output $'\n\nContinuing to next database, if any ...\n'
+						rc=1
+					else
+						die "Stored procedure load requested for database '${db}', but no valid Stored Procedures were processed"
+					fi
 				fi
+
+				debug "Stored Procedures loaded for database '${db}'\n"
+
+				unset sploaded ppath procedurepath reorder procparams
 			fi
 
 			# ... and finally, perform schema deployment.

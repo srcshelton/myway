@@ -93,13 +93,13 @@ no if ( $] >= 5.02 ), warnings => 'experimental::autoderef';
 # ... in actual fact, diagnostics causes more problems than it solves.  It does
 # appear to be, in reality, quite silly.
 
-use constant VERSION     =>  "1.3.2";
+use constant VERSION     =>  "1.4.0";
 
 use constant TRUE        =>  1;
 use constant FALSE       =>  0;
 
 use constant DEBUG       => ( $ENV{ 'DEBUG' } or FALSE );
-use constant OLDSCHEMA   => ( $ENV{ 'OLDSCHEMA' } or FALSE );
+#use constant OLDSCHEMA  => ( $ENV{ 'OLDSCHEMA' } or FALSE );
 
 use constant DEFDELIM    => ';';
 
@@ -109,6 +109,9 @@ use constant MARKER      => '`<<VERSION>>';
 
 use constant LOGMAX      =>  3; # debug
 use constant SQLRETRYMAX =>  3;
+use constant SQLMAX      =>  15764; # 16299 is the experimental maximum length
+				    # that MySQL accepts, and Vertica's limit
+				    # is 535 characters less...
 
 # Necessary non-default modules:
 #
@@ -263,13 +266,13 @@ our $searchpath;
 #
 our $flywayinit;
 our $flywayinitdesc;
-if( OLDSCHEMA ) {
-	$flywayinit = 'INIT';
-	$flywayinitdesc = '<< Flyway Init >>';
-} else {
-	$flywayinit = 'BASELINE';
-	$flywayinitdesc = '<< Flyway Baseline >>';
-}
+#if( OLDSCHEMA ) {
+#	$flywayinit = 'INIT';
+#	$flywayinitdesc = '<< Flyway Init >>';
+#} else {
+$flywayinit = 'BASELINE';
+$flywayinitdesc = '<< Flyway Baseline >>';
+#}
 
 our $mywayhistoryname = 'myway_version_history';
 our $mywayhistoryddl = <<DDL;
@@ -306,81 +309,81 @@ DDL
 our $flywaytablename = 'schema_version';
 our $flywayddl;
 our $verticaflywayddl;
-if( OLDSCHEMA ) {
-	$flywayddl = <<DDL;
-	CREATE TABLE IF NOT EXISTS `$flywaytablename` (
-	    `version_rank`	INT		DEFAULT NULL
-	  , `installed_rank`	INT		                          NOT NULL
-	  , `version`		VARCHAR(50)	                          NOT NULL
-	  , `description`	VARCHAR(200)	                          NOT NULL
-	  , `type`		VARCHAR(20)	                          NOT NULL
-	  , `script`		VARCHAR(1000)	                          NOT NULL
-	  , `checksum`		INT		DEFAULT NULL
-	  , `installed_by`	VARCHAR(100)	                          NOT NULL
-	  , `installed_on`	TIMESTAMP	DEFAULT CURRENT_TIMESTAMP NOT NULL
-	  , `execution_time`	INT		                          NOT NULL
-	  , `success`		BOOLEAN		                          NOT NULL
-	  , PRIMARY KEY                         (`version`)
-	  ,         KEY `schema_version_vr_idx` (`version_rank`)
-	  ,         KEY `schema_version_ir_idx` (`installed_rank`)
-	  ,         KEY `schema_version_s_idx`  (`success`)
-	) ENGINE='InnoDB' DEFAULT CHARSET='UTF8';
+#if( OLDSCHEMA ) {
+#	$flywayddl = <<DDL;
+#	CREATE TABLE IF NOT EXISTS `$flywaytablename` (
+#	    `version_rank`	INT		DEFAULT NULL
+#	  , `installed_rank`	INT		                          NOT NULL
+#	  , `version`		VARCHAR(50)	                          NOT NULL
+#	  , `description`	VARCHAR(200)	                          NOT NULL
+#	  , `type`		VARCHAR(20)	                          NOT NULL
+#	  , `script`		VARCHAR(1000)	                          NOT NULL
+#	  , `checksum`		INT		DEFAULT NULL
+#	  , `installed_by`	VARCHAR(100)	                          NOT NULL
+#	  , `installed_on`	TIMESTAMP	DEFAULT CURRENT_TIMESTAMP NOT NULL
+#	  , `execution_time`	INT		                          NOT NULL
+#	  , `success`		BOOLEAN		                          NOT NULL
+#	  , PRIMARY KEY                         (`version`)
+#	  ,         KEY `schema_version_vr_idx` (`version_rank`)
+#	  ,         KEY `schema_version_ir_idx` (`installed_rank`)
+#	  ,         KEY `schema_version_s_idx`  (`success`)
+#	) ENGINE='InnoDB' DEFAULT CHARSET='UTF8';
+#DDL
+#	$verticaflywayddl = <<DDL;
+#	CREATE TABLE IF NOT EXISTS __SCHEMA__"$flywaytablename" (
+#	    "version_rank"	INT		DEFAULT NULL
+#	  , "installed_rank"	INT		                          NOT NULL
+#	  , "version"		VARCHAR(50)	                          NOT NULL
+#	  , "description"	VARCHAR(200)	                          NOT NULL
+#	  , "type"		VARCHAR(20)	                          NOT NULL
+#	  , "script"		VARCHAR(1000)	                          NOT NULL
+#	  , "checksum"		INT		DEFAULT NULL
+#	  , "installed_by"	VARCHAR(100)	                          NOT NULL
+#	  , "installed_on"	TIMESTAMP	DEFAULT now()             NOT NULL
+#	  , "execution_time"	INT		                          NOT NULL
+#	  , "success"		BOOLEAN		                          NOT NULL
+#	  , PRIMARY KEY ("version") ENABLED
+#	)
+#	ORDER BY "version", "version_rank", "installed_rank", "success"
+#	SEGMENTED BY HASH( "version" ) ALL NODES;
+#DDL
+#	#ALTER TABLE __SCHEMA__"$flywaytablename" ADD CONSTRAINT "${flywaytablename}_pk" PRIMARY KEY ("version") ENABLED;
+#} else {
+$flywayddl = <<DDL;
+CREATE TABLE IF NOT EXISTS `$flywaytablename` (
+    `installed_rank`	INT		                          NOT NULL
+  , `version`		VARCHAR(50)
+  , `description`	VARCHAR(200)	                          NOT NULL
+  , `type`		VARCHAR(20)	                          NOT NULL
+  , `script`		VARCHAR(1000)	                          NOT NULL
+  , `checksum`		INT		DEFAULT NULL
+  , `installed_by`	VARCHAR(100)	                          NOT NULL
+  , `installed_on`	TIMESTAMP	DEFAULT CURRENT_TIMESTAMP NOT NULL
+  , `execution_time`	INT		                          NOT NULL
+  , `success`		BOOLEAN		                          NOT NULL
+  , CONSTRAINT `${flywaytablename}_pk` PRIMARY KEY (`installed_rank`)
+  , KEY `${flywaytablename}_s_idx` (`success`)
+) ENGINE='InnoDB' DEFAULT CHARSET='UTF8';
 DDL
-	$verticaflywayddl = <<DDL;
-	CREATE TABLE IF NOT EXISTS __SCHEMA__"$flywaytablename" (
-	    "version_rank"	INT		DEFAULT NULL
-	  , "installed_rank"	INT		                          NOT NULL
-	  , "version"		VARCHAR(50)	                          NOT NULL
-	  , "description"	VARCHAR(200)	                          NOT NULL
-	  , "type"		VARCHAR(20)	                          NOT NULL
-	  , "script"		VARCHAR(1000)	                          NOT NULL
-	  , "checksum"		INT		DEFAULT NULL
-	  , "installed_by"	VARCHAR(100)	                          NOT NULL
-	  , "installed_on"	TIMESTAMP	DEFAULT now()             NOT NULL
-	  , "execution_time"	INT		                          NOT NULL
-	  , "success"		BOOLEAN		                          NOT NULL
-	  , PRIMARY KEY ("version") ENABLED
-	)
-	ORDER BY "version", "version_rank", "installed_rank", "success"
-	SEGMENTED BY HASH( "version" ) ALL NODES;
+$verticaflywayddl = <<DDL;
+CREATE TABLE IF NOT EXISTS __SCHEMA__"$flywaytablename" (
+    "installed_rank"	INT		                          NOT NULL
+  , "version"		VARCHAR(50)
+  , "description"	VARCHAR(200)	                          NOT NULL
+  , "type"		VARCHAR(20)	                          NOT NULL
+  , "script"		VARCHAR(1000)	                          NOT NULL
+  , "checksum"		INT		DEFAULT NULL
+  , "installed_by"	VARCHAR(100)	                          NOT NULL
+  , "installed_on"	TIMESTAMP	DEFAULT now()             NOT NULL
+  , "execution_time"	INT		                          NOT NULL
+  , "success"		BOOLEAN		                          NOT NULL
+  , PRIMARY KEY ("version") ENABLED
+)
+ORDER BY "version"
+SEGMENTED BY HASH( "version" ) ALL NODES;
 DDL
-	#ALTER TABLE __SCHEMA__"$flywaytablename" ADD CONSTRAINT "${flywaytablename}_pk" PRIMARY KEY ("version") ENABLED;
-} else {
-	$flywayddl = <<DDL;
-	CREATE TABLE IF NOT EXISTS `$flywaytablename` (
-	    `installed_rank`	INT		                          NOT NULL
-	  , `version`		VARCHAR(50)
-	  , `description`	VARCHAR(200)	                          NOT NULL
-	  , `type`		VARCHAR(20)	                          NOT NULL
-	  , `script`		VARCHAR(1000)	                          NOT NULL
-	  , `checksum`		INT		DEFAULT NULL
-	  , `installed_by`	VARCHAR(100)	                          NOT NULL
-	  , `installed_on`	TIMESTAMP	DEFAULT CURRENT_TIMESTAMP NOT NULL
-	  , `execution_time`	INT		                          NOT NULL
-	  , `success`		BOOLEAN		                          NOT NULL
-	  , CONSTRAINT `${flywaytablename}_pk` PRIMARY KEY (`installed_rank`)
-	  , KEY `${flywaytablename}_s_idx` (`success`)
-	) ENGINE='InnoDB' DEFAULT CHARSET='UTF8';
-DDL
-	$verticaflywayddl = <<DDL;
-	CREATE TABLE IF NOT EXISTS __SCHEMA__"$flywaytablename" (
-	    "installed_rank"	INT		                          NOT NULL
-	  , "version"		VARCHAR(50)
-	  , "description"	VARCHAR(200)	                          NOT NULL
-	  , "type"		VARCHAR(20)	                          NOT NULL
-	  , "script"		VARCHAR(1000)	                          NOT NULL
-	  , "checksum"		INT		DEFAULT NULL
-	  , "installed_by"	VARCHAR(100)	                          NOT NULL
-	  , "installed_on"	TIMESTAMP	DEFAULT now()             NOT NULL
-	  , "execution_time"	INT		                          NOT NULL
-	  , "success"		BOOLEAN		                          NOT NULL
-	  , PRIMARY KEY ("version") ENABLED
-	)
-	ORDER BY "version"
-	SEGMENTED BY HASH( "version" ) ALL NODES;
-DDL
-	#ALTER TABLE __SCHEMA__"$flywaytablename" ADD CONSTRAINT "${flywaytablename}_pk" PRIMARY KEY ("installed_rank") ENABLED;
-}
+#ALTER TABLE __SCHEMA__"$flywaytablename" ADD CONSTRAINT "${flywaytablename}_pk" PRIMARY KEY ("installed_rank") ENABLED;
+#}
 
 # Note that field-lengths in myway* tables are not arbitrary, but instead are
 # sized to hold the maximum permissible value for the field-type, according to
@@ -433,56 +436,71 @@ DDL
 # defaults to 16MB.  To cope with this without truncation, we must use a TEXT
 # field-type.  It is possible that, since this occurance is rare, it would be
 # more advantageous performance-wise to store two fields: one for 'short' lines
-# (of up to 32767 UTF-8 characters) and one for lines that wouldn't fit into a
-# maximally-sized VARCHAR()...
+# (of up to 21844 (3-byte) UTF-8 characters) and one for lines that wouldn't
+# fit into a maximally-sized VARCHAR()...
+#
+# Vertica has a maximum VARCHAR length of 65000 octets, or 16250 4-byte UTF-8
+# characters.
+#
+# Both databases also limit the maximum size of any given row to 64k/65000
+# octets respectively, so the actual maximum length is even shorter...
+#
+# With the schema below, the maximum size MySQL accepts is 5486 - which must
+# be taken into account if this schema is further changed in the future.  Since
+# Vertica's limit is 535 octets shorter than MySQL's, and a character may be up
+# to 4 octets, we have to assume that the limit we need to impose is actually
+# 134 characters shorter at 5352.
 #
 # Update: Schema-analysis tools complain about this table lacking a Primary
 #         Key, and there is also a 'innodb_force_primary_key' option which (is
 #         supposed to) fail if no PK is present...
+#
 our $mywayactionsname = 'myway_schema_actions';
 our $mywayactionsddl;
-if( OLDSCHEMA) {
-	$mywayactionsddl = <<DDL;
-	CREATE TABLE IF NOT EXISTS `$mywayactionsname` (
-	    `schema_id`		CHAR(36)	                          NOT NULL
-	  , `started`		TIMESTAMP(6)	DEFAULT CURRENT_TIMESTAMP NOT NULL
-	  , `event`		VARCHAR(256)	                          NOT NULL
-	  , `statement`		LONGTEXT	CHARACTER SET 'UTF8'      NOT NULL
-	  , `line`		INT		UNSIGNED
-	  , `time`		DECIMAL(13,3)
-	  , `state`		CHAR(5)
-	  , INDEX        `${mywayactionsname}_schema_id_idx` (`schema_id`)
-	  , CONSTRAINT   `${mywayactionsname}_schema_id_${mywaytablename}_id`
-	    FOREIGN KEY (`schema_id`) REFERENCES `$mywaytablename` (`id`)
-	    ON DELETE CASCADE
-	) ENGINE='InnoDB' DEFAULT CHARSET='ASCII';
+#if( OLDSCHEMA) {
+#	$mywayactionsddl = <<DDL;
+#	CREATE TABLE IF NOT EXISTS `$mywayactionsname` (
+#	    `schema_id`		CHAR(36)	                          NOT NULL
+#	  , `started`		TIMESTAMP(6)	DEFAULT CURRENT_TIMESTAMP NOT NULL
+#	  , `event`		VARCHAR(256)	                          NOT NULL
+#	  , `statement`		LONGTEXT	CHARACTER SET 'UTF8'      NOT NULL
+#	  , `line`		INT		UNSIGNED
+#	  , `time`		DECIMAL(13,3)
+#	  , `state`		CHAR(5)
+#	  , INDEX        `${mywayactionsname}_schema_id_idx` (`schema_id`)
+#	  , CONSTRAINT   `${mywayactionsname}_schema_id_${mywaytablename}_id`
+#	    FOREIGN KEY (`schema_id`) REFERENCES `$mywaytablename` (`id`)
+#	    ON DELETE CASCADE
+#	) ENGINE='InnoDB' DEFAULT CHARSET='ASCII';
+#DDL
+#} else {
+$mywayactionsddl = <<DDL;
+CREATE TABLE IF NOT EXISTS `$mywayactionsname` (
+    `id`		INT		UNSIGNED AUTO_INCREMENT   NOT NULL
+  , `schema_id`		CHAR(36)	                          NOT NULL
+  , `started`		TIMESTAMP(6)	DEFAULT CURRENT_TIMESTAMP NOT NULL
+  , `event`		VARCHAR(256)	                          NOT NULL
+  , `statement`		VARCHAR(@{[SQLMAX]})	CHARACTER SET 'UTF8MB4'
+  , `statement_long`	LONGTEXT	CHARACTER SET 'UTF8MB4'
+  , `line`		INT		UNSIGNED
+  , `time`		DECIMAL(13,3)
+  , `state`		CHAR(5)
+  , PRIMARY KEY (`id`)
+  , INDEX        `${mywayactionsname}_schema_id_idx` (`schema_id`)
+  , CONSTRAINT   `${mywayactionsname}_schema_id_${mywaytablename}_id`
+    FOREIGN KEY (`schema_id`) REFERENCES `$mywaytablename` (`id`)
+    ON DELETE CASCADE
+) ENGINE='InnoDB' DEFAULT CHARSET='ASCII';
 DDL
-} else {
-	$mywayactionsddl = <<DDL;
-	CREATE TABLE IF NOT EXISTS `$mywayactionsname` (
-	    `id`		INT		UNSIGNED AUTO_INCREMENT   NOT NULL
-	  , `schema_id`		CHAR(36)	                          NOT NULL
-	  , `started`		TIMESTAMP(6)	DEFAULT CURRENT_TIMESTAMP NOT NULL
-	  , `event`		VARCHAR(256)	                          NOT NULL
-	  , `statement`		LONGTEXT	CHARACTER SET 'UTF8'      NOT NULL
-	  , `line`		INT		UNSIGNED
-	  , `time`		DECIMAL(13,3)
-	  , `state`		CHAR(5)
-	  , PRIMARY KEY (`id`)
-	  , INDEX        `${mywayactionsname}_schema_id_idx` (`schema_id`)
-	  , CONSTRAINT   `${mywayactionsname}_schema_id_${mywaytablename}_id`
-	    FOREIGN KEY (`schema_id`) REFERENCES `$mywaytablename` (`id`)
-	    ON DELETE CASCADE
-	) ENGINE='InnoDB' DEFAULT CHARSET='ASCII';
-DDL
-}
+#}
 our $verticamywayactionsddl = <<DDL;
 CREATE TABLE IF NOT EXISTS __SCHEMA__"$mywayactionsname" (
     "id"		AUTO_INCREMENT
   , "schema_id"		CHAR(36)	                          NOT NULL
   , "started"		TIMESTAMP(6)	DEFAULT CURRENT_TIMESTAMP NOT NULL
   , "event"		VARCHAR(256)	                          NOT NULL
-  , "statement"		LONG VARCHAR	                          NOT NULL
+  , "statement"		VARCHAR(@{[SQLMAX]})
+  , "statement_long"	LONG VARCHAR
   , "line"		INT
   , "time"		DECIMAL(13,3)
   , "state"		CHAR(5)
@@ -2755,8 +2773,8 @@ sub sqldo( $$;$ ) { # {{{
 			pwarn( "$st\n", undef, TRUE );
 		} else {
 			pwarn( "\n" );
-			pwarn( "Refusing to execute prohibited SQL statement:\n", undef, TRUE );
-			pwarn( "$st\n", undef, TRUE );
+			pwarn( "Refusing to execute prohibited SQL statement:\n", LOGMAX, TRUE );
+			pwarn( "$st\n", LOGMAX, TRUE );
 			if( $force ) {
 				# Don't abort...
 				return( TRUE );
@@ -2918,10 +2936,10 @@ sub sqlprepare( $$ ) { # {{{
 			pwarn( "$st\n", undef, TRUE );
 		} else {
 			pwarn( "\n" );
-			pwarn( "Refusing to execute prohibited SQL statement:\n", undef, TRUE );
-			pwarn( "$st\n", undef, TRUE );
+			pwarn( "Refusing to execute prohibited SQL statement:\n", LOGMAX, TRUE );
+			pwarn( "$st\n", LOGMAX, TRUE );
 
-			# We'll likely abort if we hit this, but that's better than
+			# We'll abort if we hit this, but that's better than
 			# dropping a production database object...
 			return( undef );
 		}
@@ -3397,60 +3415,60 @@ sub metadatamigrateschema( $;$$$ ) { # {{{
 		pdebug( "Validating metadata schema for database engine '$engine' ...\n", undef, TRUE );
 	}
 
-	if( OLDSCHEMA ) {
-		my $success = FALSE;
+	#if( OLDSCHEMA ) {
+	#	my $success = FALSE;
 
-		if( not( 'vertica' eq $engine ) ) {
-			my $st = "DESCRIBE `$flywaytablename`";
-			my $sth = sqlexecute( $dbh, undef, $st );
-			if( not( defined( $sth ) and $sth ) ) {
-				my $errstr = $dbh -> errstr();
-				pfail( "\n" );
-				pfail( "Unable to create statement handle to execute '$st'" . ( defined( $errstr ) and length( $errstr ) ? ": " . $errstr : '' ) . "\n" );
+	#	if( not( 'vertica' eq $engine ) ) {
+	#		my $st = "DESCRIBE `$flywaytablename`";
+	#		my $sth = sqlexecute( $dbh, undef, $st );
+	#		if( not( defined( $sth ) and $sth ) ) {
+	#			my $errstr = $dbh -> errstr();
+	#			pfail( "\n" );
+	#			pfail( "Unable to create statement handle to execute '$st'" . ( defined( $errstr ) and length( $errstr ) ? ": " . $errstr : '' ) . "\n" );
 
-				return( FALSE );
-			} else {
-				my $foundoldschema = FALSE;
+	#			return( FALSE );
+	#		} else {
+	#			my $foundoldschema = FALSE;
 
-				ROWS: while( my $ref = $sth -> fetchrow_arrayref() ) {
-					my $field = @{ $ref }[ 0 ];
+	#			ROWS: while( my $ref = $sth -> fetchrow_arrayref() ) {
+	#				my $field = @{ $ref }[ 0 ];
 
-					if( ( $field eq 'version_rank' ) ) {
-						$foundoldschema = TRUE;
-						$success = TRUE if( sqldo( $dbh, "ALTER TABLE `$flywaytablename` MODIFY `version_rank` INT DEFAULT NULL" ) );
-						last ROWS;
-					}
-				}
+	#				if( ( $field eq 'version_rank' ) ) {
+	#					$foundoldschema = TRUE;
+	#					$success = TRUE if( sqldo( $dbh, "ALTER TABLE `$flywaytablename` MODIFY `version_rank` INT DEFAULT NULL" ) );
+	#					last ROWS;
+	#				}
+	#			}
 
-				$sth -> finish();
+	#			$sth -> finish();
 
-				if( not( $foundoldschema ) ) {
-					pwarn( "\n" );
-					pwarn( "'OLDSCHEMA' is a debug option, and should not be used on any database with new metadata\n" );
-				}
-			}
-		} elsif ( 'vertica' eq $engine ) {
-			# XXX: Should implement a check as per the above, but
-			#      Vertica never worked well enough to perform any
-			#      deployments with the previous schema...
-			$success = TRUE if(
-				sqldo( $dbh, "ALTER TABLE `$verticadb$flywaytablename` ALTER COLUMN `version` DROP NOT NULL" ) and
-				sqldo( $dbh, "ALTER TABLE `$verticadb$flywaytablename` ALTER COLUMN `version` SET DEFAULT NULL" )
-			)
-		}
+	#			if( not( $foundoldschema ) ) {
+	#				pwarn( "\n" );
+	#				pwarn( "'OLDSCHEMA' is a debug option, and should not be used on any database with new metadata\n" );
+	#			}
+	#		}
+	#	} elsif ( 'vertica' eq $engine ) {
+	#		# XXX: Should implement a check as per the above, but
+	#		#      Vertica never worked well enough to perform any
+	#		#      deployments with the previous schema...
+	#		$success = TRUE if(
+	#			sqldo( $dbh, "ALTER TABLE `$verticadb$flywaytablename` ALTER COLUMN `version` DROP NOT NULL" ) and
+	#			sqldo( $dbh, "ALTER TABLE `$verticadb$flywaytablename` ALTER COLUMN `version` SET DEFAULT NULL" )
+	#		)
+	#	}
 
-		if( $success ) {
-			pwarn( "Compatibility update applied to table `$flywaytablename`\n", undef, TRUE );
-			return( TRUE );
-		} else {
-			pwarn( "Compatibility update failed to update table `$flywaytablename`\n", undef, TRUE );
-			return( FALSE );
-		}
-	}
+	#	if( $success ) {
+	#		pwarn( "Compatibility update applied to table `$flywaytablename`\n", undef, TRUE );
+	#		return( TRUE );
+	#	} else {
+	#		pwarn( "Compatibility update failed to update table `$flywaytablename`\n", undef, TRUE );
+	#		return( FALSE );
+	#	}
+	#}
 
 	my $tableexists;
 	my $setmigrated = FALSE;
-	if( defined( $vschm ) and length( $vschm ) ) {
+	if( 'vertica' eq $engine ) {
 		$tableexists = sqlgetvalue( $dbh, "SELECT COUNT(*) FROM `tables` WHERE `table_schema` = '$vschm' AND `table_name` = '$mywayhistoryname'" );
 	} else {
 		$tableexists = sqlgetvalue( $dbh, "SELECT COUNT(*) FROM `information_schema`.`TABLES` WHERE `TABLE_SCHEMA` = '$db' AND `TABLE_NAME` = '$mywayhistoryname'" );
@@ -3459,69 +3477,66 @@ sub metadatamigrateschema( $;$$$ ) { # {{{
 	if( defined( $tableexists ) and $tableexists ) { # {{{
 		pdebug( "History metadata table '$mywayhistoryname' exists ..." );
 
-		if( defined( $vschm ) and length( $vschm ) ) {
-			# XXX: Should implement a check as per the below, but
-			#      Vertica never worked well enough to perform any
-			#      deployments with the previous schema...
+		if( not( sqlgetvalue( $dbh, "SELECT COUNT(*) FROM `$verticadb$flywaytablename`" ) ) ) {
+			# This is a fresh install, since we have no
+			# `schema_version` entries.
+			# XXX: If we have a database which had '--init'
+			#      run with a legacy schema but which was
+			#      not further used, this will still break.
 			$setmigrated = TRUE;
+		}
+
+		my $st;
+		if( 'vertica' eq $engine ) {
+			# Emulate MySQL 5.7 output - there don't appear to be
+			# equivalents for `Key` and `Extra` (which are both
+			# MySQL extensions)...
+			$st = "SELECT `column_name` AS 'Field', `data_type` AS 'Type', `is_nullable` AS 'Null', null AS Key, `column_default` AS 'Default', null AS 'Extra' FROM `v_catalog`.`columns` WHERE `table_schema` = '$vschm' AND `table_name` = '$mywayhistoryname' ORDER BY `ordinal_position`";
 		} else {
-			if( not( sqlgetvalue( $dbh, "SELECT COUNT(*) FROM `$verticadb$flywaytablename`" ) ) ) {
-				# This is a fresh install, since we have no
-				# `schema_version` entries.
-				# XXX: If we have a database which had '--init'
-				#      run with a legacy schema but which was
-				#      not further used, this will still break.
-				$setmigrated = TRUE;
+			$st = "DESCRIBE `$mywayhistoryname`";
+		}
+		my $sth = sqlexecute( $dbh, undef, $st );
+		if( not( defined( $sth ) and $sth ) ) {
+			my $errstr = $dbh -> errstr();
+			pfail( "\n" );
+			pfail( "Unable to create statement handle to execute '$st'" . ( defined( $errstr ) and length( $errstr ) ? ": " . $errstr : '' ) . "\n" );
+
+			return( FALSE );
+		} else {
+			my $foundoldschema = FALSE;
+
+			ROWS: while( my $ref = $sth -> fetchrow_arrayref() ) {
+				my $field = @{ $ref }[ 0 ];
+
+				# `active` existed for the older schema
+				# which we've now replaced, but not in
+				# the current one...
+				if( ( $field eq 'active' ) ) {
+					pdebug( "History metadata table '$mywayhistoryname' is in need of replacement ..." );
+
+					$foundoldschema = TRUE;
+					last ROWS;
+				}
 			}
 
-			my $st = "DESCRIBE `$mywayhistoryname`";
-			my $sth = sqlexecute( $dbh, undef, $st );
-			if( not( defined( $sth ) and $sth ) ) {
-				my $errstr = $dbh -> errstr();
-				pfail( "\n" );
-				pfail( "Unable to create statement handle to execute '$st'" . ( defined( $errstr ) and length( $errstr ) ? ": " . $errstr : '' ) . "\n" );
+			$sth -> finish();
 
-				return( FALSE );
-			} else {
-				my $foundoldschema = FALSE;
+			if( $foundoldschema ) {
+				my $currentversion = sqlgetvalue( $dbh, "SELECT DISTINCT `myway_version` FROM `$verticadb$mywayhistoryname` WHERE `active` IS TRUE ORDER BY `myway_version` DESC LIMIT 1" );
+				pdebug( "Legacy history metadata table had active version '$currentversion'" );
 
-				ROWS: while( my $ref = $sth -> fetchrow_arrayref() ) {
-					my $field = @{ $ref }[ 0 ];
+				if( $pretend ) {
+					psim( "Would drop legacy history metadata table '$mywayhistoryname' ..." );
+				} else {
+					pdebug( "Dropping legacy history metadata table '$mywayhistoryname' ..." );
 
-					# `active` existed for the older schema
-					# which we've now replaced, but not in
-					# the current one...
-					if( ( $field eq 'active' ) ) {
-						pdebug( "History metadata table '$mywayhistoryname' is in need of replacement ..." );
-
-						$foundoldschema = TRUE;
-						last ROWS;
-					}
+					my $flag = $allowunsafe;
+					$allowunsafe = TRUE;
+					sqldo( $dbh, "DROP TABLE `$mywayhistoryname`", TRUE );
+					$allowunsafe = $flag;
 				}
 
-				$sth -> finish();
-
-				if( $foundoldschema ) {
-					my $currentversion = sqlgetvalue( $dbh, "SELECT DISTINCT `myway_version` FROM `$verticadb$mywayhistoryname` WHERE `active` IS TRUE ORDER BY `myway_version` DESC LIMIT 1" );
-					pdebug( "Legacy history metadata table had active version '$currentversion'" );
-					if( $currentversion =~ m/^1\.2\.0/ ) {
-						pdebug( "Legacy version up to date - will skip migration ..." );
-						$setmigrated = TRUE;
-					}
-
-					if( $pretend ) {
-						psim( "Would drop history metadata table '$mywayhistoryname' ..." );
-					} else {
-						pdebug( "Dropping history metadata table '$mywayhistoryname' ..." );
-
-						my $flag = $allowunsafe;
-						$allowunsafe = TRUE;
-						sqldo( $dbh, "DROP TABLE `$mywayhistoryname`", TRUE );
-						$allowunsafe = $flag;
-					}
-
-					$tableexists = undef;
-				}
+				$tableexists = undef;
 			}
 		}
 	} # }}}
@@ -3557,152 +3572,185 @@ sub metadatamigrateschema( $;$$$ ) { # {{{
 		if( 'vertica' eq $engine ) {
 			sqldo( $dbh, "INSERT INTO `$verticadb$mywayhistoryname` (`myway_version`, `flyway_compatible`, `type`, `description`) VALUES('1.1.2', '2.1', 'INIT', '<< Flyway Init >>')" ) unless( sqlgetvalue( $dbh, "SELECT COUNT(*) FROM `$verticadb$mywayhistoryname` WHERE `myway_version` = '1.1.2'" ) );
 			sqldo( $dbh, "INSERT INTO `$verticadb$mywayhistoryname` (`myway_version`, `flyway_compatible`, `type`, `description`) VALUES('1.2.0', '4.0', 'BASELINE', '<< Flyway Baseline >>')" ) unless( sqlgetvalue( $dbh, "SELECT COUNT(*) FROM `$verticadb$mywayhistoryname` WHERE `myway_version` = '1.2.0'" ) );
+			sqldo( $dbh, "INSERT INTO `$verticadb$mywayhistoryname` (`myway_version`, `flyway_compatible`, `type`, `description`) VALUES('1.4.0', '4.0', 'BASELINE', '<< Flyway Baseline >>')" ) unless( sqlgetvalue( $dbh, "SELECT COUNT(*) FROM `$verticadb$mywayhistoryname` WHERE `myway_version` = '1.4.0'" ) );
 		} else {
 			sqldo( $dbh, "INSERT IGNORE INTO `$mywayhistoryname` (`myway_version`, `flyway_compatible`, `type`, `description`) VALUES('1.1.2', '2.1', 'INIT', '<< Flyway Init >>')" );
 			sqldo( $dbh, "INSERT IGNORE INTO `$mywayhistoryname` (`myway_version`, `flyway_compatible`, `type`, `description`) VALUES('1.2.0', '4.0', 'BASELINE', '<< Flyway Baseline >>')" );
+			sqldo( $dbh, "INSERT IGNORE INTO `$mywayhistoryname` (`myway_version`, `flyway_compatible`, `type`, `description`) VALUES('1.4.0', '4.0', 'BASELINE', '<< Flyway Baseline >>')" );
 		}
 		sqldo( $dbh, "UPDATE `$verticadb$mywayhistoryname` SET `migrated` = TRUE WHERE myway_version = '1.1.2'" ) if( $setmigrated );
+		sqldo( $dbh, "UPDATE `$verticadb$mywayhistoryname` SET `migrated` = TRUE WHERE myway_version = '1.2.0'" ) if( $setmigrated );
 
 		# For future updates...
-		#sqldo( $dbh, "UPDATE `$verticadb$mywayhistoryname` SET `migrated` = TRUE WHERE myway_version = '1.2.0'" );
-		#sqldo( $dbh, "UPDATE `$verticadb$mywayhistoryname` SET `migrated` = TRUE WHERE myway_version = '1.3.0'" );
+		#sqldo( $dbh, "UPDATE `$verticadb$mywayhistoryname` SET `migrated` = TRUE WHERE myway_version = '1.4.0'" );
+		#sqldo( $dbh, "UPDATE `$verticadb$mywayhistoryname` SET `migrated` = TRUE WHERE myway_version = '1.5.0'" );
 		# ... etc.
+	} # ( not ( $pretend ) )
 
-		my $mywayversion = sqlgetvalue( $dbh, "SELECT DISTINCT `myway_version` FROM `$verticadb$mywayhistoryname` ORDER BY `myway_version` DESC LIMIT 1" );
-		my $flywayversion;
-		my $flywaydescription;
-		if( defined( $mywayversion ) and length( $mywayversion ) ) {
-			$flywayversion = sqlgetvalue( $dbh, "SELECT DISTINCT `flyway_compatible` FROM `$verticadb$mywayhistoryname` WHERE `myway_version` = '$mywayversion' LIMIT 1" );
-			$flywaydescription = sqlgetvalue( $dbh, "SELECT DISTINCT `type` FROM `$verticadb$mywayhistoryname` WHERE `myway_version` = '$mywayversion' LIMIT 1" );
+	my $mywayversion = sqlgetvalue( $dbh, "SELECT DISTINCT `myway_version` FROM `$verticadb$mywayhistoryname` ORDER BY `myway_version` DESC LIMIT 1" );
+	my $flywayversion;
+	my $flywaydescription;
+	if( defined( $mywayversion ) and length( $mywayversion ) ) {
+		$flywayversion = sqlgetvalue( $dbh, "SELECT DISTINCT `flyway_compatible` FROM `$verticadb$mywayhistoryname` WHERE `myway_version` = '$mywayversion' LIMIT 1" );
+		$flywaydescription = sqlgetvalue( $dbh, "SELECT DISTINCT `type` FROM `$verticadb$mywayhistoryname` WHERE `myway_version` = '$mywayversion' LIMIT 1" );
+	}
+
+	pdebug( "Metadata: myway '" . ( defined( $mywayversion ) ? $mywayversion : '<not set>' ) . "', flyway '" . ( defined( $flywayversion ) ? $flywayversion : '<not set>' ) . "', init string '" . ( defined( $flywaydescription ) ? $flywaydescription : '<not set>' ) . "'" );
+
+	my $oldversions;
+
+	if( defined( $mywayversion ) and length( $mywayversion ) ) {
+		my @sortedversions = sort { versioncmp( $a, $b ) } ( $mywayversion, VERSION );
+		my $latest = pop( @sortedversions );
+		if( not( $latest eq VERSION ) ) {
+			die( "$fatal The metadata version '$latest' declared in `$mywayhistoryname` is more recent than can be understood by version " . VERSION . " of this tool - aborting in order to maintain data integrity [" . ( caller( 0 ) )[ 3 ] . ':' . __LINE__ . "]\n" );
 		}
 
-		pdebug( "Metadata: myway '" . ( defined( $mywayversion ) ? $mywayversion : '<not set>' ) . "', flyway '" . ( defined( $flywayversion ) ? $flywayversion : '<not set>' ) . "', init string '" . ( defined( $flywaydescription ) ? $flywaydescription : '<not set>' ) . "'" );
+		$oldversions = sqlgetvalues( $dbh, "SELECT DISTINCT `myway_version` FROM `$verticadb$mywayhistoryname` WHERE `migrated` IS NOT TRUE AND `myway_version` != '$mywayversion' ORDER BY `myway_version`" );
+	} else {
+		# XXX: This should never happen, but we've seen Vertica
+		#      fail to execute the previous query... in which
+		#      case it's entirely unclear what we should do.
+		#      Luckily in this case, we should be able to
+		#      filter below...
+		$oldversions = sqlgetvalues( $dbh, "SELECT DISTINCT `myway_version` FROM `$verticadb$mywayhistoryname` WHERE `migrated` IS NOT TRUE ORDER BY `myway_version`" );
+	}
 
-		my $oldversions;
-
-		if( defined( $mywayversion ) and length( $mywayversion ) ) {
-			my @sortedversions = sort { versioncmp( $a, $b ) } ( $mywayversion, VERSION );
-			my $latest = pop( @sortedversions );
-			if( not( $latest eq VERSION ) ) {
-				die( "$fatal The metadata version '$latest' declared in `$mywayhistoryname` is more recent than can be understood by version '$mywayversion' of this tool - aborting in order to maintain data integrity [" . ( caller( 0 ) )[ 3 ] . ':' . __LINE__ . "]\n" );
-			}
-
-			$oldversions = sqlgetvalues( $dbh, "SELECT DISTINCT `myway_version` FROM `$verticadb$mywayhistoryname` WHERE `migrated` IS NOT TRUE AND `myway_version` != '$mywayversion' ORDER BY `myway_version`" );
-		} else {
-			# XXX: This should never happen, but we've seen Vertica
-			#      fail to execute the previous query... in which
-			#      case it's entirely unclear what we should do.
-			#      Luckily in this case, we should be able to
-			#      filter below...
-			$oldversions = sqlgetvalues( $dbh, "SELECT DISTINCT `myway_version` FROM `$verticadb$mywayhistoryname` WHERE `migrated` IS NOT TRUE ORDER BY `myway_version`" );
-		}
-
-		foreach my $oldversion ( @{ $oldversions } ) {
-			if( not( defined( $mywayversion ) and length( $mywayversion ) ) ) {
+	foreach my $oldversion ( @{ $oldversions } ) {
+		if( not( defined( $mywayversion ) and length( $mywayversion ) ) ) {
+			pfail( "\n" );
+			pfail( "Unable to determine current version from database - migration may fail ...\n" );
+			if( $oldversion eq VERSION ) {
 				pfail( "\n" );
-				pfail( "Unable to determine current version from database - migration may fail ...\n" );
-				if( $oldversion eq VERSION ) {
-					pfail( "\n" );
-					pfail( "Skipping version '$oldversion' on the assumption that we can't migrate away from the current release ...\n" );
-					next;
-				}
+				pfail( "Skipping version '$oldversion' on the assumption that we can't migrate away from the current release ...\n" );
+				next;
 			}
+		}
 
-			my $flywayversion = sqlgetvalue( $dbh, "SELECT DISTINCT `flyway_compatible` FROM `$verticadb$mywayhistoryname` WHERE `myway_version` = '$mywayversion'" );
-			my $flywayoldinit = sqlgetvalue( $dbh, "SELECT DISTINCT `type` FROM `$verticadb$mywayhistoryname` WHERE `myway_version` = '$oldversion'" );
-			my $flywayinit = sqlgetvalue( $dbh, "SELECT DISTINCT `type` FROM `$verticadb$mywayhistoryname` WHERE `myway_version` = '$mywayversion'" );
-			my $flywayolddescription = sqlgetvalue( $dbh, "SELECT DISTINCT `description` FROM `$verticadb$mywayhistoryname` WHERE `myway_version` = '$oldversion'" );
-			my $flywaydescription = sqlgetvalue( $dbh, "SELECT DISTINCT `description` FROM `$verticadb$mywayhistoryname` WHERE `myway_version` = '$mywayversion'" );
+		my $flywayversion = sqlgetvalue( $dbh, "SELECT DISTINCT `flyway_compatible` FROM `$verticadb$mywayhistoryname` WHERE `myway_version` = '$mywayversion'" );
+		my $flywayoldinit = sqlgetvalue( $dbh, "SELECT DISTINCT `type` FROM `$verticadb$mywayhistoryname` WHERE `myway_version` = '$oldversion'" );
+		my $flywayinit = sqlgetvalue( $dbh, "SELECT DISTINCT `type` FROM `$verticadb$mywayhistoryname` WHERE `myway_version` = '$mywayversion'" );
+		my $flywayolddescription = sqlgetvalue( $dbh, "SELECT DISTINCT `description` FROM `$verticadb$mywayhistoryname` WHERE `myway_version` = '$oldversion'" );
+		my $flywaydescription = sqlgetvalue( $dbh, "SELECT DISTINCT `description` FROM `$verticadb$mywayhistoryname` WHERE `myway_version` = '$mywayversion'" );
 
-			pdebug( "$oldversion -> $mywayversion($flywayversion): init($flywayoldinit=>$flywayinit) desc($flywayolddescription=>$flywaydescription)" );
+		pdebug( "$oldversion -> $mywayversion($flywayversion): init($flywayoldinit=>$flywayinit) desc($flywayolddescription=>$flywaydescription)" );
 
-			if( defined( $oldversion ) and defined( $mywayversion ) and ( '1.1.2' eq $oldversion ) and ( '1.2.0' eq $mywayversion ) ) {
-				if( $pretend ) {
-					if( not( $quiet or $silent ) ) {
-						psim( "\n" );
-						psim( "Would upgrade metadata schema from version '$oldversion' to version '$mywayversion' (compatible with flyway version '$flywayversion') ...\n", undef, TRUE );
-					}
+		if( $pretend ) {
+			if( not( $quiet or $silent ) ) {
+				psim( "\n" );
+				psim( "Would upgrade metadata schema from version '$oldversion' to version '$mywayversion' (compatible with flyway version '$flywayversion') ...\n", undef, TRUE );
+			}
+		} else {
+			if( defined( $oldversion ) and ( '1.1.2' eq $oldversion ) ) { # {{{
+				pdebug( "Upgrading metadata schema from version '$oldversion' to version '$mywayversion' (compatible with flyway version '$flywayversion') ...\n", undef, TRUE ) unless( $quiet or $silent );
+
+				# We need to migrate from original schema to Flyway 4.x schema:
+				#
+				#  `version_rank` is removed;
+				#  `version` is no longer NOT NULL;
+				#  The `version_rank` and `installed_rank` indices are removed;
+				#  `installed_rank` is now the PRIMARY KEY;
+				#  The `type` value 'INIT' is now 'BASELINE'.
+				#
+				# ... and in addition we've added a PK to myway_schema_actions.
+
+				my $continue = TRUE;
+
+				if( 'vertica' eq $engine ) {
+					# Vertica can't add AUTO_INCREMENT columns, so we'll
+					# have to just continue without the new Primary Key.
+					# This isn't necessarily an issue, as it was only added
+					# to keep InnoDB happy... but it is now inconsistent :(
+					#
+					#if( not( sqldo( $dbh, "ALTER TABLE `$verticadb$mywayactionsname` ADD COLUMN `id` AUTO_INCREMENT" ) ) ) {
+					#	pwarn( "Unable to update `$verticadb$mywayactionsname` table\n", undef, TRUE );
+					#	return( FALSE );
+					#}
+
+					sqldo( $dbh, "ALTER TABLE `$verticadb$flywaytablename` DROP COLUMN `version_rank`" ) or goto SCHEMA_UPDATE_FAILED;
+					sqldo( $dbh, "ALTER TABLE `$verticadb$flywaytablename` DROP CONSTRAINT `C_PRIMARY`" ) or goto SCHEMA_UPDATE_FAILED;
+					sqldo( $dbh, "ALTER TABLE `$verticadb$flywaytablename` ADD CONSTRAINT `${flywaytablename}_pk` PRIMARY KEY (`installed_rank`)" ) or goto SCHEMA_UPDATE_FAILED;
+					sqldo( $dbh, "ALTER TABLE `$verticadb$flywaytablename` ALTER COLUMN `version` DROP NOT NULL" ) or goto SCHEMA_UPDATE_FAILED;
+					sqldo( $dbh, "UPDATE `$verticadb$flywaytablename` SET `type` = '$flywayinit' WHERE `type` = '$flywayoldinit'" ) or goto SCHEMA_UPDATE_FAILED;
+					sqldo( $dbh, "UPDATE `$verticadb$flywaytablename` SET `description` = '$flywaydescription' WHERE `description` = '$flywayolddescription'" ) or goto SCHEMA_UPDATE_FAILED;
 				} else {
-					pdebug( "Upgrading metadata schema from version '$oldversion' to version '$mywayversion' (compatible with flyway version '$flywayversion') ...\n", undef, TRUE ) unless( $quiet or $silent );
+					my $st = "DESCRIBE `$mywayactionsname`";
+					my $sth = sqlexecute( $dbh, undef, $st );
+					if( not( defined( $sth ) and $sth ) ) {
+						my $errstr = $dbh -> errstr();
+						pfail( "\n" );
+						pfail( "Unable to create statement handle to execute '$st'" . ( defined( $errstr ) and length( $errstr ) ? ": " . $errstr : '' ) . "\n" );
 
-					# We need to migrate from original schema to Flyway 4.x schema:
-					#
-					#  `version_rank` is removed;
-					#  `version` is no longer NOT NULL;
-					#  The `version_rank` and `installed_rank` indices are removed;
-					#  `installed_rank` is now the PRIMARY KEY;
-					#  The `type` value 'INIT' is now 'BASELINE'.
-					#
-					# ... and in addition we've added a PK to myway_schema_actions.
-
-					my $continue = TRUE;
-
-					if( 'vertica' eq $engine ) {
-						# Vertica can't add AUTO_INCREMENT columns, so we'll
-						# have to just continue without the new Primary Key.
-						# This isn't necessarily an issue, as it was only added
-						# to keep InnoDB happy... but it is now inconsistent :(
-						#
-						#if( not( sqldo( $dbh, "ALTER TABLE `$verticadb$mywayactionsname` ADD COLUMN `id` AUTO_INCREMENT" ) ) ) {
-						#	pwarn( "Unable to update `$verticadb$mywayactionsname` table\n", undef, TRUE );
-						#	return( FALSE );
-						#}
-
-						sqldo( $dbh, "ALTER TABLE `$verticadb$flywaytablename` DROP COLUMN `version_rank`" ) or goto SCHEMA_UPDATE_FAILED;
-						sqldo( $dbh, "ALTER TABLE `$verticadb$flywaytablename` DROP CONSTRAINT `C_PRIMARY`" ) or goto SCHEMA_UPDATE_FAILED;
-						sqldo( $dbh, "ALTER TABLE `$verticadb$flywaytablename` ADD CONSTRAINT `${flywaytablename}_pk` PRIMARY KEY (`installed_rank`)" ) or goto SCHEMA_UPDATE_FAILED;
-						sqldo( $dbh, "ALTER TABLE `$verticadb$flywaytablename` ALTER COLUMN `version` DROP NOT NULL" ) or goto SCHEMA_UPDATE_FAILED;
-						sqldo( $dbh, "UPDATE `$verticadb$flywaytablename` SET `type` = '$flywayinit' WHERE `type` = '$flywayoldinit'" ) or goto SCHEMA_UPDATE_FAILED;
-						sqldo( $dbh, "UPDATE `$verticadb$flywaytablename` SET `description` = '$flywaydescription' WHERE `description` = '$flywayolddescription'" ) or goto SCHEMA_UPDATE_FAILED;
+						return( FALSE );
 					} else {
-						my $st = "DESCRIBE `$mywayactionsname`";
-						my $sth = sqlexecute( $dbh, undef, $st );
-						if( not( defined( $sth ) and $sth ) ) {
-							my $errstr = $dbh -> errstr();
-							pfail( "\n" );
-							pfail( "Unable to create statement handle to execute '$st'" . ( defined( $errstr ) and length( $errstr ) ? ": " . $errstr : '' ) . "\n" );
+						my $foundnewschema = FALSE;
 
-							return( FALSE );
+						ROWS: while( my $ref = $sth -> fetchrow_arrayref() ) {
+							my $field = @{ $ref }[ 0 ];
+
+							if( ( $field eq 'id' ) ) {
+								$foundnewschema = TRUE;
+								last ROWS;
+							}
+						}
+
+						$sth -> finish();
+
+						if( $foundnewschema ) {
+							pwarn( "\n" );
+							pwarn( "Metadata not flagged as updated but schema alteration 'id' already applied - database may not be consistent\n" );
 						} else {
-							my $foundnewschema = FALSE;
-
-							ROWS: while( my $ref = $sth -> fetchrow_arrayref() ) {
-								my $field = @{ $ref }[ 0 ];
-
-								if( ( $field eq 'id' ) ) {
-									$foundnewschema = TRUE;
-									last ROWS;
-								}
-							}
-
-							$sth -> finish();
-
-							if( $foundnewschema ) {
-								pwarn( "\n" );
-								pwarn( "Metadata not flagged as updated but schema alteration 'id' already applied - database may not be consistent\n" );
-							} else {
-								if( not( sqldo( $dbh, "ALTER TABLE `$mywayactionsname` ADD COLUMN `id` INT UNSIGNED AUTO_INCREMENT NOT NULL FIRST, ADD CONSTRAINT PRIMARY KEY (`id`)" ) ) ) {
-									pwarn( "Unable to update `$mywayactionsname` table\n", undef, TRUE );
-									return( FALSE );
-								}
+							if( not( sqldo( $dbh, "ALTER TABLE `$mywayactionsname` ADD COLUMN `id` INT UNSIGNED AUTO_INCREMENT NOT NULL FIRST, ADD CONSTRAINT PRIMARY KEY (`id`)" ) ) ) {
+								pwarn( "Unable to update `$mywayactionsname` table\n", undef, TRUE );
+								return( FALSE );
 							}
 						}
+					}
 
-						if( not( sqldo( $dbh, "DROP TEMPORARY TABLE IF EXISTS `${flywaytablename}_backup`" ) ) ) {
-							pwarn( "Dropping temporary table `${flywaytablename}_backup` failed\n", undef, TRUE );
-							return( FALSE );
-						}
-						if( not( sqldo( $dbh, "CREATE TEMPORARY TABLE IF NOT EXISTS `${flywaytablename}_backup` LIKE `$flywaytablename`" ) ) ) {
-							pwarn( "Creating temporary table `${flywaytablename}_backup` failed\n", undef, TRUE );
-							return( FALSE );
-						}
-						if( not( sqldo( $dbh, "INSERT INTO `${flywaytablename}_backup` SELECT * FROM `$flywaytablename`" ) ) ) {
-							pwarn( "Populating temporary table `${flywaytablename}_backup` failed\n", undef, TRUE );
-							return( FALSE );
+					if( not( sqldo( $dbh, "DROP TEMPORARY TABLE IF EXISTS `${flywaytablename}_backup`" ) ) ) {
+						pwarn( "Dropping temporary table `${flywaytablename}_backup` failed\n", undef, TRUE );
+						return( FALSE );
+					}
+					if( not( sqldo( $dbh, "CREATE TEMPORARY TABLE IF NOT EXISTS `${flywaytablename}_backup` LIKE `$flywaytablename`" ) ) ) {
+						pwarn( "Creating temporary table `${flywaytablename}_backup` failed\n", undef, TRUE );
+						return( FALSE );
+					}
+					if( not( sqldo( $dbh, "INSERT INTO `${flywaytablename}_backup` SELECT * FROM `$flywaytablename`" ) ) ) {
+						pwarn( "Populating temporary table `${flywaytablename}_backup` failed\n", undef, TRUE );
+						return( FALSE );
+					}
+
+					$st = "SHOW INDEX FROM `$flywaytablename`";
+					$sth = sqlexecute( $dbh, undef, $st );
+					if( not( defined( $sth ) and $sth ) ) {
+						my $errstr = $dbh -> errstr();
+						pfail( "\n" );
+						pfail( "Unable to create statement handle to execute '$st'" . ( defined( $errstr ) and length( $errstr ) ? ": " . $errstr : '' ) . "\n" );
+
+						$continue = FALSE;
+					} else {
+						my $foundidx = 0;
+
+						ROWS: while( my $ref = $sth -> fetchrow_arrayref() ) {
+							my $key = @{ $ref }[ 2 ];
+
+							if( ( $key eq 'schema_version_vr_idx' ) ) {
+								sqldo( $dbh, "DROP INDEX `schema_version_vr_idx` ON `$flywaytablename`" );
+								$foundidx ++;
+							} elsif( ( $key eq 'schema_version_ir_idx' ) ) {
+								sqldo( $dbh, "DROP INDEX `schema_version_ir_idx` ON `$flywaytablename`" );
+								$foundidx ++;
+							}
 						}
 
-						$st = "SHOW INDEX FROM `$flywaytablename`";
-						$sth = sqlexecute( $dbh, undef, $st );
+						$sth -> finish();
+
+						$continue = FALSE unless( $foundidx == 2 );
+					}
+
+					if( $continue ) {
+						my $st = "DESCRIBE `$flywaytablename`";
+						my $sth = sqlexecute( $dbh, undef, $st );
 						if( not( defined( $sth ) and $sth ) ) {
 							my $errstr = $dbh -> errstr();
 							pfail( "\n" );
@@ -3710,71 +3758,67 @@ sub metadatamigrateschema( $;$$$ ) { # {{{
 
 							$continue = FALSE;
 						} else {
-							my $foundidx = 0;
+							my $foundoldschema = FALSE;
 
 							ROWS: while( my $ref = $sth -> fetchrow_arrayref() ) {
-								my $key = @{ $ref }[ 2 ];
+								my $field = @{ $ref }[ 0 ];
 
-								if( ( $key eq 'schema_version_vr_idx' ) ) {
-									sqldo( $dbh, "DROP INDEX `schema_version_vr_idx` ON `$flywaytablename`" );
-									$foundidx ++;
-								} elsif( ( $key eq 'schema_version_ir_idx' ) ) {
-									sqldo( $dbh, "DROP INDEX `schema_version_ir_idx` ON `$flywaytablename`" );
-									$foundidx ++;
+								if( ( $field eq 'version_rank' ) ) {
+									$foundoldschema = TRUE;
+									last ROWS;
 								}
 							}
 
 							$sth -> finish();
 
-							$continue = FALSE unless( $foundidx == 2 );
-						}
-
-						if( $continue ) {
-							my $st = "DESCRIBE `$flywaytablename`";
-							my $sth = sqlexecute( $dbh, undef, $st );
-							if( not( defined( $sth ) and $sth ) ) {
-								my $errstr = $dbh -> errstr();
-								pfail( "\n" );
-								pfail( "Unable to create statement handle to execute '$st'" . ( defined( $errstr ) and length( $errstr ) ? ": " . $errstr : '' ) . "\n" );
-
-								$continue = FALSE;
+							if( not( $foundoldschema ) ) {
+								pwarn( "\n" );
+								pwarn( "Metadata not flagged as updated but schema alteration 'version_rank' already applied - database may not be consistent\n" );
 							} else {
-								my $foundoldschema = FALSE;
-
-								ROWS: while( my $ref = $sth -> fetchrow_arrayref() ) {
-									my $field = @{ $ref }[ 0 ];
-
-									if( ( $field eq 'version_rank' ) ) {
-										$foundoldschema = TRUE;
-										last ROWS;
-									}
-								}
-
-								$sth -> finish();
-
-								if( not( $foundoldschema ) ) {
-									pwarn( "\n" );
-									pwarn( "Metadata not flagged as updated but schema alteration 'version_rank' already applied - database may not be consistent\n" );
-								} else {
-									if( not( sqldo( $dbh, "ALTER TABLE `$flywaytablename` DROP COLUMN `version_rank`" ) ) ) {
-										pwarn( "Unable to update `$flywaytablename` table\n", undef, TRUE );
-										$continue = FALSE;
-									}
+								if( not( sqldo( $dbh, "ALTER TABLE `$flywaytablename` DROP COLUMN `version_rank`" ) ) ) {
+									pwarn( "Unable to update `$flywaytablename` table\n", undef, TRUE );
+									$continue = FALSE;
 								}
 							}
 						}
-						if( $continue ) {
-							sqldo( $dbh, "ALTER TABLE `$flywaytablename` DROP PRIMARY KEY, ADD CONSTRAINT `${flywaytablename}_pk` PRIMARY KEY (`installed_rank`)" ) or goto SCHEMA_UPDATE_FAILED;
-							sqldo( $dbh, "ALTER TABLE `$flywaytablename` MODIFY `version` VARCHAR(50)" ) or goto SCHEMA_UPDATE_FAILED;
-							sqldo( $dbh, "UPDATE `$flywaytablename` SET `type` = '$flywayinit' WHERE `type` = '$flywayoldinit'" ) or goto SCHEMA_UPDATE_FAILED;
-							sqldo( $dbh, "UPDATE `$flywaytablename` SET `description` = '$flywaydescription' WHERE `description` = '$flywayolddescription'" ) or goto SCHEMA_UPDATE_FAILED;
-						}
 					}
-
-					sqldo( $dbh, "UPDATE `$verticadb$mywayhistoryname` SET `migrated` = TRUE WHERE `myway_version` = '$oldversion' AND `migrated` IS FALSE" ) or die( "$fatal Populating '$mywayhistoryname' failed" . ( defined( $dbh -> errstr() ) ? " with: " . $dbh -> errstr() : '' ) . ' [' . ( caller( 0 ) )[ 3 ] . ':' . __LINE__ . "]\n" );
+					if( $continue ) {
+						sqldo( $dbh, "ALTER TABLE `$flywaytablename` DROP PRIMARY KEY, ADD CONSTRAINT `${flywaytablename}_pk` PRIMARY KEY (`installed_rank`)" ) or goto SCHEMA_UPDATE_FAILED;
+						sqldo( $dbh, "ALTER TABLE `$flywaytablename` MODIFY `version` VARCHAR(50)" ) or goto SCHEMA_UPDATE_FAILED;
+						sqldo( $dbh, "UPDATE `$flywaytablename` SET `type` = '$flywayinit' WHERE `type` = '$flywayoldinit'" ) or goto SCHEMA_UPDATE_FAILED;
+						sqldo( $dbh, "UPDATE `$flywaytablename` SET `description` = '$flywaydescription' WHERE `description` = '$flywayolddescription'" ) or goto SCHEMA_UPDATE_FAILED;
+					}
 				}
-			}
-		}
+
+				sqldo( $dbh, "UPDATE `$verticadb$mywayhistoryname` SET `migrated` = TRUE WHERE `myway_version` = '$oldversion' AND `migrated` IS FALSE" ) or die( "$fatal Populating '$mywayhistoryname' failed" . ( defined( $dbh -> errstr() ) ? " with: " . $dbh -> errstr() : '' ) . ' [' . ( caller( 0 ) )[ 3 ] . ':' . __LINE__ . "]\n" );
+			} # ( defined( $oldversion ) and ( '1.1.2' eq $oldversion ) ) # }}}
+			elsif( defined( $oldversion ) and ( '1.2.0' eq $oldversion ) ) { # {{{
+
+				# Migrate from v1.2.0 to v1.4.0:
+				#
+				# `statement` is renamed to `statement_long`;
+				# `statement_long` has its NOT NULL constraint removed;
+				# A new attribute, named `statement`, is created as a maximally-sized VARCHAR()
+				#
+				# This is primarily to support searching for
+				# executed statements in Vertica, which does
+				# not allow use of the LIKE condition on
+				# LONG VARCHAR fields...
+
+				if( 'vertica' eq $engine ) {
+					sqldo( $dbh, "ALTER TABLE `$verticadb$mywayactionsname` RENAME COLUMN `statement` TO `statement_long`" ) or goto SCHEMA_UPDATE_FAILED;
+					sqldo( $dbh, "ALTER TABLE `$verticadb$mywayactionsname` ALTER COLUMN `statement_long` DROP NOT NULL" ) or goto SCHEMA_UPDATE_FAILED;
+					sqldo( $dbh, "ALTER TABLE `$verticadb$mywayactionsname` ADD COLUMN `statement` VARCHAR(" . SQLMAX . ")" ) or goto SCHEMA_UPDATE_FAILED;
+				} else {
+					sqldo( $dbh, "ALTER TABLE `$mywayactionsname` CHANGE COLUMN `statement` `statement_long` LONGTEXT CHARACTER SET 'UTF8MB4'" ) or goto SCHEMA_UPDATE_FAILED;
+					sqldo( $dbh, "ALTER TABLE `$mywayactionsname` ADD COLUMN `statement` VARCHAR(" . SQLMAX . ") CHARACTER SET 'UTF8MB4' AFTER `event`" ) or goto SCHEMA_UPDATE_FAILED;
+				}
+
+				sqldo( $dbh, "UPDATE `$verticadb$mywayhistoryname` SET `migrated` = TRUE WHERE `myway_version` = '$oldversion' AND `migrated` IS FALSE" ) or die( "$fatal Populating '$mywayhistoryname' failed" . ( defined( $dbh -> errstr() ) ? " with: " . $dbh -> errstr() : '' ) . ' [' . ( caller( 0 ) )[ 3 ] . ':' . __LINE__ . "]\n" );
+			} # ( defined( $oldversion ) and ( '1.2.0' eq $oldversion ) ) # }}}
+			#elsif( defined( $oldversion ) and ( '1.4.0' eq $oldversion ) ) { # {{{
+			#} # ( defined( $oldversion ) and ( '1.4.0' eq $oldversion ) ) # }}}
+		} # ( $pretend )
 	}
 
 	return( TRUE );
@@ -4735,7 +4779,7 @@ sub applyschema( $$$$;$ ) { # {{{
 											metadatamigrateschema( \$dbh, $db, $vschm, $variables );
 
 											my $tableexists;
-											if( defined( $vschm ) and length( $vschm ) ) {
+											if( 'vertica' eq $engine ) {
 												$tableexists = sqlgetvalue( \$dbh, "SELECT COUNT(*) FROM `tables` WHERE `table_schema` = '$vschm' AND `table_name` = '$flywaytablename'" );
 											} else {
 												$tableexists = sqlgetvalue( \$dbh, "SELECT COUNT(*) FROM `information_schema`.`TABLES` WHERE `TABLE_SCHEMA` = '$db' AND `TABLE_NAME` = '$flywaytablename'" );
@@ -5719,6 +5763,7 @@ SQL
 									if( $okay ) {
 										pfatal( "\n" );
 										pfatal( "Refusing to execute prohibited SQL statement:\n" );
+										pfatal( "$line\n" );
 										$okay = FALSE;
 									}
 									pwarn( "$line\n", undef, TRUE );
@@ -5915,7 +5960,38 @@ SQL
 							} else {
 								my $counter;
 								$counter = sqlgetvalue( \$dbh, "SELECT LAST_INSERT_ID()" ) unless( $engine eq 'vertica' );
-								my $sth = sqlprepare( \$dbh, <<SQL );
+								my $sth;
+								# This is a bit tricky, since UTF-8 can be 1-byte, 2-byte
+								# or 4-byte encoded, whereas MySQL uses a 3-byte encoding
+								# scheme - but it does not appear to be clearly documented
+								# when this applies.  MySQL also has a 'utf8mb4' encoding,
+								# which appears to force 4-byte UTF-8 encoding, even for
+								# characters representable in a shorter encoding...
+								# ... in the end we take the Vertica limit of 65000 octets
+								# and assume that this may need to hold 4-byte UTF-8 data,
+								# resulting in a maximum character-count of 16250
+								# characters, which is what length() counts.  However,
+								# this is further reduced by maximum row-length limits
+								# which apply to both databases.
+								# This may result in some statements which would fit into
+								# a VARCHAR() field being written into a LONGTEXT field
+								# on either database, but this is still an edge-case, and
+								# errs on the side of caution.
+								#
+								if( length( $statement -> { 'line' } ) >= SQLMAX ) {
+									$sth = sqlprepare( \$dbh, <<SQL );
+INSERT INTO `$verticadb$mywayactionsname` (
+    `schema_id`
+  , `started`
+  , `event`
+  , `statement_long`
+  , `line`
+  , `time`
+  , `state`
+) VALUES ( ?, ?, ?, ?, ?, ?, ? )
+SQL
+								} else {
+									$sth = sqlprepare( \$dbh, <<SQL );
 INSERT INTO `$verticadb$mywayactionsname` (
     `schema_id`
   , `started`
@@ -5926,6 +6002,7 @@ INSERT INTO `$verticadb$mywayactionsname` (
   , `state`
 ) VALUES ( ?, ?, ?, ?, ?, ?, ? )
 SQL
+								}
 								my $error = $dbh -> errstr();
 								die( "$fatal Unable to create tracking statement handle" . ( defined( $error ) and length( $error ) ? ": " . $error . "\n" : '' ) . ' [' . ( caller( 0 ) )[ 3 ] . ':' . __LINE__ . "]\n" ) unless( defined( $sth ) and $sth );
 								if( not( $pretend ) ) {
@@ -6776,11 +6853,11 @@ sub main( @ ) { # {{{
 		exit( 1 );
 	}
 
-	if( OLDSCHEMA and( not( force ) ) ) {
-		warn( "OLDSCHEMA is set in your environment.  This is a deprecated debug option and may\n" );
-		warn( "only be used when --force is also enabled\n" );
-		exit( 1 );
-	}
+	#if( OLDSCHEMA and( not( force ) ) ) {
+	#	warn( "OLDSCHEMA is set in your environment.  This is a deprecated debug option and may\n" );
+	#	warn( "only be used when --force is also enabled\n" );
+	#	exit( 1 );
+	#}
 
 	if( @paths and scalar( @paths ) ) {
 		# TODO: Support multiple descriptions for path invocations?
