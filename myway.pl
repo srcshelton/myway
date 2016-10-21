@@ -99,7 +99,6 @@ use constant TRUE        =>  1;
 use constant FALSE       =>  0;
 
 use constant DEBUG       => ( $ENV{ 'DEBUG' } or FALSE );
-#use constant OLDSCHEMA  => ( $ENV{ 'OLDSCHEMA' } or FALSE );
 
 use constant DEFDELIM    => ';';
 
@@ -264,15 +263,8 @@ our $searchpath;
 #  `installed_rank` is now the PRIMARY KEY;
 #  The `type` value 'INIT' is now 'BASELINE'.
 #
-our $flywayinit;
-our $flywayinitdesc;
-#if( OLDSCHEMA ) {
-#	$flywayinit = 'INIT';
-#	$flywayinitdesc = '<< Flyway Init >>';
-#} else {
-$flywayinit = 'BASELINE';
-$flywayinitdesc = '<< Flyway Baseline >>';
-#}
+our $flywayinit = 'BASELINE';
+our $flywayinitdesc = '<< Flyway Baseline >>';
 
 our $mywayhistoryname = 'myway_version_history';
 our $mywayhistoryddl = <<DDL;
@@ -287,8 +279,6 @@ CREATE TABLE IF NOT EXISTS `$mywayhistoryname` (
   , CONSTRAINT `${mywayhistoryname}_unique` UNIQUE (`myway_version`)
 ) ENGINE='InnoDB' DEFAULT CHARSET='ASCII';
 DDL
-#INSERT IGNORE INTO `$mywayhistoryname` (`myway_version`, `flyway_compatible`, `type`, `description`) VALUES('1.1.2', '2.1', 'INIT', '<< Flyway Init >>');
-#INSERT IGNORE INTO `$mywayhistoryname` (`myway_version`, `flyway_compatible`, `type`, `description`) VALUES('1.2.0', '4.0', 'BASELINE', '<< Flyway Baseline >>');
 our $verticamywayhistoryddl = <<DDL;
 CREATE TABLE IF NOT EXISTS __SCHEMA__"$mywayhistoryname" (
     "id"		AUTO_INCREMENT
@@ -303,53 +293,13 @@ CREATE TABLE IF NOT EXISTS __SCHEMA__"$mywayhistoryname" (
 ORDER BY "id"
 SEGMENTED BY HASH( "myway_version" ) ALL NODES;
 DDL
-#INSERT INTO __SCHEMA__"$mywayhistoryname" (`myway_version`, `flyway_compatible`, `type`, `description`) VALUES('1.1.2', '2.1', 'INIT', '<< Flyway Init >>');
-#INSERT INTO __SCHEMA__"$mywayhistoryname" (`myway_version`, `flyway_compatible`, `type`, `description`) VALUES('1.2.0', '4.0', 'BASELINE', '<< Flyway Baseline >>');
 
+# It's entirely possible that `installed_rank` should be an auto-increment
+# column - but there used to exist a separate `version_rank` attribute which
+# was removed in Flyway 4.0, and Flyway does not itself use auto-increment.
+# 'ORDER BY "version"' is as-per Flyway's schema.
 our $flywaytablename = 'schema_version';
-our $flywayddl;
-our $verticaflywayddl;
-#if( OLDSCHEMA ) {
-#	$flywayddl = <<DDL;
-#	CREATE TABLE IF NOT EXISTS `$flywaytablename` (
-#	    `version_rank`	INT		DEFAULT NULL
-#	  , `installed_rank`	INT		                          NOT NULL
-#	  , `version`		VARCHAR(50)	                          NOT NULL
-#	  , `description`	VARCHAR(200)	                          NOT NULL
-#	  , `type`		VARCHAR(20)	                          NOT NULL
-#	  , `script`		VARCHAR(1000)	                          NOT NULL
-#	  , `checksum`		INT		DEFAULT NULL
-#	  , `installed_by`	VARCHAR(100)	                          NOT NULL
-#	  , `installed_on`	TIMESTAMP	DEFAULT CURRENT_TIMESTAMP NOT NULL
-#	  , `execution_time`	INT		                          NOT NULL
-#	  , `success`		BOOLEAN		                          NOT NULL
-#	  , PRIMARY KEY                         (`version`)
-#	  ,         KEY `schema_version_vr_idx` (`version_rank`)
-#	  ,         KEY `schema_version_ir_idx` (`installed_rank`)
-#	  ,         KEY `schema_version_s_idx`  (`success`)
-#	) ENGINE='InnoDB' DEFAULT CHARSET='UTF8';
-#DDL
-#	$verticaflywayddl = <<DDL;
-#	CREATE TABLE IF NOT EXISTS __SCHEMA__"$flywaytablename" (
-#	    "version_rank"	INT		DEFAULT NULL
-#	  , "installed_rank"	INT		                          NOT NULL
-#	  , "version"		VARCHAR(50)	                          NOT NULL
-#	  , "description"	VARCHAR(200)	                          NOT NULL
-#	  , "type"		VARCHAR(20)	                          NOT NULL
-#	  , "script"		VARCHAR(1000)	                          NOT NULL
-#	  , "checksum"		INT		DEFAULT NULL
-#	  , "installed_by"	VARCHAR(100)	                          NOT NULL
-#	  , "installed_on"	TIMESTAMP	DEFAULT now()             NOT NULL
-#	  , "execution_time"	INT		                          NOT NULL
-#	  , "success"		BOOLEAN		                          NOT NULL
-#	  , PRIMARY KEY ("version") ENABLED
-#	)
-#	ORDER BY "version", "version_rank", "installed_rank", "success"
-#	SEGMENTED BY HASH( "version" ) ALL NODES;
-#DDL
-#	#ALTER TABLE __SCHEMA__"$flywaytablename" ADD CONSTRAINT "${flywaytablename}_pk" PRIMARY KEY ("version") ENABLED;
-#} else {
-$flywayddl = <<DDL;
+our $flywayddl = <<DDL;
 CREATE TABLE IF NOT EXISTS `$flywaytablename` (
     `installed_rank`	INT		                          NOT NULL
   , `version`		VARCHAR(50)
@@ -365,7 +315,7 @@ CREATE TABLE IF NOT EXISTS `$flywaytablename` (
   , KEY `${flywaytablename}_s_idx` (`success`)
 ) ENGINE='InnoDB' DEFAULT CHARSET='UTF8';
 DDL
-$verticaflywayddl = <<DDL;
+our $verticaflywayddl = <<DDL;
 CREATE TABLE IF NOT EXISTS __SCHEMA__"$flywaytablename" (
     "installed_rank"	INT		                          NOT NULL
   , "version"		VARCHAR(50)
@@ -377,13 +327,11 @@ CREATE TABLE IF NOT EXISTS __SCHEMA__"$flywaytablename" (
   , "installed_on"	TIMESTAMP	DEFAULT now()             NOT NULL
   , "execution_time"	INT		                          NOT NULL
   , "success"		BOOLEAN		                          NOT NULL
-  , PRIMARY KEY ("version") ENABLED
+  , PRIMARY KEY ("installed_rank") ENABLED
 )
 ORDER BY "version"
 SEGMENTED BY HASH( "version" ) ALL NODES;
 DDL
-#ALTER TABLE __SCHEMA__"$flywaytablename" ADD CONSTRAINT "${flywaytablename}_pk" PRIMARY KEY ("installed_rank") ENABLED;
-#}
 
 # Note that field-lengths in myway* tables are not arbitrary, but instead are
 # sized to hold the maximum permissible value for the field-type, according to
@@ -456,25 +404,7 @@ DDL
 #         supposed to) fail if no PK is present...
 #
 our $mywayactionsname = 'myway_schema_actions';
-our $mywayactionsddl;
-#if( OLDSCHEMA) {
-#	$mywayactionsddl = <<DDL;
-#	CREATE TABLE IF NOT EXISTS `$mywayactionsname` (
-#	    `schema_id`		CHAR(36)	                          NOT NULL
-#	  , `started`		TIMESTAMP(6)	DEFAULT CURRENT_TIMESTAMP NOT NULL
-#	  , `event`		VARCHAR(256)	                          NOT NULL
-#	  , `statement`		LONGTEXT	CHARACTER SET 'UTF8'      NOT NULL
-#	  , `line`		INT		UNSIGNED
-#	  , `time`		DECIMAL(13,3)
-#	  , `state`		CHAR(5)
-#	  , INDEX        `${mywayactionsname}_schema_id_idx` (`schema_id`)
-#	  , CONSTRAINT   `${mywayactionsname}_schema_id_${mywaytablename}_id`
-#	    FOREIGN KEY (`schema_id`) REFERENCES `$mywaytablename` (`id`)
-#	    ON DELETE CASCADE
-#	) ENGINE='InnoDB' DEFAULT CHARSET='ASCII';
-#DDL
-#} else {
-$mywayactionsddl = <<DDL;
+our $mywayactionsddl = <<DDL;
 CREATE TABLE IF NOT EXISTS `$mywayactionsname` (
     `id`		INT		UNSIGNED AUTO_INCREMENT   NOT NULL
   , `schema_id`		CHAR(36)	                          NOT NULL
@@ -492,7 +422,6 @@ CREATE TABLE IF NOT EXISTS `$mywayactionsname` (
     ON DELETE CASCADE
 ) ENGINE='InnoDB' DEFAULT CHARSET='ASCII';
 DDL
-#}
 our $verticamywayactionsddl = <<DDL;
 CREATE TABLE IF NOT EXISTS __SCHEMA__"$mywayactionsname" (
     "id"		AUTO_INCREMENT
@@ -3374,6 +3303,7 @@ sub databasegetinfo( $;$$$ ) { # {{{
 		}
 	}
 
+	# See explanation in main()
 	my $verticadb = '';
 	if ( 'vertica' eq $engine ) {
 		if( defined( $vschm ) and length( $vschm ) ) {
@@ -3407,6 +3337,7 @@ sub metadatamigrateschema( $;$$$ ) { # {{{
 
 	# }}}
 
+	# See explanation in main()
 	my $verticadb = '';
 	( $db, $engine, $verticadb ) = databasegetinfo( $dbh, $db, $engine, $vschm ) or return( FALSE );
 
@@ -3414,57 +3345,6 @@ sub metadatamigrateschema( $;$$$ ) { # {{{
 		pdebug( "\n" );
 		pdebug( "Validating metadata schema for database engine '$engine' ...\n", undef, TRUE );
 	}
-
-	#if( OLDSCHEMA ) {
-	#	my $success = FALSE;
-
-	#	if( not( 'vertica' eq $engine ) ) {
-	#		my $st = "DESCRIBE `$flywaytablename`";
-	#		my $sth = sqlexecute( $dbh, undef, $st );
-	#		if( not( defined( $sth ) and $sth ) ) {
-	#			my $errstr = $dbh -> errstr();
-	#			pfail( "\n" );
-	#			pfail( "Unable to create statement handle to execute '$st'" . ( defined( $errstr ) and length( $errstr ) ? ": " . $errstr : '' ) . "\n" );
-
-	#			return( FALSE );
-	#		} else {
-	#			my $foundoldschema = FALSE;
-
-	#			ROWS: while( my $ref = $sth -> fetchrow_arrayref() ) {
-	#				my $field = @{ $ref }[ 0 ];
-
-	#				if( ( $field eq 'version_rank' ) ) {
-	#					$foundoldschema = TRUE;
-	#					$success = TRUE if( sqldo( $dbh, "ALTER TABLE `$flywaytablename` MODIFY `version_rank` INT DEFAULT NULL" ) );
-	#					last ROWS;
-	#				}
-	#			}
-
-	#			$sth -> finish();
-
-	#			if( not( $foundoldschema ) ) {
-	#				pwarn( "\n" );
-	#				pwarn( "'OLDSCHEMA' is a debug option, and should not be used on any database with new metadata\n" );
-	#			}
-	#		}
-	#	} elsif ( 'vertica' eq $engine ) {
-	#		# XXX: Should implement a check as per the above, but
-	#		#      Vertica never worked well enough to perform any
-	#		#      deployments with the previous schema...
-	#		$success = TRUE if(
-	#			sqldo( $dbh, "ALTER TABLE `$verticadb$flywaytablename` ALTER COLUMN `version` DROP NOT NULL" ) and
-	#			sqldo( $dbh, "ALTER TABLE `$verticadb$flywaytablename` ALTER COLUMN `version` SET DEFAULT NULL" )
-	#		)
-	#	}
-
-	#	if( $success ) {
-	#		pwarn( "Compatibility update applied to table `$flywaytablename`\n", undef, TRUE );
-	#		return( TRUE );
-	#	} else {
-	#		pwarn( "Compatibility update failed to update table `$flywaytablename`\n", undef, TRUE );
-	#		return( FALSE );
-	#	}
-	#}
 
 	my $tableexists;
 	my $setmigrated = FALSE;
@@ -3848,8 +3728,9 @@ sub metadataupdateflywaytable( $$$$$$ ) { # {{{
 		$insertorupdate = TRUE;
 	}
 
-	my $engine;
+	# See explanation in main()
 	my $verticadb;
+	my $engine;
 	( $db, $engine, $verticadb ) = databasegetinfo( $dbh, $db, $engine, $vschm ) or return( FALSE );
 
 	#
@@ -4374,6 +4255,8 @@ sub applyschema( $$$$;$ ) { # {{{
 	my $availabledatabases;
 	my $availabletables;
 	my $safetorestore = FALSE;
+
+	# See explanation in main()
 	my $verticadb = '';
 
 	if( not( $quiet or $silent ) ) {
@@ -6210,6 +6093,12 @@ sub main( @ ) { # {{{
 	my $marker = MARKER;
 	my $odbcok = grep( /ODBC/i, DBI -> available_drivers );
 	my $engine;
+
+	# '$verticadb' is included as a prefix to all table names except where
+	# the statements being executed are explicitly specific to MySQL - but
+	# will expand to an empty string unless we're running against Vertica.
+	# This prevents us from having to code two seperate paths for every
+	# interaction with the database, each differing only by the prefix.
 	my $verticadb = '';
 
 	#
@@ -6852,12 +6741,6 @@ sub main( @ ) { # {{{
 		warn( "(Please use the '--scripts' option to specify multiple input files or directories)\n" );
 		exit( 1 );
 	}
-
-	#if( OLDSCHEMA and( not( force ) ) ) {
-	#	warn( "OLDSCHEMA is set in your environment.  This is a deprecated debug option and may\n" );
-	#	warn( "only be used when --force is also enabled\n" );
-	#	exit( 1 );
-	#}
 
 	if( @paths and scalar( @paths ) ) {
 		# TODO: Support multiple descriptions for path invocations?
