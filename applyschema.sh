@@ -332,8 +332,44 @@ function main() { # {{{
 
 	(( std_TRACE )) && set -o xtrace
 
-	local database dsn
+	# Variables we expect to source when we 'eval' the configuration block,
+	# below...
+	#
+	# shellcheck disable=SC2034
+	local options_debug options_force options_notice options_quiet \
+	      options_silent options_warn
+	# shellcheck disable=SC2034
+	local mysql_compat mysql_relaxed
+	local backups backups_compress backups_extended backups_keep \
+	      backups_keeplock backups_lock backups_separate \
+	      backups_skipmeta backups_transactional
+	local cluster dbadmin environment managed passwd path procedures \
+	      procedures_marker version_max
+	local preprocessor_validate parser_allowdrop
+
+	# Vertica-specific options
+	#
+	local dsn database schema
 	local -l syntax
+
+	# Additionally, we want to ensure that ${defaults} and ${databases}
+	# *only* set the variables defined above, and that ${hosts} (checked
+	# further below) /never/ clashes with a variable defined above (or any
+	# other)...
+	#
+	local var
+	while read -r var; do
+		debug "Checking '[DEFAULT]' keyword '${var}'"
+		if ! typeset -p | grep -q "declare -. ${var}"; then
+			die "Unrecognised keyword '${var}' in [DEFAULT] section"
+		fi
+	done < <( grep -o '^[^=]\+=' <<<"${defaults}" | sed 's/=$//' | sort | uniq )
+	while read -r var; do
+		debug "Checking '[CLUSTERHOSTS]' keyword '${var}'"
+		if typeset -p | grep -q "declare -. ${var}"; then
+			die "Reserved keyword '${var}' in [CLUSTERHSOTS] section"
+		fi
+	done < <( grep -o '^[^=]\+=' <<<"${hosts}" | sed 's/=$//' | sort | uniq )
 
 	# We're going to eval our config file sections - hold onto your hats!
 	eval "${defaults}"
@@ -404,6 +440,18 @@ function main() { # {{{
 		[[ -n "${details:-}" ]] || die "Database '${db}' lacks a configuration block in '${filename}'"
 		debug "${db}:\n${details}\n"
 
+		# Validate [DEFAULT] overrides for the database in question...
+		# (Unfortunately, we must do this here, before we know whether
+		# this database is unmanaged or to be skipped - so we /can/
+		# fail due to configuration errors in databases we were never
+		# going to deploy)
+		#
+		while read -r var; do
+			debug "Checking database [${db}] keyword '${var}'"
+			if ! typeset -p | grep -q "declare -. ${var}"; then
+				die "Unrecognised keyword '${var}' in '[${db}]' section"
+			fi
+		done < <( grep -o '^[^=]\+=' <<<"${details}" | sed 's/=$//' | sort | uniq )
 		eval "${details}"
 
 		if [[ -n "${clist:-}" ]] && ! grep -q ",${cluster:-.*}," <<<",${clist},"; then
@@ -507,7 +555,12 @@ function main() { # {{{
 				warn "Vertica 'vsql' binary cannot be found - some integrity checks will be skipped, and errors may occur if databases or schema aren't in the anticipated state"
 			fi
 		else
-			std::requires --no-quiet 'mysql'
+			# It's rare for a system to have libmysqlclient and not
+			# the 'mysql' client binary, but we shouldn't fail if
+			# we lack the latter...
+			if ! std::requires --no-exit --no-quiet 'mysql'; then
+				warn "MySQL 'mysql' binary cannot be found - some integrity checks will be skipped, and errors may occur if databases or schema aren't in the anticipated state"
+			fi
 		fi
 
 		debug "Attempting to resolve host '${host}' ..."
@@ -622,7 +675,7 @@ function main() { # {{{
 			extraparams+=( '--dry-run' )
 		fi
 
-		if [[ 'vertica' != "${syntax:-}" ]] && ! mysql -u "${dbadmin}" -p"${passwd}" -h "${host}" <<<'QUIT' >/dev/null 2>&1; then
+		if [[ 'vertica' != "${syntax:-}" ]] && type -pf mysql >/dev/null 2>&1 && ! mysql -u "${dbadmin}" -p"${passwd}" -h "${host}" <<<'QUIT' >/dev/null 2>&1; then
 			die "Cannot connect to MySQL instance on host '${host}' as user '${dbadmin}' - is database running?"
 		elif [[ 'vertica' == "${syntax:-}" ]] && type -pf vsql >/dev/null 2>&1 && ! vsql -U "${dbadmin}" -w "${passwd}" -h "${host}" <<<'\q' >/dev/null 2>&1; then
 			die "Cannot connect to Vertica instance on host '${host}' as user '${dbadmin}' - is database running?"
@@ -631,7 +684,9 @@ function main() { # {{{
 		debug "About to initialise database: '${myway} ${params[*]} ${extraparams[*]}'"
 		debug "N.B. Parameters not required by the --init stage are not passed until later..."
 
-		local -i allowfail=0
+		local connectoutput=""
+		local -i allowfail=0 canconnect=1
+
 		if (( dryrun )); then
 			allowfail=1
 			keepgoing=1
@@ -641,8 +696,10 @@ function main() { # {{{
 			#
 			if [[ 'vertica' == "${syntax:-}" ]]; then
 				if type -pf vsql >/dev/null 2>&1; then
-					if vsql -U "${dbadmin}" -w "${passwd}" -h "${host}" -d "${vdb}" <<<'\q' >/dev/null 2>&1; then
+					if connectoutput="$( vsql -U "${dbadmin}" -w "${passwd}" -h "${host}" -d "${vdb}" <<<'\q' 2>&1 )"; then
 						allowfail=1
+					else
+						canconnect=0
 					fi
 				else
 					# We don't know, we'll just have to
@@ -652,7 +709,14 @@ function main() { # {{{
 					allowfail=1
 				fi
 			else
-				if mysql -u "${dbadmin}" -p"${passwd}" -h "${host}" "${db}" <<<'QUIT' >/dev/null 2>&1; then
+				if type -pf mysql >/dev/null 2>&1; then
+					if connectoutput="$( mysql -u "${dbadmin}" -p"${passwd}" -h "${host}" "${db}" <<<'QUIT' 2>&1 )"; then
+						allowfail=1
+					else
+						canconnect=0
+					fi
+				else
+					# As above...
 					allowfail=1
 				fi
 			fi
@@ -671,14 +735,6 @@ function main() { # {{{
 			${myway} "${params[@]}" "${extraparams[@]}" --init
 		fi
 		result=${?}
-
-		local connectoutput=""
-		local -i canconnect=1
-		if [[ 'vertica' != "${syntax:-}" ]] && ! connectoutput="$( mysql -u "${dbadmin}" -p"${passwd}" -h "${host}" "${db}" <<<'QUIT' 2>&1 )"; then
-			canconnect=0
-		elif [[ 'vertica' == "${syntax:-}" ]] && type -pf vsql >/dev/null 2>&1 && ! connectoutput="$( vsql -U "${dbadmin}" -w "${passwd}" -h "${host}" -d "${vdb}" <<<'\q' 2>&1 )"; then
-			canconnect=0
-		fi
 
 		if (( result )); then
 			if (( allowfail )); then
@@ -701,12 +757,12 @@ function main() { # {{{
 
 		if ! (( canconnect )); then
 			if [[ 'vertica' != "${syntax:-}" ]]; then
-				(( silent )) || warn "Skipping migration for non-existent database '${db}':"
-				output >&2 "${connectoutput:-}"
+				(( silent )) || warn "Skipping migration for non-existent database '${db}'${connectoutput:+:}"
+				[[ -n "${connectoutput:-}" ]] && output >&2 "${connectoutput}"
 				rc=1
 			elif [[ 'vertica' == "${syntax:-}" ]]; then
-				(( silent )) || warn "Skipping migration for non-existent Vertica database '${db}':"
-				output >&2 "${connectoutput:-}"
+				(( silent )) || warn "Skipping migration for non-existent Vertica database '${db}'${connectoutput:+:}"
+				[[ -n "${connectoutput:-}" ]] && output >&2 "${connectoutput}"
 				rc=1
 			fi
 
@@ -867,8 +923,9 @@ function main() { # {{{
 		unset response allowfail option extraparams params messages details
 
 		) # }}}
-
 		result=${?}
+
+		debug "Sub-shell exit-code was '${result}'"
 		case ${result} in
 			4)
 				# Slightly non-obviously, we've found a
@@ -883,6 +940,7 @@ function main() { # {{{
 				;;
 			2)
 				# Sub-shell called die
+				debug "die() invoked by sub-shell"
 				rc=1
 				break
 				;;
