@@ -357,17 +357,42 @@ function main() { # {{{
 	# further below) /never/ clashes with a variable defined above (or any
 	# other)...
 	#
-	local var
+	local var val
 	while read -r var; do
+		[[ "${var}" =~ [a-zA-Z_][a-zA-Z_0-9]* ]] || die "Keyword '${var}' from section '[DEFAULT]' is invalid"
+
 		debug "Checking '[DEFAULT]' keyword '${var}'"
-		if ! typeset -p | grep -q "declare -. ${var}"; then
+		if ! val="$( typeset -p 2>/dev/null | grep -E "^declare -. ${var}(=.*$|$)" 2>/dev/null )"; then
+
+			# For no reason I can discern, and only with DEBUG and
+			# TRACE disabled, the test above can incorrectly fail,
+			# which makes me suspect a timing issue.
+			#
+			# The (unfortunately intentional) repetition of the
+			# same test below isn't a nice solution, but is
+			# hopefully at least a sensible work-around...
+			#
+			val="$( typeset -p 2>/dev/null | grep -E "^declare -. ${var}(=.*$|$)" 2>/dev/null )"
+		fi
+		if [[ -n "${val:-}" ]]; then
+			[[ "${val}" =~ = ]] && debug "Replacing current value '$( cut -d'=' -f 2- | sed 's/^"// ; s/"$//' )' for variable '${var}' in [DEFAULT] section"
+		else
 			die "Unrecognised keyword '${var}' in [DEFAULT] section"
 		fi
 	done < <( grep -o '^[^=]\+=' <<<"${defaults}" | sed 's/=$//' | sort | uniq )
 	while read -r var; do
+		[[ "${var}" =~ [a-zA-Z_][a-zA-Z_0-9]* ]] || die "Keyword '${var}' from section '[CLUSTERHOSTS]' is invalid"
+
 		debug "Checking '[CLUSTERHOSTS]' keyword '${var}'"
-		if typeset -p | grep -q "declare -. ${var}"; then
-			die "Reserved keyword '${var}' in [CLUSTERHSOTS] section"
+		if ! val="$( typeset -p 2>/dev/null | grep -E "^declare -. ${var}(=.*$|$)" 2>/dev/null )"; then
+
+			# As above, this test appears to be non-deterministic :(
+			#
+			val="$( typeset -p 2>/dev/null | grep -E "^declare -. ${var}(=.*$|$)" 2>/dev/null )"
+		fi
+		if [[ -n "${val:-}" ]]; then
+			# shellcheck disable=SC2016
+			die "Reserved keyword '${var}' ${!var:+with value '${!var}' }in [CLUSTERHOSTS] section"
 		fi
 	done < <( grep -o '^[^=]\+=' <<<"${hosts}" | sed 's/=$//' | sort | uniq )
 
@@ -447,9 +472,20 @@ function main() { # {{{
 		# going to deploy)
 		#
 		while read -r var; do
+			[[ "${var}" =~ [a-zA-Z_][a-zA-Z_0-9]* ]] || die "Keyword '${var}' from section '[${db}]' is invalid"
+
 			debug "Checking database [${db}] keyword '${var}'"
-			if ! typeset -p | grep -q "declare -. ${var}"; then
-				die "Unrecognised keyword '${var}' in '[${db}]' section"
+			if ! val="$( typeset -p 2>/dev/null | grep -E "^declare -. ${var}(=.*$|$)" 2>/dev/null )"; then
+
+				# As above, this test appears to be
+				# non-deterministic :(
+				#
+				val="$( typeset -p 2>/dev/null | grep -E "^declare -. ${var}(=.*$|$)" 2>/dev/null )"
+			fi
+			if [[ -n "${val:-}" ]]; then
+				[[ "${val}" =~ = ]] && debug "Replacing current value '$( cut -d'=' -f 2- | sed 's/^"// ; s/"$//' )' for variable '${var}' in [${db}] section"
+			else
+				die "Unrecognised keyword '${var}' in [${db}] section"
 			fi
 		done < <( grep -o '^[^=]\+=' <<<"${details}" | sed 's/=$//' | sort | uniq )
 		eval "${details}"
@@ -511,12 +547,12 @@ function main() { # {{{
 						messages+=( "Cannot determine schema-files path for database '${db}'" )
 					else
 						if [[ -d "${path}"/schema/"${db}"/"${db}" ]]; then
-                                                        actualpath="${path}"/schema/"${db}"/"${db}"
-                                                        debug "Using schema-files path '${actualpath}' for database '${db}'"
+							actualpath="${path}"/schema/"${db}"/"${db}"
+							debug "Using schema-files path '${actualpath}' for database '${db}'"
 
-                                                else
-                                                        debug "Using schema-files path '${path}/schema/${db}' for database '${db}'"
-                                                fi
+						else
+							debug "Using schema-files path '${path}/schema/${db}' for database '${db}'"
+						fi
 						if grep -Eiq "${truthy}" <<<"${procedures:-}"; then
 							#if [[ -d "${path}"/procedures/"${db}" ]]; then
 							#	debug "Using '${path}/procedures/${db}' for '${db}' Stored Procedures"
@@ -684,6 +720,21 @@ function main() { # {{{
 		debug "About to initialise database: '${myway} ${params[*]} ${extraparams[*]}'"
 		debug "N.B. Parameters not required by the --init stage are not passed until later..."
 
+		local response=''
+		if (( silent )); then
+			${myway} "${params[@]}" "${extraparams[@]}" --init >/dev/null 2>&1
+		elif (( quiet )); then
+			# Loses return code to grep :(
+			#${myway} "${params[@]}" "${extraparams[@]}" --init 2>&1 >/dev/null | grep -Ev --line-buffered "${silentfilter}"
+
+			# Throw away stdout but redirect stderr to stdout...
+			# shellcheck disable=SC2069
+			response="$( ${myway} "${params[@]}" "${extraparams[@]}" --init 2>&1 >/dev/null )"
+		else
+			${myway} "${params[@]}" "${extraparams[@]}" --init
+		fi
+		result=${?}
+
 		local connectoutput=""
 		local -i allowfail=0 canconnect=1
 
@@ -721,20 +772,6 @@ function main() { # {{{
 				fi
 			fi
 		fi
-		local response=''
-		if (( silent )); then
-			${myway} "${params[@]}" "${extraparams[@]}" --init >/dev/null 2>&1
-		elif (( quiet )); then
-			# Loses return code to grep :(
-			#${myway} "${params[@]}" "${extraparams[@]}" --init 2>&1 >/dev/null | grep -Ev --line-buffered "${silentfilter}"
-
-			# Throw away stdout but redirect stderr to stdout...
-			# shellcheck disable=SC2069
-			response="$( ${myway} "${params[@]}" "${extraparams[@]}" --init 2>&1 >/dev/null )"
-		else
-			${myway} "${params[@]}" "${extraparams[@]}" --init
-		fi
-		result=${?}
 
 		if (( result )); then
 			if (( allowfail )); then

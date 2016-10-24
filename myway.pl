@@ -5052,15 +5052,15 @@ sub applyschema( $$$$;$ ) { # {{{
 
 				my $sth = sqlprepare( \$dbh, <<SQL );
 INSERT INTO `$mywayprocsname` (
-  `id`
-, `dbuser`
-, `dbhost`
-, `osuser`
-, `host`
-, `sha1sum`
-, `path`
-, `filename`
-, `started`
+    `id`
+  , `dbuser`
+  , `dbhost`
+  , `osuser`
+  , `host`
+  , `sha1sum`
+  , `path`
+  , `filename`
+  , `started`
 ) VALUES ( ?, ?, ?, ?, ?, ?, ?, ?, SYSDATE() )
 SQL
 # Currently unchanged values: `version`, `description`, `type`, `sqlstarted`, `finished`, `status`.

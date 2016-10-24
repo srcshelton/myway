@@ -1113,12 +1113,12 @@ function main() { # {{{
 						messages+=( "Cannot determine schema-files path for database '${db}'" )
 					else
 						if [[ -d "${path}"/schema/"${db}"/"${db}" ]]; then
-                                                        actualpath="${path}"/schema/"${db}"/"${db}"
-                                                        debug "Using schema-files path '${actualpath}' for database '${db}'"
+							actualpath="${path}"/schema/"${db}"/"${db}"
+							debug "Using schema-files path '${actualpath}' for database '${db}'"
 
-                                                else
-                                                        debug "Using schema-files path '${path}/schema/${db}' for database '${db}'"
-                                                fi
+						else
+							debug "Using schema-files path '${path}/schema/${db}' for database '${db}'"
+						fi
 						if grep -Eiq "${truthy}" <<<"${procedures:-}"; then
 							if [[ -n "${actualpath:-}" && -d "${actualpath}"/../procedures ]]; then
 								debug "Using Stored Procedures path '$( readlink -e "${actualpath}/../procedures" )' for database '${db}'"
