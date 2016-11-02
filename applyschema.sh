@@ -98,7 +98,6 @@ function main() { # {{{
 
 	# Sigh...
 	[[ -d '/opt/vertica/bin' ]] && export PATH="${PATH:+${PATH}:}/opt/vertica/bin"
-	[[ -d '/usr/local/opt/vertica/bin' ]] && export PATH="${PATH:+${PATH}:}/usr/local/opt/vertica/bin"
 
 	${myway} --help >/dev/null 2>&1 || die "${myway} is failing to" \
 		"execute - please confirm that all required perl modules are" \
@@ -612,11 +611,9 @@ function main() { # {{{
 
 		if (( validate )); then
 			(( quiet | silent )) || info "Validating database '${db}' ..."
-			#if ! ${validator} ${filename:+--config "${filename}"} -d "${db}" -s "${actualpath:-${path}/schema}" $( (( dryrun )) && echo '--dry-run' ) $( (( quiet )) && echo '--quiet' ) $( (( silent )) && echo '--silent' ) --from-applyschema; then
 			# shellcheck disable=SC2046
 			if ! ${validator} ${filename:+--config "${filename}"} -d "${db}" -s "${actualpath:-${path}/schema}" $( (( dryrun )) && echo '--dry-run' ) $( (( quiet )) && echo '--quiet' ) $( (( silent )) && echo '--silent' ) --from-applyschema; then
-				#die "Validation of database '${db}' failed - aborting"
-				(( silent )) || error "Validation of database '${db}' failed - in the future, will abort"
+				die "Validation of database '${db}' failed - aborting"
 			fi
 		fi
 
