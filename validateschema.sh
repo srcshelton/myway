@@ -45,6 +45,12 @@ export STDLIB_WANT_API=2
 std_DEBUG="${DEBUG:-0}"
 std_TRACE="${TRACE:-0}"
 
+# std_RELEASE was only added in release 1.3, and vcmp appeared immediately
+# after in release 1.4...
+if [[ "${std_RELEASE:-1.3}" == "1.3" ]] || std::vcmp "${std_RELEASE}" -lt "2.0.5"; then
+	die "stdlib is too old - please update '${std_LIBPATH}/${std_LIB}' to at least v2.0.5"
+fi
+
 # Override `die` to return '2' on fatal error...
 function die() { # {{{
 	if [[ -n "${*:-}" ]]; then
@@ -165,12 +171,24 @@ function validate() { # {{{
 				continue
 			fi
 
-			if ! (( $( tail -n 1 "${file}" | wc -l ) )); then
-				error "File '${file}' is lacking a trailing newline at the end of the file - the last statement may be lost"
+			name="$( basename "${file}" )"
+
+			# --binary only has effect on Windows, but it is
+			# necessary in that case for the following test to
+			# work...
+			#
+			# shellcheck disable=SC2154
+			if grep -qm 1 --binary "${std_CR}${std_LF}" "${file}"; then
+				error "File '${name}' appears to contain Windows CRLF line-endings - please convert to UNIX standards"
+				error "(possibly by running \"dos2unix '${file}'\")"
 				(( warnings++ ))
 			fi
 
-			name="$( basename "${file}" )"
+			if ! (( $( tail -n 1 "${file}" | wc -l ) )); then
+				error "File '${name}' is lacking a trailing newline at the end of the file - the last statement may be lost"
+				(( warnings++ ))
+			fi
+
 			if [[ "${type}" == 'metadata' ]]; then
 				if ! [[ "${file}" =~ /${name%.metadata}/ ]]; then
 					warn "Metadata file '${name}' SHOULD reside in a directory named '${name%.metadata}'"
@@ -609,7 +627,7 @@ function validate() { # {{{
 					esac
 				fi
 				debug 'Finished checking line'
-			done < <( awk -- "${script:-}" "${file}" ) # while read -r line
+			done < <( awk -- "${script:-}" <( sed "s/${std_CR}$//g" "${file}" ) ) # while read -r line
 
 			if [[ -n "${newversion:-}" && "${version}" =~ ^[0-9]+(\.[0-9]+){2,}$ ]]; then
 				fullname="V${newversion}${newmigrationversion:+__V${newmigrationversion}}__${metadescription:-${description:-<description>}}${environment:+.${environment}}.${filetype:-${defaulttype:-}}.sql"

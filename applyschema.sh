@@ -42,6 +42,14 @@ unset -f dirname
 std_DEBUG="${DEBUG:-0}"
 std_TRACE="${TRACE:-0}"
 
+# std_RELEASE was only added in release 1.3, and vcmp appeared immediately
+# after in release 1.4...
+if [[ "${std_RELEASE:-1.3}" == "1.3" ]] || std::vcmp "${std_RELEASE}" -lt "2.0.0"; then
+	die "stdlib is too old - please update '${std_LIBPATH}/${std_LIB}' to at least v2.0.0"
+elif std::vcmp "${std_RELEASE}" -lt "2.0.4"; then
+        warn "stdlib is outdated - please update '${std_LIBPATH}/${std_LIB}' to at least v2.0.4"
+fi
+
 SCRIPT='myway.pl'
 COMPATIBLE='1.4.0'
 VALIDATOR='validateschema.sh'
