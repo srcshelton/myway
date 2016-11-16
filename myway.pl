@@ -1968,7 +1968,7 @@ sub dbdump( $;$$$$ ) { # {{{
 	my $password = $auth -> { 'password' };
 	my $host =     $auth -> { 'host' };
 
-	my( $compress, $transactional, $skipmeta, $skipdefiner, $extinsert );
+	my( $compress, $extinsert, $onlyddl, $onlydml, $skipdefiner, $skipdrop, $skipfuncs, $skipmeta, $skipsort, $transactional );
 	if( defined( $variables ) ) {
 		return( FALSE ) unless( ref( $variables ) eq 'HASH' );
 
@@ -1980,6 +1980,11 @@ sub dbdump( $;$$$$ ) { # {{{
 		$transactional = $variables -> { 'transactional' } if( exists( $variables -> { 'transactional' } ) );
 		$skipmeta      = $variables -> { 'skipmeta' }      if( exists( $variables -> { 'skipmeta' } ) );
 		$skipdefiner   = $variables -> { 'skipdefiner' }   if( exists( $variables -> { 'skipdefiner' } ) );
+		$skipdrop      = $variables -> { 'skipdrop' }      if( exists( $variables -> { 'skipdrop' } ) );
+		$skipfuncs     = $variables -> { 'skipfuncs' }     if( exists( $variables -> { 'skipfuncs' } ) );
+		$skipsort      = $variables -> { 'skipsort' }      if( exists( $variables -> { 'skipsort' } ) );
+		$onlyddl       = $variables -> { 'onlyddl' }       if( exists( $variables -> { 'onlyddl' } ) );
+		$onlydml       = $variables -> { 'onlydml' }       if( exists( $variables -> { 'onlydml' } ) );
 		$extinsert     = $variables -> { 'extinsert' }     if( exists( $variables -> { 'extinsert' } ) );
 
 		# }}}
@@ -1990,6 +1995,13 @@ sub dbdump( $;$$$$ ) { # {{{
 	my $port;
 	$port = $auth -> { 'port' } if( defined( $auth -> { 'port' } ) and $auth -> { 'port' } );
 	$port = PORT unless( defined( $port ) and $port );
+
+	my $defaultfilename = 'dump.sql';
+	if( defined( $onlyddl ) and $onlyddl ) {
+		$defaultfilename = 'dump.ddl.sql';
+	} elsif( defined( $onlydml ) and $onlydml ) {
+		$defaultfilename = 'dump.dml.sql';
+	}
 
 	system( "mysqldump >/dev/null 2>&1" );
 	if( $? < 0 ) {
@@ -2091,7 +2103,7 @@ sub dbdump( $;$$$$ ) { # {{{
 		# We know the database we're concerned with, so $objects gives
 		# us the tables to backup...
 		#
-		$filename = $auth -> { 'database' } . ".sql" unless( defined( $filename ) and length( $filename ) );
+		$filename = $auth -> { 'database' } . ( ( defined( $onlyddl ) and $onlyddl ) ? '.ddl' : ( ( defined( $onlydml ) and $onlydml ) ? '.dml' : '' ) ) . ".sql" unless( defined( $filename ) and length( $filename ) );
 
 		if( not( defined( $objects ) and length( $objects ) ) ) {
 			my $db = $auth -> { 'database' };
@@ -2191,13 +2203,11 @@ sub dbdump( $;$$$$ ) { # {{{
 
 		if( '' eq ref( $destination ) ) {
 			if( not( defined( $filename ) and length( $filename ) ) ) {
-				my $default = 'dump.sql';
-
-				if( -e $destination . '/'. $default ) {
-					die( "$fatal dbdump - No output filename specified and '$default' already exists\n" );
+				if( -e $destination . '/'. $defaultfilename ) {
+					die( "$fatal dbdump - No output filename specified and '$defaultfilename' already exists\n" );
 				} else {
-					pwarn( "$warning dbdump - No output filename specified - using '$default'" );
-					$filename = $default;
+					pwarn( "$warning dbdump - No output filename specified - using '$defaultfilename'" );
+					$filename = $defaultfilename;
 				}
 			}
 		}
@@ -2212,25 +2222,21 @@ sub dbdump( $;$$$$ ) { # {{{
 	# 		 . '--no-create-db --routines';
 	# } else
 	if( defined( $transactional ) and $transactional ) {
-		$optdump = '--skip-opt --add-drop-database --add-drop-table'
-			 . ' --add-locks --allow-keywords --comments'
+		$optdump = '--skip-opt --add-locks --allow-keywords --comments'
 			 . ' --complete-insert --create-options'
 			 . ' --disable-keys --dump-date --events --flush-logs'
 			 . ' --flush-privileges --hex-blob'
 			 . ' --include-master-host-port --no-autocommit'
-			 . ' --order-by-primary --quick --quote-names'
-			 . ' --routines --set-charset --single-transaction'
-			 . ' --triggers --tz-utc'
+			 . ' --quick --quote-names --set-charset'
+			 . ' --single-transaction --tz-utc'
 			 ;
 	} else {
-		$optdump = '--skip-opt --add-drop-database --add-drop-table'
-			 . ' --add-locks --allow-keywords --comments'
+		$optdump = '--skip-opt --add-locks --allow-keywords --comments'
 			 . ' --complete-insert --create-options'
 			 . ' --disable-keys --dump-date --events --flush-logs'
 			 . ' --flush-privileges --hex-blob'
 			 . ' --include-master-host-port --lock-all-tables'
-			 . ' --order-by-primary --quick --quote-names'
-			 . ' --routines --set-charset --triggers --tz-utc'
+			 . ' --quick --quote-names --set-charset --tz-utc'
 			 ;
 		# Let's assume that if we're doing a full backup in this way,
 		# then we're either backing up from a master node, or that this
@@ -2295,11 +2301,6 @@ sub dbdump( $;$$$$ ) { # {{{
 			}
 		}
 	}
-	if( defined( $extinsert ) and $extinsert ) {
-		$optdump .= ' --extended-insert';
-	} else {
-		$optdump .= ' --skip-extended-insert';
-	}
 
 	# See previous comment for discussion of the viability of this
 	# approach...
@@ -2324,6 +2325,32 @@ sub dbdump( $;$$$$ ) { # {{{
 				$canskipdefiners = TRUE;
 			}
 		}
+	}
+
+	if( not( defined( $skipdrop ) and $skipdrop ) ) {
+		$optdump .= ' --add-drop-database --add-drop-table';
+	}
+
+	if( not( defined( $skipfuncs ) and $skipfuncs ) ) {
+		$optdump .= ' --routines';
+	}
+
+	if( not( defined( $skipsort ) and $skipsort ) ) {
+		$optdump .= ' --order-by-primary';
+	}
+
+	if( defined( $onlyddl ) and $onlyddl ) {
+		$optdump .= ' --no-data --triggers';
+	} elsif( defined( $onlydml ) and $onlydml ) {
+		$optdump .= ' --no-create-db --no-create-info --skip-triggers';
+	} else {
+		$optdump .= ' --triggers';
+	}
+
+	if( defined( $extinsert ) and $extinsert ) {
+		$optdump .= ' --extended-insert';
+	} else {
+		$optdump .= ' --skip-extended-insert';
 	}
 
 	if( defined( $verbosity ) and ( $verbosity > 0 ) ) { # debug(3), notice(2), warn(1)
@@ -2475,12 +2502,12 @@ sub dbrestore( $$;$ ) { # {{{
 	#
 	#   ERROR 1146 (42S02) at line 59529: Table 'mysql.slow_log' doesn't exist
 	#
-	# ... which means that the fnial statement needs to be re-inserted at
+	# ... which means that the final statement needs to be re-inserted at
 	# the end of the file, somehow <sigh>
 	#
 
 	my $fixdrop = <<'EOF';
-sed -u '/^\/\*\!40000 DROP DATABASE IF EXISTS `mysql`\*\/;\?$/s|^.*$|/*!50106 SET @OLD_GENERAL_LOG=@@GENERAL_LOG*/;\n/*!50106 SET GLOBAL GENERAL_LOG=0*/;\n/*!50106 SET @OLD_SLOW_QUERY_LOG=@@SLOW_QUERY_LOG*/;\n/*!50106 SET GLOBAL SLOW_QUERY_LOG=0*/;\n/*!40000 DROP DATABASE IF EXISTS `mysql`*/;\n/*!50106 SET GLOBAL GENERAL_LOG=@OLD_GENERAL_LOG*/;\n/*!50106 SET GLOBAL SLOW_QUERY_LOG=@OLD_SLOW_QUERY_LOG*/;|'
+sed -u '/^\/\*\!40000 DROP DATABASE IF EXISTS `mysql`\*\/;\?$/s|^.*$|/*!50106 SET @OLD_GENERAL_LOG=@@GENERAL_LOG*/;\n/*!50106 SET GLOBAL GENERAL_LOG=0*/;\n/*!50106 SET @OLD_SLOW_QUERY_LOG=@@SLOW_QUERY_LOG*/;\n/*!50106 SET GLOBAL SLOW_QUERY_LOG=0*/;\n/*!40000 DROP DATABASE IF EXISTS `mysql`*/;\n/*!50106 SET GLOBAL GENERAL_LOG=@OLD_GENERAL_LOG*/;| ; $a\\n/*!50106 SET GLOBAL SLOW_QUERY_LOG=@OLD_SLOW_QUERY_LOG*/;'
 EOF
 	chomp( $fixdrop );
 	my $verbose = '';
@@ -2762,65 +2789,41 @@ sub sqldo( $$;$ ) { # {{{
 		} else {
 			pdebug( "Driver has set SQL state '" . ${ $dbh } -> state() . "'\n" );
 		}
-		if( ( ( $st =~ m/^\s*DROP\s/i ) or ( $st =~ m/^\s*ALTER\s(O(N|FF)LINE\s+)?(IGNORE\s+)?TABLE\s.*\sDROP\s/i ) ) and ${ $dbh } -> err() eq '1091' ) {
-			# XXX: This simply seems to propagate the error to the
-			#      next prepared statement, which will then fail.
-			#
-			#
-			# If we're trying to DROP an item which doesn't exist,
-			# then arguably the desired state has been reached, so
-			# we shouldn't abort...
-			my $lasterr = ${ $dbh } -> err();
-			${ $dbh } -> set_err( undef, undef, undef );
 
-			# XXX: Do we break after the following statement, even
-			#      though the error should have been cleared?
-			if( not( sqldo( $dbh, "SELECT '(Encountered error $lasterr)'" ) ) ) {
-				die( "$fatal Trivial command following error failed [" . ( caller( 0 ) )[ 3 ] . ':' . __LINE__ . "]\n" );
-			}
+		# If we're trying to DROP an item which doesn't exist, then
+		# arguably the desired state has been reached, so we shouldn't
+		# abort...
+		#
+		# ... but this isn't the right thing to do with "ALTER TABLE
+		# DROP ..." statements, as attempting to drop a non-existant
+		# table element will prevent the remainder of the statement
+		# from being executed, which is incompatible with continuing
+		# regardless. [Issue #32]
+		#
+		# Additionally, "DROP (DATABASE|EVENT|FUNCTION|INDEX|...
+		# ...LOGFILE GROUP|PROCEDURE|SERVER|TABLE|TABLESPACE|TRIGGER)"
+		# functions take only one argument, whereas "DROP VIEW" may
+		# take multiple view-names.
+		#
+		# In short, if you want to drop an item which may not exist,
+		# use "IF EXISTS" syntax (if available) - this tool cannot (and
+		# demonstrably should not) tell whether failing to drop an
+		# object which doesn't exist is a 'safe' failure, and should
+		# abort whenever the database signals an error.
 
-			if( not( defined( $retries ) ) ) {
-				return( TRUE );
-			} else {
-				$retries ++;
-				if( not( dbcheckconnection( $dbh ) ) ) {
-					return( FALSE ) unless( $retries <= SQLRETRYMAX );
-					pwarn( "Retrying SQL statement \"$st\" after $retries failures ...\n", undef, TRUE );
-					return( sqldo( $dbh, $st, $force ) );
-				}
-			}
-			$retries = 0;
-
-			return( TRUE );
-
-		} else {
-			my $err = ${ $dbh } -> err();
-			my $errstr = ${ $dbh } -> errstr();
-			my $state = ${ $dbh } -> state();
-
-			if( not( defined( $retries ) ) ) {
-				return( FALSE );
-			} else {
-				$retries ++;
-				if( not( dbcheckconnection( $dbh ) ) ) {
-					return( FALSE ) unless( $retries <= SQLRETRYMAX );
-					pwarn( "Retrying SQL statement \"$st\" after $retries failures ...\n", undef, TRUE );
-					return( sqldo( $dbh, $st, $force ) );
-				}
-			}
-			$retries = 0;
-
-			# Operation failed yet dbcheckconnection returned TRUE
-			# indicating that the database connection is still
-			# valid - perhaps indicating a syntax error?
-
-			#my $error = join( ' ', split( /\s*\n+\s*/, $errstr ) );
-			#pdebug( "Restoring state $state (\"$error\"); omitting error value '$err'" );
-			## XXX: set_err automatically triggers RaiseError/PritnError/PrintWarn if $err is set?
-			#${ $dbh } -> set_err( 0, $errstr, $state );
-
+		if( not( defined( $retries ) ) ) {
 			return( FALSE );
+		} else {
+			$retries ++;
+			if( not( dbcheckconnection( $dbh ) ) ) {
+				return( FALSE ) unless( $retries <= SQLRETRYMAX );
+				pwarn( "Retrying SQL statement \"$st\" after $retries failures ...\n", undef, TRUE );
+				return( sqldo( $dbh, $st, $force ) );
+			}
 		}
+		$retries = 0;
+
+		return( FALSE );
 	} else {
 
 		if( not( defined( $retries ) ) ) {
@@ -6112,7 +6115,7 @@ sub main( @ ) { # {{{
 	my( $compat, $relaxed, $strict );
 	my( $lock, $keeplock );
 	my( $force, $clear, $compress, $small, $split, $skipmeta, $skipdefiner );
-	my( $extinsert );
+	my( $skipdrop, $skipfuncs, $skipsort, $onlyddl, $onlydml, $extinsert );
 	my( $syntax, $odbcdsn, $user, $pass, $host, $db, $vschm );
 	my( $environment, $limit );
 	my( $pretend, $debug, $silent, $quiet, $notice, $verbose, $warn );
@@ -6120,6 +6123,9 @@ sub main( @ ) { # {{{
 	# Pre-set negatable options which are on by default, but which can be
 	# turned off...
 	$skipdefiner = TRUE;
+	$skipdrop = TRUE;
+	$skipfuncs = TRUE;
+	$extinsert = TRUE;
 
 	my $ok = TRUE;
 	my $getoptout = undef;
@@ -6144,7 +6150,14 @@ sub main( @ ) { # {{{
 	,   'compress:s'				=> \$compress
 	,   'split|separate-files!'			=> \$split
 	,   'skip-metadata!'				=> \$skipmeta
-	,   'skip-definer!'				=> \$skipdefiner
+	,   'skip-definer|skip-definers!'		=> \$skipdefiner
+	,   'skip-drop|skip-drops!'			=> \$skipdrop
+	,   'skip-procedures|skip-functions|'
+	.   'skip-proc|skip-procs|'
+	.   'skip-func|skip-funcs!'			=> \$skipfuncs
+	,   'skip-sort|skip-reorder!'			=> \$skipsort
+	,   'ddl!'					=> \$onlyddl
+	,   'dml!'					=> \$onlydml
 	,   'extended-insert!'				=> \$extinsert
 
 	, 'r|restore=s'					=> \$action_restore
@@ -6278,6 +6291,12 @@ sub main( @ ) { # {{{
 			$ok = FALSE if( defined( $small ) );
 			$ok = FALSE if( defined( $split ) );
 			$ok = FALSE if( defined( $skipmeta ) );
+			$ok = FALSE if( defined( $skipdefiner ) );
+			$ok = FALSE if( defined( $skipdrop ) );
+			$ok = FALSE if( defined( $skipfuncs ) );
+			$ok = FALSE if( defined( $skipsort ) );
+			$ok = FALSE if( defined( $onlyddl ) );
+			$ok = FALSE if( defined( $onlydml ) );
 			$ok = FALSE if( defined( $extinsert ) );
 			# TODO: Support restoring Stored Procedures only...
 			$ok = FALSE if( 'procedure' eq $mode );
@@ -6291,6 +6310,12 @@ sub main( @ ) { # {{{
 			$ok = FALSE if( defined( $small ) );
 			$ok = FALSE if( defined( $split ) );
 			$ok = FALSE if( defined( $skipmeta ) );
+			$ok = FALSE if( defined( $skipdefiner ) );
+			$ok = FALSE if( defined( $skipdrop ) );
+			$ok = FALSE if( defined( $skipfuncs ) );
+			$ok = FALSE if( defined( $skipsort ) );
+			$ok = FALSE if( defined( $onlyddl ) );
+			$ok = FALSE if( defined( $onlydml ) );
 			$ok = FALSE if( defined( $extinsert ) );
 			$ok = FALSE if( defined( $dosub ) and not( 'procedure' eq $mode ) );
 			if( not( defined( $action_init ) or defined( $clear ) ) ) {
@@ -6370,6 +6395,31 @@ sub main( @ ) { # {{{
 	} else {
 		$skipdefiner = FALSE;
 	}
+	if( defined( $skipdrop ) and $skipdrop ) {
+		$skipdrop = TRUE;
+	} else {
+		$skipdrop = FALSE;
+	}
+	if( defined( $skipfuncs ) and $skipfuncs ) {
+		$skipfuncs = TRUE;
+	} else {
+		$skipfuncs = FALSE;
+	}
+	if( defined( $skipsort ) and $skipsort ) {
+		$skipsort = TRUE;
+	} else {
+		$skipsort = FALSE;
+	}
+	if( defined( $onlyddl ) and $onlyddl ) {
+		$onlyddl = TRUE;
+	} else {
+		$onlyddl = FALSE;
+	}
+	if( defined( $onlydml ) and $onlydml ) {
+		$onlydml = TRUE;
+	} else {
+		$onlydml = FALSE;
+	}
 	if( defined( $extinsert ) and $extinsert ) {
 		$extinsert = TRUE;
 	} else {
@@ -6405,6 +6455,9 @@ sub main( @ ) { # {{{
 		$ok = FALSE;
 	}
 	if( $clear and not( $force ) ) {
+		$ok = FALSE;
+	}
+	if( $onlyddl and $onlydml ) {
 		$ok = FALSE;
 	}
 
@@ -6549,7 +6602,9 @@ sub main( @ ) { # {{{
 			print( ( " " x $length ) . "backup options:   [--compress [:scheme:]] [--transactional]\n" );
 			print( ( " " x $length ) . "                  [--lock [--keep-lock]] [--separate-files]\n" );
 			print( ( " " x $length ) . "                  [--skip-metadata] [--no-skip-definer]\n" );
-			print( ( " " x $length ) . "                  [--extended-insert]\n" );
+			print( ( " " x $length ) . "                  [--no-skip-drop] [--no-skip-procedures]\n" );
+			print( ( " " x $length ) . "                  [--skip-reorder] [--ddl|--dml]\n" );
+			print( ( " " x $length ) . "                  [--no-extended-insert]\n" );
 			print( ( " " x $length ) . "scheme:           <gzip|bzip2|xz|lzma>\n" );
 			print( "\n" );
 			print( ( " " x $length ) . "restore options:  [--progress[=<always|auto|never>]]\n" );
@@ -6627,11 +6682,17 @@ sub main( @ ) { # {{{
 		warn( "Mutually-exclusive arguments '--schema' and '--schemata' cannot both be specified\n" ) if( defined( $file ) and @paths );
 		warn( "Mutually-exclusive arguments '--dry-run' and '--clear-metadata' cannot both be specified\n" ) if( $pretend and $clear );
 		warn( "Mutually-exclusive arguments '--no-backup' and '--keep-backup' cannot both be specified\n" ) if( $nobackup and $keepbackups );
+		warn( "Mutually-exclusive arguments '--ddl' and '--dml' cannot both be specified\n" ) if( $onlyddl and $onlydml );
 		warn( "Cannot specify argument '--compress' without option '--backup'\n" ) if( defined( $compress ) and not( defined( $action_backup ) ) );
 		warn( "Cannot specify argument '--lock' or '--keep-lock' without option '--backup'\n" ) if( ( $lock or $keeplock ) and not( defined( $action_backup ) ) );
 		warn( "Cannot specify argument '--separate-files' without option '--backup'\n" ) if( $split and not( defined( $action_backup ) ) );
 		warn( "Cannot specify argument '--skip-metadata' without option '--backup'\n" ) if( $skipmeta and not( defined( $action_backup ) ) );
 		warn( "Cannot specify argument '--no-skip-definer' without option '--backup'\n" ) if( not( $skipdefiner ) and not( defined( $action_backup ) ) );
+		warn( "Cannot specify argument '--no-skip-drop' without option '--backup'\n" ) if( not( $skipdrop ) and not( defined( $action_backup ) ) );
+		warn( "Cannot specify argument '--no-skip-procedures' without option '--backup'\n" ) if( not( $skipfuncs ) and not( defined( $action_backup ) ) );
+		warn( "Cannot specify argument '--skip-reorder' without option '--backup'\n" ) if( $skipsort and not( defined( $action_backup ) ) );
+		warn( "Cannot specify argument '--ddl' without option '--backup'\n" ) if( $onlyddl and not( defined( $action_backup ) ) );
+		warn( "Cannot specify argument '--dml' without option '--backup'\n" ) if( $onlydml and not( defined( $action_backup ) ) );
 		warn( "Cannot specify argument '--extended-insert' without option '--backup'\n" ) if( $extinsert and not( defined( $action_backup ) ) );
 		warn( "Argument '--progress' must have value 'always', 'auto', or 'never'\n" ) unless( defined( $progress ) );
 		warn( "Cannot specify argument '--keep-lock' without option '--lock'\n" ) if( $keeplock and not( $lock ) );
@@ -6650,6 +6711,11 @@ sub main( @ ) { # {{{
 			warn( "Cannot specify argument '--separate-files' with option '--dsn'\n" ) if( $split );
 			warn( "Cannot specify argument '--skip-metadata' with option '--dsn'\n" ) if( $skipmeta );
 			warn( "Cannot specify argument '--no-skip-definer' with option '--dsn'\n" ) if( not( $skipdefiner ) );
+			warn( "Cannot specify argument '--no-skip-drop' with option '--dsn'\n" ) if( not( $skipdrop ) );
+			warn( "Cannot specify argument '--no-skip-procedures' with option '--dsn'\n" ) if( not( $skipfuncs ) );
+			warn( "Cannot specify argument '--skip-reorder' with option '--dsn'\n" ) if( $skipsort );
+			warn( "Cannot specify argument '--ddl' with option '--dsn'\n" ) if( $onlyddl );
+			warn( "Cannot specify argument '--dml' with option '--dsn'\n" ) if( $onlydml );
 			warn( "Cannot specify argument '--extended-insert' with option '--dsn'\n" ) if( $extinsert );
 			warn( "Cannot specify argument '--restore' with option '--dsn'\n" ) if( defined( $action_restore ) );
 			warn( "Cannot specify argument '--mode' with option '--dsn'\n" ) if( not( $mode eq 'schema' ) );
@@ -6757,10 +6823,6 @@ sub main( @ ) { # {{{
 
 	# }}}
 
-	#
-	# Perform backup, if requested # {{{
-	#
-
 	my $auth = {
 		  'user'	=> $user
 		, 'password'	=> $pass
@@ -6776,6 +6838,10 @@ sub main( @ ) { # {{{
 			exit( 0 );
 		}
 	}
+
+	#
+	# Perform backup, if requested # {{{
+	#
 
 	if( defined( $action_backup ) ) {
 		# --backup may be used alone to trigger a backup, or as
@@ -6997,6 +7063,11 @@ sub main( @ ) { # {{{
 					, 'transactional'	=> $small
 					, 'skipmeta'		=> $skipmeta
 					, 'skipdefiner'		=> $skipdefiner
+					, 'skipdrop'		=> $skipdrop
+					, 'skipfuncs'		=> $skipfuncs
+					, 'skipsort'		=> $skipsort
+					, 'onlyddl'		=> $onlyddl
+					, 'onlydml'		=> $onlydml
 					, 'extinsert'		=> $extinsert
 				};
 				if( defined( $db ) and length( $db ) ) {
@@ -7315,12 +7386,17 @@ sub main( @ ) { # {{{
 	$variables -> { 'limit' }       = $limit;
 	$variables -> { 'marker' }      = $marker if( $dosub );
 	$variables -> { 'mode' }        = $mode;
+	$variables -> { 'onlyddl' }     = $onlyddl;
+	$variables -> { 'onlydml' }     = $onlydml;
 	$variables -> { 'pretend' }     = $pretend;
 	$variables -> { 'progress' }    = $progress;
 	$variables -> { 'quiet' }       = $quiet;
 	$variables -> { 'silent' }      = $silent;
-	$variables -> { 'skipmeta' }    = $skipmeta;
 	$variables -> { 'skipdefiner' } = $skipdefiner;
+	$variables -> { 'skipdrop' }    = $skipdrop;
+	$variables -> { 'skipfuncs' }   = $skipfuncs;
+	$variables -> { 'skipmeta' }    = $skipmeta;
+	$variables -> { 'skipsort' }    = $skipsort;
 	$variables -> { 'strict' }      = $strict;
 	$variables -> { 'tmpdir' }      = $tmpdir;
 	$variables -> { 'unsafe' }      = $nobackup;

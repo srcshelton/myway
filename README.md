@@ -51,6 +51,8 @@ Usage: myway.pl <--username <user> --password <passwd> --host <node> ...
                 backup options:   [--compress [:scheme:]] [--transactional]
                                   [--lock [--keep-lock]] [--separate-files]
                                   [--skip-metadata] [--no-skip-definer]
+                                  [--no-skip-drop] [--no-skip-procedures]
+                                  [--skip-reorder] [--ddl|--dml]
                                   [--extended-insert]
                 scheme:           <gzip|bzip2|xz|lzma>
 
