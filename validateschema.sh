@@ -235,7 +235,7 @@ function validate() { # {{{
 					elif [[ ! "${name}" =~ \.d[dmc]l\.sql$ ]]; then
 						note "File '${name}' SHOULD contain 'ddl', 'dml', or 'dcl' to indicate its change-type"
 						(( notices++ ))
-						warn "Assuming '${name}' is of type '${defaulttype}'"
+						warn "Assuming '${name}' is of type '${defaulttype}' for filename determination purposes"
 					fi
 				fi
 				if [[ "${name}" =~ ^V[0-9.]+__V[0-9.]+__ ]]; then
@@ -271,7 +271,6 @@ function validate() { # {{{
 
 				if ! [[ "${fullname}" == "${name}" ]]; then
 					warn "Filename '${name}' appears to be non-standard: expected '${fullname}'"
-					(( warnings++ ))
 				else
 					if ! [[ "${desc}" == "${description}" ]]; then
 						note "Description of file '${name}' (\"${description}\") would be better expressed as \"${desc}\""
@@ -286,8 +285,8 @@ function validate() { # {{{
 						error "Filename '${name}' does not include a recognised version number"
 					fi
 					(( warnings++ ))
-				else # if grep -Pq '^0*\d+(\.0*\d+)?(\.0*\d+)?(\.0*\d+)?$' <<<"${version:-}"; then
 
+				elif ! [[ -n "${migrationversion:-}" ]]; then # if grep -Pq '^0*\d+(\.0*\d+)?(\.0*\d+)?(\.0*\d+)?$' <<<"${version:-}"; then
 					if grep -Pq '^\d+\.\d+\.\d+\.\d+$' <<<"${version}"; then
 						versionsegment[ 3 ]="$( cut -d'.' -f 4 <<<"${version}" | sed 's/^0\+//' )"
 					fi
@@ -385,7 +384,7 @@ function validate() { # {{{
 							(( warnings++ ))
 						fi
 					fi # [[ -n "${max:-}" ]]
-				fi # grep -Pq '^0*\d+(\.0*\d+)?(\.0*\d+)?(\.0*\d+)?$' <<<"${version}"
+				fi # ! [[ -n "${migrationversion:-}" ]] && grep -Pq '^0*\d+(\.0*\d+)?(\.0*\d+)?(\.0*\d+)?$' <<<"${version}"
 			fi # ! [[ "${type}" == "metadata" ]]
 
 			debug "Examining '${file}' for metadata ..."
@@ -575,7 +574,7 @@ function validate() { # {{{
 
 							# Lack of caret before V allows matching migration schema files...
 							if ! [[ "${type}" == "metadata" || "${name}" =~ V${value}__ ]]; then
-								warn "Metadata from file '${name}' specifies 'Target Version: ${value}', which does not match filename"
+								error "Metadata from file '${name}' specifies 'Target Version: ${value}', which does not match filename"
 								(( warnings++ ))
 							fi
 							;;
@@ -735,7 +734,12 @@ function validate() { # {{{
 			local cgrep='grep --colour=always'
 			${cgrep} 'x' <<<'x' >/dev/null 2>&1 || cgrep='grep'
 
-			case "${filetype:-${defaulttype:-}}" in
+			# TODO: Below we assume the the delimiter is ';', as to
+			# do otherwise would require a more in-depth scanning
+			# through the file to track delimiter changes.  As the
+			# output below is to provide a hint only, this does
+			# not appear to be a high-priority enhancement...
+			case "${filetype}" in
 				'dml')
 					if sed -r 's|/\*.*\*/|| ; s/--.*$// ; s/#.*$// ; s/(CREATE|DROP)\s+TEMPORARY\s+TABLE//' "${file}" | grep -Eiq '\s+(CREATE|ALTER|DROP)\s+'; then # DDL
 						warn "Detected DDL in DML-only file '${name}':"
@@ -751,7 +755,7 @@ function validate() { # {{{
 				'ddl')
 					if sed -r 's|/\*.*\*/|| ; s/--.*$// ; s/#.*$// ; s/before\s+insert\s+on//i' "${file}" | grep -Eiq '\s+(UPDATE\s+.*SET\s+|INSERT|DELETE\s+FROM)\s+'; then # DML
 						warn "Detected DML in DDL-only file '${name}':"
-						warn "$( ${cgrep} -Ei '\s+(UPDATE\s+.*SET|INSERT|DELETE\s+FROM)\s+' "${file}" )"
+						warn "$( ${cgrep} -Ei '\s+(UPDATE\s+[^;]*SET|INSERT|DELETE\s+FROM)\s+' "${file}" )"
 						(( warnings++ ))
 					fi
 					if sed 's|/\*.*\*/|| ; s/--.*$// ; s/#.*$//' "${file}" | grep -Eiq '\s+(GRANT|REVOKE)\s+'; then # DCL
@@ -763,7 +767,7 @@ function validate() { # {{{
 				'dcl')
 					if sed -r 's|/\*.*\*/|| ; s/--.*$// ; s/#.*$// ; s/before\s+insert\s+on//i' "${file}" | grep -Eiq '\s+(UPDATE\s+.*SET\s+|INSERT|DELETE\s+FROM)\s+'; then # DML
 						warn "Detected DML in DCL-only file '${name}':"
-						warn "$( ${cgrep} -Ei '\s+(UPDATE\s+.*SET|INSERT|DELETE\s+FROM)\s+' "${file}" )"
+						warn "$( ${cgrep} -Ei '\s+(UPDATE\s+[^;]*SET|INSERT|DELETE\s+FROM)\s+' "${file}" )"
 						(( warnings++ ))
 					fi
 					if sed -r 's|/\*.*\*/|| ; s/--.*$// ; s/#.*$// ; s/(CREATE|DROP)\s+TEMPORARY\s+TABLE//' "${file}" | grep -Eiq '\s+(CREATE|ALTER|DROP)\s+'; then # DDL
@@ -773,10 +777,14 @@ function validate() { # {{{
 					fi
 					;;
 				'')
-					if sed 's|/\*.*\*/|| ; s/--.*// ; s/#.*$//' "${file}" | grep -Eiq '[a-z]'; then # Anything!
-						warn "Detected non-commented statements in migration file '${name}':"
-						sed 's|/\*.*\*/|| ; s/--.*// ; s/#.*$//' "${file}" | grep -v '^\s*$'
-						(( warnings++ ))
+					if [[ -n "${migrationversion:-}" ]]; then
+						if sed 's|/\*.*\*/|| ; s/--.*// ; s/#.*$//' "${file}" | grep -Eiq '[a-z]'; then # Anything!
+							warn "Detected non-commented statements in migration file '${name}':"
+							sed 's|/\*.*\*/|| ; s/--.*// ; s/#.*$//' "${file}" | grep -v '^\s*$'
+							(( warnings++ ))
+						fi
+					elif ! [[ "${type}" == 'metadata' ]]; then
+						warn "Not validating statements in file '${name}' which lacks a DML, DDL, or DCL designation"
 					fi
 					;;
 				*)
