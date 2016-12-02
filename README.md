@@ -24,8 +24,8 @@ Usage: applyschema.sh [--config <file>] --locate <database>
 
 Usage: applyschema.sh [--config <file>] [--schema <path>] [--quiet | --silent]
                       [--databases <database>[,...] | --clusters <cluster>[,...]]
-                      [--keep-going] [--dry-run] [--force] [--no-validate]
-                      [--progress=<always|auto|never>] [--no-wrap]
+                      [--cache-results] [--dry-run] [--no-wrap] [--keep-going]
+                      [--force] [--no-validate] [--progress=<always|auto|never>]
 ```
 
 See [schema.example.conf](../../blob/master/conf/schema.example.conf) for configuration `<file>` format.  The contents of this file provide the default settings passed to `myway.pl`, which accepts the options shown below.
@@ -48,12 +48,12 @@ Usage: myway.pl <--username <user> --password <passwd> --host <node> ...
                 [--clear-metadata] [--force] [--dry-run] [--silent] [--quiet]
                 [--notice] [--warn] [--debug]
 
-                backup options:   [--compress [:scheme:]] [--transactional]
+                backup options:   [--compress [:scheme:]] [--transaction]
                                   [--lock [--keep-lock]] [--separate-files]
                                   [--skip-metadata] [--no-skip-definer]
                                   [--no-skip-drop] [--no-skip-procedures]
                                   [--skip-reorder] [--ddl|--dml]
-                                  [--extended-insert]
+                                  [--no-extended-insert]
                 scheme:           <gzip|bzip2|xz|lzma>
 
                 restore options:  [--progress[=<always|auto|never>]]
@@ -74,9 +74,21 @@ Usage: myway.pl <--username <user> --password <passwd> --host <node> ...
                 --keep-backup    - Copy backups to a local directory on exit
 
                 --compress       - Compress backups [using <scheme> algorithm]
-                --transactional  - Don't lock transactional tables
+                --transaction    - Don't lock transactional tables
                 --lock           - Lock instance for duration of backup
                 --keep-lock      - Keep lock for up to 24 hours after backup
+                --separate-files - Create backup file per-database or per-table
+                --skip-metadata  - Don't include myway metadata tables in backup
+                --skip-reorder   - Don't sort data by primary key before writing
+                --ddl            - Only backup database structure
+                --dml            - Only backup database data
+
+                  * Backup defaults:
+
+                --skip-definer   - Avoid writing node-locking DEFINER statements
+                --skip-drop      - Avoid writing DROP statements
+                --skip-procedures- Avoid writing Procedure definitions
+                --extended-insert- Write multiple rows at once
 
                   * Stored Procedure options:
 

@@ -42,14 +42,16 @@ export STDLIB_WANT_API=2
 	exit 1
 }
 
-std_DEBUG="${DEBUG:-0}"
-std_TRACE="${TRACE:-0}"
-
 # std_RELEASE was only added in release 1.3, and vcmp appeared immediately
 # after in release 1.4...
 if [[ "${std_RELEASE:-1.3}" == "1.3" ]] || std::vcmp "${std_RELEASE}" -lt "2.0.5"; then
 	die "stdlib is too old - please update '${std_LIBPATH}/${std_LIB}' to at least v2.0.5"
 fi
+
+std_DEBUG="${DEBUG:-0}"
+std_TRACE="${TRACE:-0}"
+
+CACHEFILE=".dbtools.cache"
 
 # Override `die` to return '2' on fatal error...
 function die() { # {{{
@@ -104,7 +106,7 @@ function validate() { # {{{
 	}
 
 	if ! (( ${#files[@]} )); then
-		error "Function validate() requires at least one file to operate upon"
+		error "Function ${FUNCNAME[0]}() requires at least one file to operate upon"
 		return 1
 	fi
 
@@ -123,7 +125,7 @@ function validate() { # {{{
 			;;
 	esac
 
-	debug "validate() called on ${type:-unknown} file(s) '${files[*]}'"
+	debug "${FUNCNAME[0]}() called on ${type:-unknown} file(s) '${files[*]}'"
 
 	local script=''
 	std::define script <<-EOF
@@ -173,12 +175,15 @@ function validate() { # {{{
 
 			name="$( basename "${file}" )"
 
+			local mgrep='grep -m 1'
+			${mgrep} 'x' <<<'x' >/dev/null 2>&1 || mgrep='grep'
+
 			# --binary only has effect on Windows, but it is
 			# necessary in that case for the following test to
 			# work...
 			#
 			# shellcheck disable=SC2154
-			if grep -qm 1 --binary "${std_CR}${std_LF}" "${file}"; then
+			if ${mgrep} -q --binary "${std_CR}${std_LF}" "${file}"; then
 				error "File '${name}' appears to contain Windows CRLF line-endings - please convert to UNIX standards"
 				error "(possibly by running \"dos2unix '${file}'\")"
 				(( warnings++ ))
@@ -735,10 +740,12 @@ function validate() { # {{{
 			${cgrep} 'x' <<<'x' >/dev/null 2>&1 || cgrep='grep'
 
 			# TODO: Below we assume the the delimiter is ';', as to
-			# do otherwise would require a more in-depth scanning
-			# through the file to track delimiter changes.  As the
-			# output below is to provide a hint only, this does
-			# not appear to be a high-priority enhancement...
+			#       do otherwise would require a more in-depth
+			#       scanning through the file to track delimiter
+			#       changes.  As the output below is to provide a
+			#       hint only, this does not appear to be a
+			#       high-priority enhancement...
+			#
 			case "${filetype}" in
 				'dml')
 					if sed -r 's|/\*.*\*/|| ; s/--.*$// ; s/#.*$// ; s/(CREATE|DROP)\s+TEMPORARY\s+TABLE//' "${file}" | grep -Eiq '\s+(CREATE|ALTER|DROP)\s+'; then # DDL
@@ -806,7 +813,7 @@ function validate() { # {{{
 			warnings=0 notices=0 styles=0
 
 		done # for file in "${files[@]:-}"
-	fi
+	fi # ! [[ 'procedure' == "${type}" ]]
 
 	if (( rc )); then
 		error "Warnings or Fatal Errors found - Validation of '$( basename "$( dirname "${file}" )" )/$( basename "${file}" )' failed"
@@ -816,6 +823,195 @@ function validate() { # {{{
 
 	return ${rc:-1}
 } # validate # }}}
+
+function cacheandvalidate() { # {{{
+	# This function takes a set of parameters which are passed on directly
+	# to validate(), returns the result of validate(), but also outputs '0'
+	# or '1' to indicate whether caching is still valid.
+	# Note that this makes this function fragile if any other output
+	# appears on stdout - which is why the calling of validate() (which
+	# itself calls note() and info()) is slightly manged to move output to
+	# a safe stream...
+
+	# TODO: Caching could be further optimised by reading the cache-file
+	# into memory for each directory encountered, and then performing
+	# operations on the resultant assocaitive array rather than having to
+	# grep the cache for every file we hit...
+
+	eval std::inherit -- ppath name filename cache=1
+
+	local -a localargs=( "${@}" ) files=()
+
+	eval "$( std::parseargs --var files -- "${@:-}" )"
+	(( std_PARSEARGS_parsed )) || {
+		eval "set -- '$( std::parseargs --strip -- "${@:-}" )'"
+		type="${1:-}" ; shift
+		max="${1:-}" ; shift
+		files=( "${@:-}" )
+	}
+
+	if ! (( ${#files[@]} )); then
+		error "Function ${FUNCNAME[0]}() requires at least one file to operate upon"
+		return 1
+	fi
+
+	if ! (( ${#files[@]} )); then
+		error "Function ${FUNCNAME[0]}() can operate on at most one file at once"
+		return 1
+	fi
+
+	if ! [[ -n "${ppath:-}" ]]; then
+		error "Function ${FUNCNAME[0]}() cannot identify file path"
+		return 1
+	elif ! [[ -d "${ppath}" ]]; then
+		error "Function ${FUNCNAME[0]}() cannot reconcile path '${ppath}' as a directory"
+		return 1
+	fi
+
+	if [[ -n "${filename:-}" ]]; then
+		if [[ "${filename}" != "${files[0]}" ]]; then
+			debug "Filename argument '${files[0]}' differs from filename '${filename}' - using former value ..."
+			filename="${files[0]}"
+		fi
+	else
+		debug "Filename is not set, using filename argument '${files[0]}' ..."
+		filename="${files[0]}"
+	fi
+
+	if [[ -z "${name:-}" ]]; then
+		name="$( basename "${filename}" )"
+	fi
+
+	local sum
+	local -i skip=0 result=1
+
+	local mgrep='grep -m 1'
+	${mgrep} 'x' <<<'x' >/dev/null 2>&1 || mgrep='grep'
+
+	if (( cache )); then
+		if ! sum="$( sha1sum "${filename}" | cut -d' ' -f 1 )"; then
+			warn "Cannot generate checksum of active script '${filename}' - treating as unverified"
+		elif [[ -r "${ppath}"/"${CACHEFILE}" ]]; then
+			if ${mgrep} -qE "^\s*${sum}\s+[01]\s+${name}\s*$" "${ppath}"/"${CACHEFILE}"; then
+				debug "Checksum validated from cache '${ppath}/${CACHEFILE}' for file '${filename}'"
+				if ${mgrep} -qE "^\s*${sum}\s+0\s+${name}\s*$" "${ppath}"/"${CACHEFILE}"; then
+					if ! (( quiet | silent )); then
+						info >&2 "Validation of '${name}' succeeded from cache"
+					fi
+					result=0
+				else
+					if ! (( quiet | silent )); then
+						warn "Validation of '${name}' failed from cache"
+					fi
+					result=1
+				fi
+				skip=1
+			elif ${mgrep} -qE "\s+${name}\s*$" "${ppath}"/"${CACHEFILE}"; then
+				debug "Checksum failed from cache '${ppath}/${CACHEFILE}' for file '${filename}'"
+			else
+				debug "No checksum from cache '${ppath}/${CACHEFILE}' for file '${filename}'"
+			fi
+		fi
+	fi
+
+	if ! (( skip )); then
+		if (( silent )); then
+			validate "${localargs[@]}" >/dev/null 2>&1
+		elif (( quiet )); then
+			validate "${localargs[@]}" >/dev/null
+		else
+			validate "${localargs[@]}" >&2
+		fi
+
+		result=${?}
+
+		if (( cache )); then
+			if [[ -r "${ppath}"/"${CACHEFILE}" ]] && ${mgrep} -qE "\s+${name}\s*$" "${ppath}"/"${CACHEFILE}"; then
+				if ! sed -ri -e "/s+${name}\s*$/s|^\s*[^[:space:]]+\s+[01]\s+|${sum} ${result} |" "${ppath}"/"${CACHEFILE}"; then
+					warn "Error ${?} updating record for file '${filename}' in cache '${ppath}/${CACHEFILE}'"
+				fi
+			else
+				if ! echo "${sum} ${result} ${name}" >> "${ppath}"/"${CACHEFILE}"; then
+					warn "Error ${?} writing record for file '${filename}' to cache '${ppath}/${CACHEFILE}' - disabling cache"
+					cache=0
+				fi
+			fi
+		fi
+	fi
+	unset mgrep skip
+
+	respond "${cache:-1}"
+
+	return ${result}
+} # cacheandvalidate # }}}
+
+# Arguments are optional...
+# shellcheck disable=SC2120
+function setupcache() { # {{{
+	# This function returns the appropriate state of 'cache' on exit.
+
+	local path="${1:-${ppath:-}}" sum
+	local -i cache="${cache:-1}"
+
+	if ! [[ -n "${path:-}" ]]; then
+		error "Function ${FUNCNAME[0]}() cannot identify file path"
+		return 1
+	elif ! [[ -d "${path}" ]]; then
+		error "Function ${FUNCNAME[0]}() cannot reconcile path '${path}' as a directory"
+		return 1
+	fi
+
+	if ! sum="$( sha1sum "$( readlink -e "${0}" )" | cut -d' ' -f 1 )"; then
+		warn "Cannot generate checksum of active script '${NAME}' (${0}) - disabling cache"
+		cache=0
+	else
+		if ! [[ -w "${path}"/ ]]; then
+			warn "Directory '${path}' is not writable - not creating/updating cache"
+			cache=0
+
+		elif ! touch "${path}"/"${CACHEFILE}" 2>/dev/null; then
+			warn "Could not update file '${path}/${CACHEFILE}' (${?}) - disabling cache"
+			cache=0
+
+		else
+			local clearcache=0
+
+			local mgrep='grep -m 1'
+			${mgrep} 'x' <<<'x' >/dev/null 2>&1 || mgrep='grep'
+
+			if ! [[ -r "${path}"/"${CACHEFILE}" ]]; then
+				clearcache=1
+			else
+				if ! ${mgrep} -qE "\s+${NAME}\s*$" "${path}"/"${CACHEFILE}"; then
+					debug "Cache file '${path}/${CACHEFILE}' does not contain a source entry - re-initialising cache"
+					clearcache=1
+
+				elif ! ${mgrep} -qE "^\s*${sum}\s+${NAME}\s*$" "${path}"/"${CACHEFILE}"; then
+					warn "Cache file '${path}/${CACHEFILE}' was created by a different source script - re-initialising cache"
+					clearcache=1
+				fi
+			fi
+
+			unset mgrep
+
+			if (( clearcache )); then
+				if ! cat /dev/null > "${path}"/"${CACHEFILE}"; then
+					warn "Unable to re-initialise cache file '${path}/${CACHEFILE}' (${?}) - disabling cache"
+					cache=0
+				else
+					if ! echo "${sum}   ${NAME}" >> "${path}"/"${CACHEFILE}"; then
+						warn "Unable write source entry to cache file '${path}/${CACHEFILE}' (${?}) - disabling cache"
+						cache=0
+					fi
+				fi
+			fi
+
+			unset clearcache
+		fi
+	fi
+
+	return ${cache}
+} # setupcache # }}}
 
 # shellcheck disable=SC2155
 function main() { # {{{
@@ -846,7 +1042,7 @@ function main() { # {{{
 	fi
 
 	local arg schema db dblist clist
-	local -i dryrun=0 quiet=0 silent=0
+	local -i cache=0 dryrun=0 quiet=0 silent=0
 
 	while [[ -n "${1:-}" ]]; do
 		arg="${1}"
@@ -872,7 +1068,7 @@ function main() { # {{{
 				fi
 				;;
 			-h|--help)
-				export std_USAGE='[--config <file>] [--schema <path>] [ [--databases <database>[,...]] | [--clusters <cluster>[,...]] ] [--dry-run] [--quiet|--silent] [--no-wrap] | [--locate <database>]'
+				export std_USAGE='[--config <file>] [--schema <path>] [ [--databases <database>[,...]] | [--clusters <cluster>[,...]] ] [--cache-results] [--dry-run] [--quiet|--silent] [--no-wrap] | [--locate <database>]'
 				std::usage
 				;;
 			-l|--locate|--whereis|--server|--host)
@@ -890,6 +1086,9 @@ function main() { # {{{
 				;;
 			-q|--quiet)
 				quiet=1
+				;;
+			-r|--cache|--cacheresults|--cache-results)
+				cache=1
 				;;
 			-s|--schema|--schemata|--directory|--scripts)
 				shift
@@ -956,6 +1155,12 @@ function main() { # {{{
 
 	# The 'grep' build used by gitbash doesn't support '-m'!
 	# (... but does, surprisingly, apparently support '-P')
+	#
+	# FIXME: Ironically, the checks to determine whether grep supports the
+	#        '-m' option actually cause the script to run more slowly (for
+	#        small files) then simply not including the option and forcing
+	#        grep to process the entire file :(
+	#
 	local mgrep='grep -m 1'
 	${mgrep} 'x' <<<'x' >/dev/null 2>&1 || mgrep='grep'
 	# shellcheck disable=SC2126
@@ -1172,7 +1377,7 @@ function main() { # {{{
 			die "Neither 'host' nor 'cluster' membership is defined for database '${db}' in '${filename}'"
 		fi
 
-		if grep -Eiq "${truthy}" <<<"${procedures:-}"; then
+		if grep -Eiq "${truthy}" <<<"${procedures:-}"; then # {{{
 			local -a reorder=( sort -V )
 			if (( novsort )); then
 				reorder=( cat )
@@ -1184,7 +1389,7 @@ function main() { # {{{
 			fi
 
 			local ppath
-			local hasfile=0 hasdir=0
+			local -i hasfile=0 hasdir=0 wantedcache=${cache:-0}
 			while read -r ppath; do
 				while read -r filename; do
 					if [[ -f "${filename}" ]]; then
@@ -1197,21 +1402,41 @@ function main() { # {{{
 						die "LOGIC ERROR: (1): Filesystem object '${filename}' does not exist"
 					fi
 				done < <( find "${ppath}"/ -mindepth 1 -maxdepth 1 2>/dev/null | "${reorder[@]}" )
+
+				if (( cache )); then
+					setupcache "${ppath}"
+					cache=${?}
+				fi
+				if (( cache != wantedcache )); then
+					if (( wantedcache )); then
+						warn "cache validation disabled (at line $LINENO: expected '${wantedcache}', result '${cache} for path '${ppath}')"
+					fi
+					wantedcache=${cache}
+				fi
+
 				while read -r filename; do
-					if [[ -f "${filename}" && "$( basename "${filename}" )" =~ \.sql$ ]]; then
+					local name
+					name="$( basename "${filename}" )"
+
+					if [[ -f "${filename}" && "${name}" =~ \.sql$ ]]; then
 						if (( hasdir )); then
-							warn 'Invalid mix of files and directories at same level'
+							warn "Invalid mix of files and directories at same level beneath '${ppath}'"
 							(( warnings++ ))
 						fi
-						if (( silent )); then
-							validate -type 'procedure' -files "${filename}" >/dev/null 2>&1
-						elif (( quiet )); then
-							validate -type 'procedure' -files "${filename}" >/dev/null
-						else
-							validate -type 'procedure' -files "${filename}"
-						fi
+
+						cache="$( cacheandvalidate -type 'procedure' -files "${filename}" )"
 						(( rc += ${?} ))
+
+						if (( cache != wantedcache )); then
+							if (( wantedcache )); then
+								warn "cache validation disabled (at line $LINENO: expected '${wantedcache}', result '${cache} for path '${ppath}')"
+							fi
+							wantedcache=${cache}
+						fi
+
 						founddb=1
+
+						#unset result
 					elif [[ -d "${filename}" ]]; then
 						if (( hasfile )); then
 							note "Directory '$( basename "${filename}" )' should not be present in directory '${ppath}' and will be ignored during Stored Procedure processing"
@@ -1224,14 +1449,18 @@ function main() { # {{{
 						fi
 						if [[ "$( basename "${filename}" )" =~ \.metadata$ ]]; then
 							debug "File '$( basename "${filename}" )' is Stored Procedure metadata"
-							if (( silent )); then
-								validate -type 'metadata' -files "${filename}" >/dev/null 2>&1
-							elif (( quiet )); then
-								validate -type 'metadata' -files "${filename}" >/dev/null
-							else
-								validate -type 'metadata' -files "${filename}"
+
+							cache="$( cacheandvalidate -type 'metadata' -files "${filename}" )"
+							(( rc += ${?} ))
+
+							if (( cache != wantedcache )); then
+								if (( wantedcache )); then
+									warn "cache validation disabled (at line $LINENO: expected '${wantedcache}', result '${cache} for path '${ppath}')"
+								fi
+								wantedcache=${cache}
 							fi
-						else
+
+						elif [[ "${name}" != "${CACHEFILE}" ]]; then
 							warn "File '$( basename "${filename}" )' does not end in '.sql' and so should not be present in directory '${ppath}'"
 							(( warnings++ ))
 						fi
@@ -1241,17 +1470,18 @@ function main() { # {{{
 					else
 						die "LOGIC ERROR: (2): Filesystem object '${filename}' does not exist"
 					fi
+
+					unset name
 				done < <( find "${ppath}"/ -mindepth 1 -maxdepth 1 2>/dev/null | "${reorder[@]}" )
 			done < <( find "${procedurepath}"/ -mindepth 1 -maxdepth 2 -type d 2>/dev/null | grep "${db}" | "${reorder[@]}" )
-			unset hasdir hasfile ppath
+			unset wantedcache hasdir hasfile ppath
 
 			debug "Stored Procedures processed for database '${db}'\n"
 
 			# Clear any versions assocaited with Stored Procedures,
 			# as these are independent of schema-file versions...
 			versions=()
-		fi
-
+		fi # grep -Eiq "${truthy}" <<<"${procedures:-}" # }}}
 
 		local ppath
 		if [[ -n "${actualpath:-}" ]]; then
@@ -1259,6 +1489,19 @@ function main() { # {{{
 		else
 			ppath="${path}/schema/${db}"
 		fi
+
+		local -i wantedcache=${cache:-0}
+		if (( cache )); then
+			setupcache "${ppath}"
+			cache=${?}
+		fi
+		if (( cache != wantedcache )); then
+			if (( wantedcache )); then
+				warn "cache validation disabled (at line $LINENO: expected '${wantedcache}', result '${cache} for path '${ppath}')"
+			fi
+			wantedcache=${cache}
+		fi
+
 		for filename in $(
 			local k o v
 			local -A prefices=()
@@ -1274,50 +1517,57 @@ function main() { # {{{
 
 			unset prefices v o k
 		); do
-			# This is not always guaranteed to be the case, so
-			# let's ensure that we always have the same data...
-			filename="$( basename "${filename}" )"
+			local name
+			name="$( basename "${filename}" )"
 
-			if [[ -f "${ppath}/${filename}" && "${filename}" =~ \.sql$ ]]; then
-				debug "Validating file '${ppath}/${filename}' ..."
+			if [[ -f "${filename}" && "${name}" =~ \.sql$ ]]; then
+				debug "Validating file '${filename}' ..."
+
+				local -i result=1
+
 				if [[ -n "${syntax:-}" && "${syntax}" == 'vertica' ]]; then
-					if (( silent )); then
-						# shellcheck disable=SC2154
-						validate -type 'vertica-schema' ${version_max:+-max "${version_max}" }-files "${ppath}/${filename}" >/dev/null 2>&1
-					elif (( quiet )); then
-						# shellcheck disable=SC2154
-						validate -type 'vertica-schema' ${version_max:+-max "${version_max}" }-files "${ppath}/${filename}" >/dev/null && std_LASTOUTPUT=""
-					else
-						# shellcheck disable=SC2154
-						validate -type 'vertica-schema' ${version_max:+-max "${version_max}" }-files "${ppath}/${filename}"
+					# shellcheck disable=SC2154
+					cache="$( cacheandvalidate -type 'vertica-schema' ${version_max:+-max "${version_max}" }-files "${filename}" )"
+					result=${?}
+
+					if (( cache != wantedcache )); then
+						if (( wantedcache )); then
+							warn "cache validation disabled (at line $LINENO: expected '${wantedcache}', result '${cache} for path '${ppath}')"
+						fi
+						wantedcache=${cache}
 					fi
+
+					(( quiet && result )) && std_LASTOUTPUT=""
 				else
-					if (( silent )); then
-						# shellcheck disable=SC2154
-						validate -type 'schema' ${version_max:+-max "${version_max}" }-files "${ppath}/${filename}" >/dev/null 2>&1
-					elif (( quiet )); then
-						# shellcheck disable=SC2154
-						validate -type 'schema' ${version_max:+-max "${version_max}" }-files "${ppath}/${filename}" >/dev/null && std_LASTOUTPUT=""
-					else
-						# shellcheck disable=SC2154
-						validate -type 'schema' ${version_max:+-max "${version_max}" }-files "${ppath}/${filename}"
+					# shellcheck disable=SC2154
+					cache="$( cacheandvalidate -type 'schema' ${version_max:+-max "${version_max}" }-files "${filename}" )"
+					result=${?}
+
+					if (( cache != wantedcache )); then
+						if (( wantedcache )); then
+							warn "cache validation disabled (at line $LINENO: expected '${wantedcache}', result '${cache} for path '${ppath}')"
+						fi
+						wantedcache=${cache}
 					fi
+
+					(( quiet && result )) && std_LASTOUTPUT=""
 				fi
-				(( rc += ${?} ))
+
+				(( rc += result ))
 				founddb=1
 
-			elif [[ -d "${ppath}/${filename}" ]]; then
-				note "Directory '${filename}' should not be present in directory '${ppath}' and will be ignored during schema file processing"
+			elif [[ -d "${filename}" ]]; then
+				note "Directory '${name}' should not be present in directory '${ppath}' and will be ignored during schema file processing"
 				(( notices++ ))
 
-			elif [[ -f "${ppath}/${filename}" ]]; then
+			elif [[ -f "${filename}" ]]; then
 
 				# TODO: Alternatively, any referenced files
 				#       could be returned by validate()...
 
-				if grep -Eiq "${truthy}" <<<"${procedures:-}" && [[ "${filename}" =~ \.metadata$ ]]; then
-					debug "File '${filename}' in directory '${ppath}' is Stored Procedure metadata"
-				else
+				if grep -Eiq "${truthy}" <<<"${procedures:-}" && [[ "${name}" =~ \.metadata$ ]]; then
+					debug "File '${name}' in directory '${ppath}' is Stored Procedure metadata"
+				elif [[ "${name}" != "${CACHEFILE}" ]]; then
 					local script restorefiles files
 					std::define script <<-EOF
 						BEGIN		{ output = 0 }
@@ -1335,16 +1585,16 @@ function main() { # {{{
 					restorefiles="$( find "${ppath}" -mindepth 1 -maxdepth 1 | while read -r files; do
 						awk -- "${script:-}" "${files}" | grep -o 'Restore:\s*[^[:space:]]\+\s*'
 					done | cut -d':' -f 2- | xargs echo )"
-					if ! grep -qw "${filename}" <<<"${restorefiles}"; then
-						warn "File '${filename}' does not end in '.sql' and so should not be present in directory '${ppath}'"
+					if ! grep -qw "${name}" <<<"${restorefiles}"; then
+						warn "File '${name}' does not end in '.sql' and so should not be present in directory '${ppath}'"
 						(( warnings++ ))
 					else
-						debug "File '${filename}' is referenced in a metadata 'Restore:' directive"
+						debug "File '${name}' is referenced in a metadata 'Restore:' directive"
 					fi
 					unset files restorefiles script
 				fi
 			else
-				warn "Object '${filename}' should not be present in directory '${ppath}' and will be ignored during schema file processing"
+				warn "Object '${name}' should not be present in directory '${ppath}' and will be ignored during schema file processing"
 				(( warnings++ ))
 			fi
 
@@ -1355,6 +1605,9 @@ function main() { # {{{
 				[[ -n "${dblist:-}" && "${dblist}" == "${db}" ]] && [[ -n "${std_LASTOUTPUT:-}" ]] && output
 			fi
 		done # filename
+
+		unset wantedcache
+
 		debug "Schema processed for database '${db}'\n"
 
 		(( founddb && rc )) && exit 4
@@ -1416,6 +1669,7 @@ export LC_ALL='C'
 set -o pipefail
 
 std::requires --no-quiet 'pgrep'
+std::requires --no-quiet 'sha1sum'
 
 main "${@:-}"
 
