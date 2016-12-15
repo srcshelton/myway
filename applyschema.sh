@@ -130,7 +130,7 @@ function main() { # {{{
 
 	local arg schema db vdb dblist clist
 	local -l progress='auto'
-	local -i dryrun=0 cache=0 quiet=0 silent=0 keepgoing=0 force=0 validate=1
+	local -i dryrun=0 cache=0 memcache=1 quiet=0 silent=0 keepgoing=0 force=0 validate=1
 	local -a extra=()
 	while [[ -n "${1:-}" ]]; do
 		arg="${1}"
@@ -159,7 +159,7 @@ function main() { # {{{
 				force=1
 				;;
 			-h|--help)
-				export std_USAGE='[--config <file>] [--schema <path>] [ [--databases <database>[,...]] | [--clusters <cluster>[,...]] ] [--cache-results] [--dry-run] [--quiet|--silent] [--no-wrap] [--keep-going] [--force] [--no-validate] [--progress=<always|auto|never>] | [--locate <database>]'
+				export std_USAGE='[--config <file>] [--schema <path>] [ [--databases <database>[,...]] | [--clusters <cluster>[,...]] ] [--cache-results] [--no-memory-cache] [--dry-run] [--quiet|--silent] [--no-wrap] [--keep-going] [--force] [--no-validate] [--progress=<always|auto|never>] | [--locate <database>]'
 				std::usage
 				;;
 			-k|--keep-going|--keepgoing)
@@ -174,6 +174,9 @@ function main() { # {{{
 				else
 					db="${1}"
 				fi
+				;;
+			-m|--nomem|--nomemorycache|--no-memory-cache)
+				memcache=0
 				;;
 			-n|--nowrap|--no-wrap)
 				export STDLIB_WANT_WORDWRAP=0
@@ -623,7 +626,7 @@ function main() { # {{{
 		if (( validate )); then
 			(( quiet | silent )) || info "Validating database '${db}' ..."
 			# shellcheck disable=SC2046
-			if ! ${validator} ${filename:+--config "${filename}"} -d "${db}" -s "${actualpath:-${path}/schema}" $( (( cache )) && echo '--cache-results' ) $( (( dryrun )) && echo '--dry-run' ) $( (( quiet )) && echo '--quiet' ) $( (( silent )) && echo '--silent' ) --from-applyschema; then
+			if ! ${validator} ${filename:+--config "${filename}"} -d "${db}" -s "${actualpath:-${path}/schema}" $( (( cache )) && echo '--cache-results' ) $( (( memcache )) || echo '--no-memory-cache' ) $( (( dryrun )) && echo '--dry-run' ) $( (( quiet )) && echo '--quiet' ) $( (( silent )) && echo '--silent' ) --from-applyschema; then
 				die "Validation of database '${db}' failed - aborting"
 			fi
 		fi

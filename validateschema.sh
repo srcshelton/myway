@@ -51,7 +51,14 @@ fi
 std_DEBUG="${DEBUG:-0}"
 std_TRACE="${TRACE:-0}"
 
-CACHEFILE=".dbtools.cache"
+declare sumutil="sha1sum"
+
+declare CACHEFILE=".dbtools.cache"
+
+declare CACHESRC=""
+declare CACHEDIR=""
+declare -A CACHESUM=()
+declare -A CACHERC=()
 
 # Override `die` to return '2' on fatal error...
 function die() { # {{{
@@ -830,15 +837,13 @@ function cacheandvalidate() { # {{{
 	# or '1' to indicate whether caching is still valid.
 	# Note that this makes this function fragile if any other output
 	# appears on stdout - which is why the calling of validate() (which
-	# itself calls note() and info()) is slightly manged to move output to
-	# a safe stream...
+	# itself calls note() and info()) is slightly mangled in order to move
+	# output to a safe stream...
 
-	# TODO: Caching could be further optimised by reading the cache-file
-	# into memory for each directory encountered, and then performing
-	# operations on the resultant assocaitive array rather than having to
-	# grep the cache for every file we hit...
-
-	eval std::inherit -- ppath name filename cache=1
+	# TODO: ${filename} should really be ${filepath}, and ${filename} then
+	#       becomes $( basename "${filepath}" ) - similarly, let's use
+	#       ${path} rather than ${ppath}, at least locally...
+	eval std::inherit -- ppath name filename cache=1 memcache=1
 
 	local -a localargs=( "${@}" ) files=()
 
@@ -889,27 +894,51 @@ function cacheandvalidate() { # {{{
 	${mgrep} 'x' <<<'x' >/dev/null 2>&1 || mgrep='grep'
 
 	if (( cache )); then
-		if ! sum="$( sha1sum "${filename}" | cut -d' ' -f 1 )"; then
-			warn "Cannot generate checksum of active script '${filename}' - treating as unverified"
+		if ! sum="$( ${sumutil} "${filename}" | cut -d' ' -f 1 )"; then
+			warn "Cannot generate checksum of current schema-file or Stored Procedure definition '${name}' - treating as unverified"
 		elif [[ -r "${ppath}"/"${CACHEFILE}" ]]; then
-			if ${mgrep} -qE "^\s*${sum}\s+[01]\s+${name}\s*$" "${ppath}"/"${CACHEFILE}"; then
-				debug "Checksum validated from cache '${ppath}/${CACHEFILE}' for file '${filename}'"
-				if ${mgrep} -qE "^\s*${sum}\s+0\s+${name}\s*$" "${ppath}"/"${CACHEFILE}"; then
-					if ! (( quiet | silent )); then
-						info >&2 "Validation of '${name}' succeeded from cache"
+			if (( memcache )) && [[ -n "${CACHEDIR:-}" ]]; then
+				debug "Using in-memory cache from directory '${CACHEDIR}'"
+				if [[ "${sum}" == "${CACHESUM[${name}]:-}" ]]; then
+					debug "Checksum validated from in-memory cache for file '${name}'"
+					if [[ "0" == "${CACHERC[${name}]:-}" ]]; then
+						if ! (( quiet | silent )); then
+							info >&2 "Validation of '${name}' succeeded from in-memory cache"
+						fi
+						result=0
+					else
+						if ! (( quiet | silent )); then
+							warn "Validation of '${name}' failed from in-memory cache"
+						fi
+						result=1
 					fi
-					result=0
+					skip=1
+				elif [[ -n "${CACHESUM[${name}]:-}" ]]; then
+					debug "Checksum failed from in-memory cache for file '${name}'"
 				else
-					if ! (( quiet | silent )); then
-						warn "Validation of '${name}' failed from cache"
-					fi
-					result=1
+					debug "No checksum from in-memory cache for file '${name}'"
 				fi
-				skip=1
-			elif ${mgrep} -qE "\s+${name}\s*$" "${ppath}"/"${CACHEFILE}"; then
-				debug "Checksum failed from cache '${ppath}/${CACHEFILE}' for file '${filename}'"
 			else
-				debug "No checksum from cache '${ppath}/${CACHEFILE}' for file '${filename}'"
+				debug "Using on-disk cache from directory '${ppath}'"
+				if ${mgrep} -qE "^\s*${sum}\s+[01]\s+${name}\s*$" "${ppath}"/"${CACHEFILE}"; then
+					debug "Checksum validated from on-disk cache '${ppath}/${CACHEFILE}' for file '${name}'"
+					if ${mgrep} -qE "^\s*${sum}\s+0\s+${name}\s*$" "${ppath}"/"${CACHEFILE}"; then
+						if ! (( quiet | silent )); then
+							info >&2 "Validation of '${name}' succeeded from on-disk cache"
+						fi
+						result=0
+					else
+						if ! (( quiet | silent )); then
+							warn "Validation of '${name}' failed from on-disk cache"
+						fi
+						result=1
+					fi
+					skip=1
+				elif ${mgrep} -qE "\s+${name}\s*$" "${ppath}"/"${CACHEFILE}"; then
+					debug "Checksum failed from on-disk cache '${ppath}/${CACHEFILE}' for file '${name}'"
+				else
+					debug "No checksum from on-disk cache '${ppath}/${CACHEFILE}' for file '${name}'"
+				fi
 			fi
 		fi
 	fi
@@ -928,11 +957,11 @@ function cacheandvalidate() { # {{{
 		if (( cache )); then
 			if [[ -r "${ppath}"/"${CACHEFILE}" ]] && ${mgrep} -qE "\s+${name}\s*$" "${ppath}"/"${CACHEFILE}"; then
 				if ! sed -ri -e "/s+${name}\s*$/s|^\s*[^[:space:]]+\s+[01]\s+|${sum} ${result} |" "${ppath}"/"${CACHEFILE}"; then
-					warn "Error ${?} updating record for file '${filename}' in cache '${ppath}/${CACHEFILE}'"
+					warn "Error ${?} updating record for file '${name}' in on-disk cache '${ppath}/${CACHEFILE}'"
 				fi
 			else
 				if ! echo "${sum} ${result} ${name}" >> "${ppath}"/"${CACHEFILE}"; then
-					warn "Error ${?} writing record for file '${filename}' to cache '${ppath}/${CACHEFILE}' - disabling cache"
+					warn "Error ${?} writing record for file '${name}' to on-disk cache '${ppath}/${CACHEFILE}' - disabling cache"
 					cache=0
 				fi
 			fi
@@ -950,6 +979,8 @@ function cacheandvalidate() { # {{{
 function setupcache() { # {{{
 	# This function returns the appropriate state of 'cache' on exit.
 
+	eval std::inherit -- ppath cache=1 memcache=1
+
 	local path="${1:-${ppath:-}}" sum
 	local -i cache="${cache:-1}"
 
@@ -961,52 +992,84 @@ function setupcache() { # {{{
 		return 1
 	fi
 
-	if ! sum="$( sha1sum "$( readlink -e "${0}" )" | cut -d' ' -f 1 )"; then
-		warn "Cannot generate checksum of active script '${NAME}' (${0}) - disabling cache"
-		cache=0
-	else
-		if ! [[ -w "${path}"/ ]]; then
-			warn "Directory '${path}' is not writable - not creating/updating cache"
+	if (( cache )); then
+		if [[ -z "${CACHESRC:-}" ]] && ! sum="$( ${sumutil} "$( readlink -e "${0}" )" | cut -d' ' -f 1 )"; then
+			warn "Cannot generate checksum of active script '${NAME}' (${0}) - disabling cache"
 			cache=0
-
-		elif ! touch "${path}"/"${CACHEFILE}" 2>/dev/null; then
-			warn "Could not update file '${path}/${CACHEFILE}' (${?}) - disabling cache"
-			cache=0
-
 		else
-			local clearcache=0
-
-			local mgrep='grep -m 1'
-			${mgrep} 'x' <<<'x' >/dev/null 2>&1 || mgrep='grep'
-
-			if ! [[ -r "${path}"/"${CACHEFILE}" ]]; then
-				clearcache=1
-			else
-				if ! ${mgrep} -qE "\s+${NAME}\s*$" "${path}"/"${CACHEFILE}"; then
-					debug "Cache file '${path}/${CACHEFILE}' does not contain a source entry - re-initialising cache"
-					clearcache=1
-
-				elif ! ${mgrep} -qE "^\s*${sum}\s+${NAME}\s*$" "${path}"/"${CACHEFILE}"; then
-					warn "Cache file '${path}/${CACHEFILE}' was created by a different source script - re-initialising cache"
-					clearcache=1
-				fi
+			if [[ -z "${CACHESRC:-}" && -n "${sum:-}" ]]; then
+				CACHESRC="${sum}"
 			fi
 
-			unset mgrep
+			if (( memcache )); then
+				debug "Clearing in-memory cache ..."
 
-			if (( clearcache )); then
-				if ! cat /dev/null > "${path}"/"${CACHEFILE}"; then
-					warn "Unable to re-initialise cache file '${path}/${CACHEFILE}' (${?}) - disabling cache"
-					cache=0
+				CACHEDIR=""
+				CACHESUM=()
+				CACHERC=()
+			fi
+
+			if ! [[ -w "${path}"/ ]]; then
+				warn "Directory '${path}' is not writable - not creating/updating cache"
+				cache=0
+
+			elif ! touch "${path}"/"${CACHEFILE}" 2>/dev/null; then
+				warn "Could not update file '${path}/${CACHEFILE}' (${?}) - disabling cache"
+				cache=0
+
+			else
+				local clearcache=0
+
+				local mgrep='grep -m 1'
+				${mgrep} 'x' <<<'x' >/dev/null 2>&1 || mgrep='grep'
+
+				if ! [[ -r "${path}"/"${CACHEFILE}" ]]; then
+					clearcache=1
 				else
-					if ! echo "${sum}   ${NAME}" >> "${path}"/"${CACHEFILE}"; then
-						warn "Unable write source entry to cache file '${path}/${CACHEFILE}' (${?}) - disabling cache"
-						cache=0
+					if ! ${mgrep} -qE "\s+${NAME}\s*$" "${path}"/"${CACHEFILE}"; then
+						debug "Cache file '${path}/${CACHEFILE}' does not contain a source entry - re-initialising cache"
+						clearcache=1
+
+					elif ! ${mgrep} -qE "^\s*${CACHESRC}\s+${NAME}\s*$" "${path}"/"${CACHEFILE}"; then
+						warn "Cache file '${path}/${CACHEFILE}' was created by a different source script - re-initialising cache"
+						clearcache=1
 					fi
 				fi
-			fi
 
-			unset clearcache
+				unset mgrep
+
+				if (( clearcache )); then
+					if ! cat /dev/null > "${path}"/"${CACHEFILE}"; then
+						warn "Unable to re-initialise cache file '${path}/${CACHEFILE}' (${?}) - disabling cache"
+						cache=0
+					else
+						if ! echo "${CACHESRC}   ${NAME}" >> "${path}"/"${CACHEFILE}"; then
+							warn "Unable write source entry to cache file '${path}/${CACHEFILE}' (${?}) - disabling cache"
+							cache=0
+						fi
+					fi
+				fi
+
+				unset clearcache
+
+				if (( cache && memcache )); then
+					local rc filename
+
+					CACHEDIR="${path}"
+					CACHESUM=()
+					CACHERC=()
+
+					while read -r sum rc filename; do
+						if [[ -z "${filename:-}" && ! "${rc}" =~ ^[01]$ ]]; then
+							filename="${rc}"
+							rc=" "
+						fi
+						debug "Adding in-memory cache entry '${sum:-} ${rc:-} ${filename:-}'"
+						CACHESUM["${filename:-}"]="${sum:-}"
+						CACHERC["${filename:-}"]="${rc:-}"
+					done < "${path}"/"${CACHEFILE}"
+				fi
+			fi
 		fi
 	fi
 
@@ -1042,7 +1105,7 @@ function main() { # {{{
 	fi
 
 	local arg schema db dblist clist
-	local -i cache=0 dryrun=0 quiet=0 silent=0
+	local -i cache=0 memcache=1 dryrun=0 quiet=0 silent=0
 
 	while [[ -n "${1:-}" ]]; do
 		arg="${1}"
@@ -1068,7 +1131,7 @@ function main() { # {{{
 				fi
 				;;
 			-h|--help)
-				export std_USAGE='[--config <file>] [--schema <path>] [ [--databases <database>[,...]] | [--clusters <cluster>[,...]] ] [--cache-results] [--dry-run] [--quiet|--silent] [--no-wrap] | [--locate <database>]'
+				export std_USAGE='[--config <file>] [--schema <path>] [ [--databases <database>[,...]] | [--clusters <cluster>[,...]] ] [--cache-results] [--no-memory-cache] [--dry-run] [--quiet|--silent] [--no-wrap] | [--locate <database>]'
 				std::usage
 				;;
 			-l|--locate|--whereis|--server|--host)
@@ -1080,6 +1143,9 @@ function main() { # {{{
 				else
 					db="${1}"
 				fi
+				;;
+			-m|--nomem|--nomemorycache|--no-memory-cache)
+				memcache=0
 				;;
 			-n|--nowrap|--no-wrap)
 				export STDLIB_WANT_WORDWRAP=0
@@ -1410,8 +1476,8 @@ function main() { # {{{
 				if (( cache != wantedcache )); then
 					if (( wantedcache )); then
 						warn "cache validation disabled (at line $LINENO: expected '${wantedcache}', result '${cache} for path '${ppath}')"
+						wantedcache=${cache}
 					fi
-					wantedcache=${cache}
 				fi
 
 				while read -r filename; do
@@ -1430,8 +1496,8 @@ function main() { # {{{
 						if (( cache != wantedcache )); then
 							if (( wantedcache )); then
 								warn "cache validation disabled (at line $LINENO: expected '${wantedcache}', result '${cache} for path '${ppath}')"
+								wantedcache=${cache}
 							fi
-							wantedcache=${cache}
 						fi
 
 						founddb=1
@@ -1456,8 +1522,8 @@ function main() { # {{{
 							if (( cache != wantedcache )); then
 								if (( wantedcache )); then
 									warn "cache validation disabled (at line $LINENO: expected '${wantedcache}', result '${cache} for path '${ppath}')"
+									wantedcache=${cache}
 								fi
-								wantedcache=${cache}
 							fi
 
 						elif [[ "${name}" != "${CACHEFILE}" ]]; then
@@ -1498,8 +1564,8 @@ function main() { # {{{
 		if (( cache != wantedcache )); then
 			if (( wantedcache )); then
 				warn "cache validation disabled (at line $LINENO: expected '${wantedcache}', result '${cache} for path '${ppath}')"
+				wantedcache=${cache}
 			fi
-			wantedcache=${cache}
 		fi
 
 		for filename in $(
@@ -1533,8 +1599,8 @@ function main() { # {{{
 					if (( cache != wantedcache )); then
 						if (( wantedcache )); then
 							warn "cache validation disabled (at line $LINENO: expected '${wantedcache}', result '${cache} for path '${ppath}')"
+							wantedcache=${cache}
 						fi
-						wantedcache=${cache}
 					fi
 
 					(( quiet && result )) && std_LASTOUTPUT=""
@@ -1546,8 +1612,8 @@ function main() { # {{{
 					if (( cache != wantedcache )); then
 						if (( wantedcache )); then
 							warn "cache validation disabled (at line $LINENO: expected '${wantedcache}', result '${cache} for path '${ppath}')"
+							wantedcache=${cache}
 						fi
-						wantedcache=${cache}
 					fi
 
 					(( quiet && result )) && std_LASTOUTPUT=""
@@ -1669,7 +1735,7 @@ export LC_ALL='C'
 set -o pipefail
 
 std::requires --no-quiet 'pgrep'
-std::requires --no-quiet 'sha1sum'
+std::requires --no-quiet "${sumutil}"
 
 main "${@:-}"
 

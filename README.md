@@ -24,8 +24,9 @@ Usage: applyschema.sh [--config <file>] --locate <database>
 
 Usage: applyschema.sh [--config <file>] [--schema <path>] [--quiet | --silent]
                       [--databases <database>[,...] | --clusters <cluster>[,...]]
-                      [--cache-results] [--dry-run] [--no-wrap] [--keep-going]
-                      [--force] [--no-validate] [--progress=<always|auto|never>]
+                      [--cache-results] [--no-memory-cache] [--dry-run]
+		      [--no-wrap] [--keep-going] [--force] [--no-validate]
+		      [--progress=<always|auto|never>]
 ```
 
 See [schema.example.conf](../../blob/master/conf/schema.example.conf) for configuration `<file>` format.  The contents of this file provide the default settings passed to `myway.pl`, which accepts the options shown below.
